@@ -8,6 +8,8 @@ import { markdown } from "@codemirror/lang-markdown";
 import { githubDark, githubLight } from "@uiw/codemirror-theme-github";
 // 移除了 ViewPlugin, ViewUpdate，因为不再需要手动写插件
 import { EditorView } from "@codemirror/view";
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 function App() {
   // === 状态管理 ===
@@ -15,6 +17,7 @@ function App() {
   const [files, setFiles] = useState<string[]>([]);
   const [activeFile, setActiveFile] = useState<string>("");
   const [content, setContent] = useState<string>("");
+  const [showPreview, setShowPreview] = useState(false);
   
   // 视窗控制状态
   const [sidebarWidth, setSidebarWidth] = useState(250);
@@ -206,6 +209,13 @@ function App() {
                 ⌨ 打字机
             </button>
             <button 
+                className={`icon-btn ${showPreview ? 'active' : ''}`}
+                onClick={() => setShowPreview(!showPreview)} 
+                title={showPreview ? "关闭预览" : "开启预览"}
+            >
+                👁 预览
+            </button>
+            <button 
                 className="icon-btn" 
                 onClick={() => {
                     setIsCreating(true);
@@ -283,16 +293,23 @@ function App() {
             {activeFile ? (
                 <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
                     <div className="editor-header">{activeFile}</div>
-                    <div style={{ flex: 1, overflow: 'auto' }}>
-                        <CodeMirror
-                        value={content}
-                        height="100%"
-                        theme={theme === 'dark' ? githubDark : githubLight}
-                        extensions={[markdown(), ...typewriterExtension]}
-                        onChange={saveContent}
-                        onCreateEditor={(view) => { viewRef.current = view; }}
-                        style={{ fontSize: '16px' }}
-                        />
+                    <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'row' }}>
+                        <div style={{ flex: 1, overflow: 'auto', height: '100%', borderRight: showPreview ? '1px solid var(--border-color)' : 'none' }}>
+                            <CodeMirror
+                            value={content}
+                            height="100%"
+                            theme={theme === 'dark' ? githubDark : githubLight}
+                            extensions={[markdown(), ...typewriterExtension]}
+                            onChange={saveContent}
+                            onCreateEditor={(view) => { viewRef.current = view; }}
+                            style={{ fontSize: '16px', height: '100%' }}
+                            />
+                        </div>
+                        {showPreview && (
+                            <div className="markdown-preview" style={{ flex: 1, overflow: 'auto', padding: '20px', height: '100%', backgroundColor: 'var(--bg-color)', color: 'var(--text-color)' }}>
+                                <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+                            </div>
+                        )}
                     </div>
                 </div>
             ) : (
