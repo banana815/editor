@@ -1,8 +1,40 @@
 /* src/App.css */
 :root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  color: #f6f6f6;
-  background-color: #2f2f2f; /* 深色背景 */
+  /* GitHub Dark 风格 (深色模式) */
+  --bg-app: #0d1117;
+  --bg-sidebar: #010409;
+  --bg-toolbar: #010409;
+  --bg-editor: #0d1117;
+  --bg-active-item: #1f2428; /* 选中项背景 */
+  --bg-hover-item: #161b22;
+  
+  --text-primary: #c9d1d9;
+  --text-secondary: #8b949e;
+  --text-active: #c9d1d9;
+  
+  --border-color: #30363d;
+  --accent-color: #58a6ff; /* GitHub 蓝 */
+  --resizer-color: #58a6ff;
+  
+  --font-family: 'Segoe UI', Inter, system-ui, sans-serif;
+}
+
+[data-theme='light'] {
+  /* Quiet Light 风格 (浅色模式) */
+  --bg-app: #F5F5F5;
+  --bg-sidebar: #F2F2F2;
+  --bg-toolbar: #F2F2F2;
+  --bg-editor: #F5F5F5;
+  --bg-active-item: #E4E6F1; /* 柔和的淡紫色选中背景 */
+  --bg-hover-item: #E8E8E8;
+  
+  --text-primary: #333333;
+  --text-secondary: #666666;
+  --text-active: #333333; /* 选中时文字颜色保持深色 */
+  
+  --border-color: #E5E5E5;
+  --accent-color: #705697; /* Quiet Light 标志性紫色 */
+  --resizer-color: #705697;
 }
 
 body {
@@ -11,121 +43,231 @@ body {
   width: 100vw;
   height: 100vh;
   overflow: hidden;
+  background-color: var(--bg-app);
+  color: var(--text-primary);
+  font-family: var(--font-family);
+  transition: background-color 0.3s, color 0.3s;
 }
 
 .container {
   display: flex;
-  flex-direction: column; /* 改为垂直布局 */
+  flex-direction: column;
   width: 100%;
   height: 100vh;
 }
 
 /* === 顶部工具栏 === */
 .toolbar {
-  height: 35px;
-  background-color: #3c3c3c; /* 稍微亮一点的灰色 */
+  height: 40px;
+  background-color: var(--bg-toolbar);
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 0 10px;
-  border-bottom: 1px solid #222;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border-color);
   flex-shrink: 0;
+  user-select: none;
 }
 
 .toolbar-left, .toolbar-right {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
 
 .app-title {
   font-size: 0.9rem;
-  font-weight: bold;
-  color: #ddd;
-  margin-left: 10px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-left: 8px;
 }
 
-/* === 主内容区 (包含侧边栏和编辑器) === */
+/* === 按钮样式 === */
+.icon-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.2s;
+}
+
+.icon-btn:hover {
+  background-color: var(--bg-hover-item);
+}
+
+.icon-btn:active {
+  transform: translateY(1px);
+}
+
+.icon-btn.active {
+  color: var(--accent-color);
+  background-color: var(--bg-active-item);
+}
+
+/* === 主内容区 === */
 .main-content {
   display: flex;
   flex: 1;
-  overflow: hidden; /* 防止溢出 */
+  overflow: hidden;
 }
 
-/* 左侧文件列表区 */
+/* === 侧边栏 === */
 .sidebar {
-  background-color: #1e1e1e;
-  border-right: 1px solid #333;
+  background-color: var(--bg-sidebar);
+  border-right: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
-  overflow: hidden; /* 防止内容撑开 */
-  flex-shrink: 0; /* 防止被挤压 */
-}
-
-.resizer {
-  width: 5px;
-  background-color: #2f2f2f;
-  cursor: col-resize; /* 鼠标变成左右箭头 */
-  transition: background 0.2s;
+  overflow: hidden;
   flex-shrink: 0;
-  z-index: 10;
 }
 
-.resizer:hover, .resizer.active {
-  background-color: #007acc; /* 拖拽时变蓝 */
-}
-
-.file-item {
-  padding: 8px;
-  cursor: pointer;
-  border-radius: 4px;
-  color: #ccc;
-}
 .sidebar-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 10px;
-  border-bottom: 1px solid #333;
+  padding: 12px 16px;
+  font-size: 0.8rem;
+  font-weight: bold;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  letter-spacing: 0.5px;
 }
 
-.icon-btn {
-  background: none;
-  border: none;
-  color: #ccc;
+.file-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 8px;
+}
+
+.file-item {
+  padding: 8px 12px;
+  margin-bottom: 2px;
   cursor: pointer;
-  padding: 4px 8px;
-  border-radius: 4px;
-}
-.icon-btn:hover { background-color: #333; color: white; }
-
-/* 新建文件的输入框 */
-.new-file-input {
-  background: #333;
-  border: 1px solid #555;
-  color: white;
-  width: 90%;
-  margin: 10px auto;
-  padding: 5px;
-  border-radius: 4px;
+  border-radius: 6px;
+  color: var(--text-secondary);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  transition: background-color 0.2s;
+  font-size: 0.9rem;
 }
 
 .file-item:hover {
-  background-color: #333;
-  color: white;
+  background-color: var(--bg-hover-item);
+  color: var(--text-primary);
 }
 
-/* 右侧编辑区 */
+.file-item.active {
+  background-color: var(--bg-active-item);
+  color: var(--text-active);
+  font-weight: 500;
+}
+
+.file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.delete-btn {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 4px;
+  border-radius: 4px;
+  opacity: 0; /* 默认隐藏 */
+  transition: opacity 0.2s, color 0.2s;
+}
+
+.file-item:hover .delete-btn {
+  opacity: 1;
+}
+
+.delete-btn:hover {
+  background-color: rgba(255, 77, 79, 0.1);
+  color: #ff4d4f;
+}
+
+/* === 新建文件输入框 === */
+.new-file-input {
+  margin: 8px 12px;
+  padding: 6px 8px;
+  border: 1px solid var(--accent-color);
+  background-color: var(--bg-app);
+  color: var(--text-primary);
+  border-radius: 4px;
+  outline: none;
+}
+
+/* === 拖拽条 === */
+.resizer {
+  width: 4px;
+  background-color: transparent;
+  cursor: col-resize;
+  transition: background 0.2s;
+  flex-shrink: 0;
+  z-index: 10;
+  margin-left: -2px; /* 重叠一点 */
+}
+
+.resizer:hover, .resizer.active {
+  background-color: var(--resizer-color);
+}
+
+/* === 编辑区 === */
 .editor-area {
-  flex: 1; /* 占据剩余空间 */
+  flex: 1;
   display: flex;
   flex-direction: column;
-  background-color: #2f2f2f;
+  background-color: var(--bg-editor);
+  overflow: hidden;
 }
 
-.editor-area h1 {
-  margin: 0;
-  padding: 15px;
-  font-size: 1.2rem;
-  border-bottom: 1px solid #444;
+.editor-header {
+  padding: 12px 24px;
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  border-bottom: 1px solid transparent; /* 预留位置 */
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-secondary);
+}
+
+.empty-state h2 {
+  margin-bottom: 10px;
+  color: var(--text-primary);
+}
+
+/* === CodeMirror 自定义覆盖 === */
+.cm-editor {
+  height: 100%;
+  font-family: 'Fira Code', Consolas, monospace;
+}
+
+.cm-scroller {
+  padding: 20px 0;
+}
+
+.cm-content {
+  max-width: 900px;
+  margin: 0 auto;
 }
