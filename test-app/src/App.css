@@ -1,0 +1,131 @@
+/* src/App.css */
+:root {
+  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
+  color: #f6f6f6;
+  background-color: #2f2f2f; /* 深色背景 */
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.container {
+  display: flex;
+  flex-direction: column; /* 改为垂直布局 */
+  width: 100%;
+  height: 100vh;
+}
+
+/* === 顶部工具栏 === */
+.toolbar {
+  height: 35px;
+  background-color: #3c3c3c; /* 稍微亮一点的灰色 */
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 10px;
+  border-bottom: 1px solid #222;
+  flex-shrink: 0;
+}
+
+.toolbar-left, .toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.app-title {
+  font-size: 0.9rem;
+  font-weight: bold;
+  color: #ddd;
+  margin-left: 10px;
+}
+
+/* === 主内容区 (包含侧边栏和编辑器) === */
+.main-content {
+  display: flex;
+  flex: 1;
+  overflow: hidden; /* 防止溢出 */
+}
+
+/* 左侧文件列表区 */
+.sidebar {
+  background-color: #1e1e1e;
+  border-right: 1px solid #333;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden; /* 防止内容撑开 */
+  flex-shrink: 0; /* 防止被挤压 */
+}
+
+.resizer {
+  width: 5px;
+  background-color: #2f2f2f;
+  cursor: col-resize; /* 鼠标变成左右箭头 */
+  transition: background 0.2s;
+  flex-shrink: 0;
+  z-index: 10;
+}
+
+.resizer:hover, .resizer.active {
+  background-color: #007acc; /* 拖拽时变蓝 */
+}
+
+.file-item {
+  padding: 8px;
+  cursor: pointer;
+  border-radius: 4px;
+  color: #ccc;
+}
+.sidebar-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px;
+  border-bottom: 1px solid #333;
+}
+
+.icon-btn {
+  background: none;
+  border: none;
+  color: #ccc;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+.icon-btn:hover { background-color: #333; color: white; }
+
+/* 新建文件的输入框 */
+.new-file-input {
+  background: #333;
+  border: 1px solid #555;
+  color: white;
+  width: 90%;
+  margin: 10px auto;
+  padding: 5px;
+  border-radius: 4px;
+}
+
+.file-item:hover {
+  background-color: #333;
+  color: white;
+}
+
+/* 右侧编辑区 */
+.editor-area {
+  flex: 1; /* 占据剩余空间 */
+  display: flex;
+  flex-direction: column;
+  background-color: #2f2f2f;
+}
+
+.editor-area h1 {
+  margin: 0;
+  padding: 15px;
+  font-size: 1.2rem;
+  border-bottom: 1px solid #444;
+}
