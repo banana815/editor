@@ -1,12 +1,11 @@
 // src/App.tsx
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
 import CodeMirror from "@uiw/react-codemirror";
 import { markdown } from "@codemirror/lang-markdown";
 import { githubDark, githubLight } from "@uiw/codemirror-theme-github";
-// 移除了 ViewPlugin, ViewUpdate，因为不再需要手动写插件
 import { EditorView } from "@codemirror/view";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -24,8 +23,8 @@ function App() {
   const [isSidebarVisible, setIsSidebarVisible] = useState(true);
   const [isResizing, setIsResizing] = useState(false);
   const [isTypewriterMode, setIsTypewriterMode] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
   
-  // 移除了 typewriterOffsetRef 和 isPluginScrolling，因为原生 API 不需要它们
   const viewRef = useRef<EditorView | null>(null);
 
   // 新建文件状态
@@ -33,6 +32,44 @@ function App() {
   const [newFileName, setNewFileName] = useState("");
 
   const sidebarRef = useRef<HTMLDivElement>(null);
+  
+  // 自动保存定时器
+  const autoSaveTimerRef = useRef<number | null>(null);
+
+  // === 响应式检测 ===
+  useEffect(() => {
+    const checkMobile = () => {
+      const mobile = window.innerWidth <= 768;
+      setIsMobile(mobile);
+      if (mobile) {
+        setIsSidebarVisible(false);
+        setSidebarWidth(window.innerWidth * 0.8);
+      }
+    };
+    
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
+
+  // === 自动保存逻辑 ===
+  const saveContent = useCallback((val: string) => {
+    setContent(val);
+    
+    // 清除上一次的定时器
+    if (autoSaveTimerRef.current) {
+        window.clearTimeout(autoSaveTimerRef.current);
+    }
+    
+    // 设置新的定时器（防抖，1秒后保存）
+    if (activeFile) {
+        autoSaveTimerRef.current = window.setTimeout(() => {
+            invoke("save_note", { filename: activeFile, content: val })
+                .then(() => console.log(`Auto-saved ${activeFile}`))
+                .catch(err => console.error("Auto-save failed:", err));
+        }, 1000);
+    }
+  }, [activeFile]);
 
   // === 打字机模式扩展 (极简版) ===
   const typewriterExtension = useMemo(() => {
@@ -53,7 +90,7 @@ function App() {
     // 2. 样式逻辑：给编辑器上下添加巨大的 padding，确保首尾行也能居中
     const typewriterTheme = EditorView.theme({
       ".cm-content": {
-        paddingBlock: "100vh" // 使用 paddingBlock 同时设置上下，50vh 保证正中
+        paddingBlock: "50vh" // 使用 paddingBlock 同时设置上下，50vh 保证正中
       }
     });
 
@@ -113,11 +150,7 @@ function App() {
     setActiveFile(filename);
     const text = await invoke("read_note", { filename }) as string;
     setContent(text);
-  };
-
-  const saveContent = (val: string) => {
-    setContent(val);
-    if (activeFile) invoke("save_note", { filename: activeFile, content: val });
+    if (isMobile) setIsSidebarVisible(false); // 移动端点击文件后收起侧边栏
   };
 
   // === 新建文件逻辑 ===
@@ -201,20 +234,25 @@ function App() {
             >
                 {theme === 'dark' ? "☀" : "🌙"}
             </button>
-            <button 
-                className={`icon-btn ${isTypewriterMode ? 'active' : ''}`}
-                onClick={() => setIsTypewriterMode(!isTypewriterMode)} 
-                title={isTypewriterMode ? "关闭打字机模式" : "开启打字机模式"}
-            >
-                ⌨ 打字机
-            </button>
-            <button 
-                className={`icon-btn ${showPreview ? 'active' : ''}`}
-                onClick={() => setShowPreview(!showPreview)} 
-                title={showPreview ? "关闭预览" : "开启预览"}
-            >
-                👁 预览
-            </button>
+            {/* 移动端隐藏部分不常用按钮以节省空间 */}
+            {!isMobile && (
+              <>
+                <button 
+                    className={`icon-btn ${isTypewriterMode ? 'active' : ''}`}
+                    onClick={() => setIsTypewriterMode(!isTypewriterMode)} 
+                    title={isTypewriterMode ? "关闭打字机模式" : "开启打字机模式"}
+                >
+                    ⌨ 打字机
+                </button>
+                <button 
+                    className={`icon-btn ${showPreview ? 'active' : ''}`}
+                    onClick={() => setShowPreview(!showPreview)} 
+                    title={showPreview ? "关闭预览" : "开启预览"}
+                >
+                    👁 预览
+                </button>
+              </>
+            )}
             <button 
                 className="icon-btn" 
                 onClick={() => {
@@ -223,9 +261,9 @@ function App() {
                 }} 
                 title="新建文件 (Ctrl+N)"
             >
-                ➕ 新建
+                ➕ <span className="btn-text">新建</span>
             </button>
-            <button className="icon-btn" onClick={refreshFileList} title="刷新列表">↻ 刷新</button>
+            <button className="icon-btn" onClick={refreshFileList} title="刷新列表">↻</button>
         </div>
       </div>
 
@@ -234,12 +272,13 @@ function App() {
         {/* === 左侧侧边栏 === */}
         {isSidebarVisible && (
             <div 
-            className="sidebar" 
-            style={{ width: sidebarWidth }}
+            className={`sidebar ${isMobile ? 'mobile-sidebar' : ''}`}
+            style={{ width: isMobile ? '100%' : sidebarWidth }}
             ref={sidebarRef}
             >
             <div className="sidebar-header">
                 <span>我的笔记</span>
+                {isMobile && <button onClick={() => setIsSidebarVisible(false)}>✖</button>}
             </div>
 
             {isCreating && (
@@ -280,8 +319,8 @@ function App() {
             </div>
         )}
 
-        {/* === 拖拽条 (Resizer) === */}
-        {isSidebarVisible && (
+        {/* === 拖拽条 (Resizer) - 移动端禁用 === */}
+        {isSidebarVisible && !isMobile && (
             <div 
             className={`resizer ${isResizing ? "active" : ""}`} 
             onMouseDown={startResizing}
@@ -305,7 +344,7 @@ function App() {
                             style={{ fontSize: '16px', height: '100%' }}
                             />
                         </div>
-                        {showPreview && (
+                        {showPreview && !isMobile && (
                             <div className="markdown-preview" style={{ flex: 1, overflow: 'auto', padding: '20px', height: '100%', backgroundColor: 'var(--bg-color)', color: 'var(--text-color)' }}>
                                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
                             </div>
@@ -315,7 +354,7 @@ function App() {
             ) : (
                 <div className="empty-state">
                     <h2>👋 欢迎回来</h2>
-                    <p>点击上方 "+" 或按 Ctrl+N 创建新笔记</p>
+                    <p>点击上方 "+" {isMobile ? "" : "或按 Ctrl+N"} 创建新笔记</p>
                 </div>
             )}
         </div>

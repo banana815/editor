@@ -115,6 +115,7 @@ body {
   display: flex;
   flex: 1;
   overflow: hidden;
+  position: relative; /* 为移动端浮动侧边栏做准备 */
 }
 
 /* === 侧边栏 === */
@@ -125,6 +126,17 @@ body {
   flex-direction: column;
   overflow: hidden;
   flex-shrink: 0;
+  z-index: 20;
+}
+
+/* 移动端侧边栏样式 */
+.sidebar.mobile-sidebar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  border-right: none;
+  box-shadow: 2px 0 10px rgba(0,0,0,0.3);
 }
 
 .sidebar-header {
@@ -137,6 +149,14 @@ body {
   text-transform: uppercase;
   color: var(--text-secondary);
   letter-spacing: 0.5px;
+}
+
+.sidebar-header button {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 1.2rem;
+  cursor: pointer;
 }
 
 .file-list {
@@ -270,4 +290,20 @@ body {
 .cm-content {
   max-width: 900px;
   margin: 0 auto;
+}
+
+/* 移动端特定样式 */
+@media (max-width: 768px) {
+  .btn-text {
+    display: none;
+  }
+  
+  .editor-header {
+    font-size: 1.2rem;
+    padding: 8px 12px;
+  }
+  
+  .cm-content {
+    padding: 0 10px;
+  }
 }
