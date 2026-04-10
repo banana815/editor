@@ -1,14 +1,21 @@
 // src/App.tsx
-import { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { lazy, Suspense, useState, useEffect, useRef } from "react";
 import "./App.css";
 
-import CodeMirror from "@uiw/react-codemirror";
-import { markdown } from "@codemirror/lang-markdown";
-import { githubDark, githubLight } from "@uiw/codemirror-theme-github";
-import { EditorView } from "@codemirror/view";
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import { useMobileDetect } from "./hooks/useMobileDetect";
+import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
+import { useDebouncedSave } from "./hooks/useDebouncedSave";
+
+import { Toolbar } from "./components/Toolbar";
+import { Sidebar } from "./components/Sidebar";
+
+import type { Editor } from "@tiptap/react";
+import { noteApi } from "./api/notes";
+
+const LazyEditorArea = lazy(async () => {
+  const mod = await import("./components/EditorArea");
+  return { default: mod.EditorArea };
+});
 
 function App() {
   // === 状态管理 ===
@@ -16,7 +23,8 @@ function App() {
   const [files, setFiles] = useState<string[]>([]);
   const [activeFile, setActiveFile] = useState<string>("");
   const [content, setContent] = useState<string>("");
-  const [showPreview, setShowPreview] = useState(false);
+  const [editorJson, setEditorJson] = useState<string>("");
+  const [editorInstance, setEditorInstance] = useState<Editor | null>(null);
   
   // 视窗控制状态
   const [sidebarWidth, setSidebarWidth] = useState(250);
@@ -24,88 +32,35 @@ function App() {
   const [isResizing, setIsResizing] = useState(false);
   const [isTypewriterMode, setIsTypewriterMode] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
-  
-  const viewRef = useRef<EditorView | null>(null);
 
   // 新建文件状态
   const [isCreating, setIsCreating] = useState(false);
   const [newFileName, setNewFileName] = useState("");
 
   const sidebarRef = useRef<HTMLDivElement>(null);
-  
-  // 自动保存定时器
-  const autoSaveTimerRef = useRef<number | null>(null);
 
   // === 响应式检测 ===
+  const isMobileDetected = useMobileDetect();
   useEffect(() => {
-    const checkMobile = () => {
-      const mobile = window.innerWidth <= 768;
-      setIsMobile(mobile);
-      if (mobile) {
-        setIsSidebarVisible(false);
-        setSidebarWidth(window.innerWidth * 0.8);
-      }
-    };
-    
-    checkMobile();
-    window.addEventListener('resize', checkMobile);
-    return () => window.removeEventListener('resize', checkMobile);
-  }, []);
+    setIsMobile(isMobileDetected);
+    if (isMobileDetected) {
+      setIsSidebarVisible(false);
+      setSidebarWidth(window.innerWidth * 0.8);
+    }
+  }, [isMobileDetected]);
 
   // === 自动保存逻辑 ===
-  const saveContent = useCallback((val: string) => {
-    setContent(val);
-    
-    // 清除上一次的定时器
-    if (autoSaveTimerRef.current) {
-        window.clearTimeout(autoSaveTimerRef.current);
-    }
-    
-    // 设置新的定时器（防抖，1秒后保存）
-    if (activeFile) {
-        autoSaveTimerRef.current = window.setTimeout(() => {
-            invoke("save_note", { filename: activeFile, content: val })
-                .then(() => console.log(`Auto-saved ${activeFile}`))
-                .catch(err => console.error("Auto-save failed:", err));
-        }, 1000);
-    }
-  }, [activeFile]);
+  const saveContent = useDebouncedSave(activeFile, async (filename, content) => {
+    setContent(content);
+    await noteApi.saveNote(filename, content);
+  });
 
-  // === 打字机模式扩展 (极简版) ===
-  const typewriterExtension = useMemo(() => {
-    if (!isTypewriterMode) return [];
-
-    // 1. 核心逻辑：监听光标变化，强制居中
-    const centerCursorListener = EditorView.updateListener.of((update) => {
-      // 当光标位置改变(selectionSet) 或 文档内容改变(docChanged) 时触发
-      if (update.selectionSet || update.docChanged) {
-        update.view.dispatch({
-          effects: EditorView.scrollIntoView(update.state.selection.main, {
-            y: "center" // 这一行代码替代了之前几十行的数学计算
-          })
-        });
-      }
-    });
-
-    // 2. 样式逻辑：给编辑器上下添加巨大的 padding，确保首尾行也能居中
-    const typewriterTheme = EditorView.theme({
-      ".cm-content": {
-        paddingBlock: "50vh" // 使用 paddingBlock 同时设置上下，50vh 保证正中
-      }
-    });
-
-    return [centerCursorListener, typewriterTheme];
-  }, [isTypewriterMode]);
-
-  // 切换打字机模式时，立即执行一次居中
   useEffect(() => {
-    if (isTypewriterMode && viewRef.current) {
-        const cursor = viewRef.current.state.selection.main.head;
-        viewRef.current.dispatch({
-            effects: EditorView.scrollIntoView(cursor, { y: "center" })
-        });
+    if (isTypewriterMode && editorInstance) {
+      editorInstance.commands.focus("end");
+      editorInstance.commands.scrollIntoView();
     }
-  }, [isTypewriterMode]);
+  }, [isTypewriterMode, editorInstance]);
 
   // === 初始化 ===
   useEffect(() => { refreshFileList(); }, []);
@@ -116,40 +71,31 @@ function App() {
   }, [theme]);
 
   // === 快捷键监听 ===
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Ctrl+S / Command+S 保存
-      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
-        e.preventDefault();
-        if (activeFile) {
-            invoke("save_note", { filename: activeFile, content });
-            // 可以加个简单的提示，这里先略过
-        }
-      }
-      // Ctrl+N / Command+N 新建
-      if ((e.ctrlKey || e.metaKey) && e.key === 'n') {
-        e.preventDefault();
-        setIsCreating(true);
-        if (!isSidebarVisible) setIsSidebarVisible(true);
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeFile, content, isSidebarVisible]);
+  useKeyboardShortcuts(
+    activeFile,
+    content,
+    async (file, txt) => {
+      await noteApi.saveNote(file, txt);
+    },
+    () => {
+      setIsCreating(true);
+      if (!isSidebarVisible) setIsSidebarVisible(true);
+    }
+  );
 
   // === 核心逻辑函数 ===
   const refreshFileList = async () => {
     try {
-      const list = await invoke("get_notes") as string[];
+      const list = await noteApi.getNotes();
       setFiles(list);
     } catch (e) { console.error(e); }
   };
 
   const handleFileClick = async (filename: string) => {
     setActiveFile(filename);
-    const text = await invoke("read_note", { filename }) as string;
+    const text = await noteApi.readNote(filename);
     setContent(text);
+    setEditorJson("");
     if (isMobile) setIsSidebarVisible(false); // 移动端点击文件后收起侧边栏
   };
 
@@ -163,7 +109,7 @@ function App() {
     }
 
     try {
-      await invoke("create_note", { filename: finalName });
+      await noteApi.createNote(finalName);
       await refreshFileList();
       handleFileClick(finalName);
       setIsCreating(false);
@@ -179,15 +125,34 @@ function App() {
     if (!confirm(`确定要删除 ${filename} 吗？`)) return;
 
     try {
-      await invoke("delete_note", { filename });
+      await noteApi.deleteNote(filename);
       await refreshFileList();
       if (activeFile === filename) {
         setActiveFile("");
         setContent("");
+        setEditorJson("");
       }
     } catch (err) {
       alert("删除失败: " + err);
     }
+  };
+
+  const handleExportJson = () => {
+    if (!activeFile || !editorJson) {
+      alert("当前没有可导出的编辑内容");
+      return;
+    }
+
+    const blob = new Blob([editorJson], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    const safeName = activeFile.replace(/\.(md|txt)$/i, "");
+    link.href = url;
+    link.download = `${safeName || "note"}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
   };
 
   // === 拖拽调整宽度逻辑 ===
@@ -211,152 +176,73 @@ function App() {
     document.removeEventListener("mouseup", stopResizing);
   };
 
+  useEffect(() => {
+    if (!activeFile) {
+      setEditorInstance(null);
+    }
+  }, [activeFile]);
+
   return (
     <div className="container" style={{ userSelect: isResizing ? "none" : "auto" }}>
-      
-      {/* === 顶部工具栏 === */}
-      <div className="toolbar">
-        <div className="toolbar-left">
-            <button 
-                className="icon-btn" 
-                onClick={() => setIsSidebarVisible(!isSidebarVisible)} 
-                title={isSidebarVisible ? "隐藏侧边栏" : "展开侧边栏"}
-            >
-                {isSidebarVisible ? "◀" : "▶"}
-            </button>
-            <span className="app-title">My Editor</span>
-        </div>
-        <div className="toolbar-right">
-            <button 
-                className="icon-btn" 
-                onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} 
-                title={theme === 'dark' ? "切换到浅色模式" : "切换到深色模式"}
-            >
-                {theme === 'dark' ? "☀" : "🌙"}
-            </button>
-            {/* 移动端隐藏部分不常用按钮以节省空间 */}
-            {!isMobile && (
-              <>
-                <button 
-                    className={`icon-btn ${isTypewriterMode ? 'active' : ''}`}
-                    onClick={() => setIsTypewriterMode(!isTypewriterMode)} 
-                    title={isTypewriterMode ? "关闭打字机模式" : "开启打字机模式"}
-                >
-                    ⌨ 打字机
-                </button>
-                <button 
-                    className={`icon-btn ${showPreview ? 'active' : ''}`}
-                    onClick={() => setShowPreview(!showPreview)} 
-                    title={showPreview ? "关闭预览" : "开启预览"}
-                >
-                    👁 预览
-                </button>
-              </>
-            )}
-            <button 
-                className="icon-btn" 
-                onClick={() => {
-                    setIsCreating(true);
-                    if (!isSidebarVisible) setIsSidebarVisible(true);
-                }} 
-                title="新建文件 (Ctrl+N)"
-            >
-                ➕ <span className="btn-text">新建</span>
-            </button>
-            <button className="icon-btn" onClick={refreshFileList} title="刷新列表">↻</button>
-        </div>
-      </div>
+      <Toolbar
+        isSidebarVisible={isSidebarVisible}
+        setIsSidebarVisible={setIsSidebarVisible}
+        theme={theme}
+        setTheme={setTheme}
+        isMobile={isMobile}
+        isTypewriterMode={isTypewriterMode}
+        setIsTypewriterMode={setIsTypewriterMode}
+        setIsCreating={setIsCreating}
+        refreshFileList={refreshFileList}
+        editor={editorInstance}
+        onExportJson={handleExportJson}
+      />
 
-      {/* === 主内容区 === */}
       <div className="main-content">
-        {/* === 左侧侧边栏 === */}
-        {isSidebarVisible && (
-            <div 
-            className={`sidebar ${isMobile ? 'mobile-sidebar' : ''}`}
-            style={{ width: isMobile ? '100%' : sidebarWidth }}
-            ref={sidebarRef}
-            >
-            <div className="sidebar-header">
-                <span>我的笔记</span>
-                {isMobile && <button onClick={() => setIsSidebarVisible(false)}>✖</button>}
-            </div>
+        <Sidebar
+          isSidebarVisible={isSidebarVisible}
+          isMobile={isMobile}
+          sidebarWidth={sidebarWidth}
+          sidebarRef={sidebarRef}
+          setIsSidebarVisible={setIsSidebarVisible}
+          isCreating={isCreating}
+          newFileName={newFileName}
+          setNewFileName={setNewFileName}
+          setIsCreating={setIsCreating}
+          handleCreateFile={handleCreateFile}
+          files={files}
+          activeFile={activeFile}
+          handleFileClick={handleFileClick}
+          handleDeleteFile={handleDeleteFile}
+        />
 
-            {isCreating && (
-                <input
-                autoFocus
-                className="new-file-input"
-                placeholder="输入文件名按回车..."
-                value={newFileName}
-                onChange={(e) => setNewFileName(e.target.value)}
-                onBlur={() => setIsCreating(false)}
-                onKeyDown={(e) => {
-                    if (e.key === "Enter") handleCreateFile();
-                    if (e.key === "Escape") setIsCreating(false);
-                }}
-                />
-            )}
-
-            <div className="file-list">
-                {files.map((file) => (
-                <div 
-                    key={file} 
-                    className={`file-item ${activeFile === file ? 'active' : ''}`}
-                    onClick={() => handleFileClick(file)}
-                >
-                    <span className="file-name">
-                        📄 {file}
-                    </span>
-                    <button 
-                        className="delete-btn"
-                        onClick={(e) => handleDeleteFile(e, file)}
-                        title="删除"
-                    >
-                        ✖
-                    </button>
-                </div>
-                ))}
-            </div>
-            </div>
-        )}
-
-        {/* === 拖拽条 (Resizer) - 移动端禁用 === */}
         {isSidebarVisible && !isMobile && (
-            <div 
-            className={`resizer ${isResizing ? "active" : ""}`} 
+          <div
+            className={`resizer ${isResizing ? "active" : ""}`}
             onMouseDown={startResizing}
-            />
+          />
         )}
 
-        {/* === 右侧编辑区 === */}
         <div className="editor-area">
-            {activeFile ? (
-                <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-                    <div className="editor-header">{activeFile}</div>
-                    <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'row' }}>
-                        <div style={{ flex: 1, overflow: 'auto', height: '100%', borderRight: showPreview ? '1px solid var(--border-color)' : 'none' }}>
-                            <CodeMirror
-                            value={content}
-                            height="100%"
-                            theme={theme === 'dark' ? githubDark : githubLight}
-                            extensions={[markdown(), ...typewriterExtension]}
-                            onChange={saveContent}
-                            onCreateEditor={(view) => { viewRef.current = view; }}
-                            style={{ fontSize: '16px', height: '100%' }}
-                            />
-                        </div>
-                        {showPreview && !isMobile && (
-                            <div className="markdown-preview" style={{ flex: 1, overflow: 'auto', padding: '20px', height: '100%', backgroundColor: 'var(--bg-color)', color: 'var(--text-color)' }}>
-                                <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
-                            </div>
-                        )}
-                    </div>
-                </div>
-            ) : (
-                <div className="empty-state">
-                    <h2>👋 欢迎回来</h2>
-                    <p>点击上方 "+" {isMobile ? "" : "或按 Ctrl+N"} 创建新笔记</p>
-                </div>
-            )}
+          {activeFile ? (
+            <Suspense fallback={<div className="empty-state"><p>编辑器加载中...</p></div>}>
+              <LazyEditorArea
+                activeFile={activeFile}
+                isMobile={isMobile}
+                rawContent={content}
+                theme={theme}
+                isTypewriterMode={isTypewriterMode}
+                saveContent={saveContent}
+                onJsonChange={setEditorJson}
+                onEditorReady={setEditorInstance}
+              />
+            </Suspense>
+          ) : (
+            <div className="empty-state">
+              <h2>欢迎回来</h2>
+              <p>点击上方 + {isMobile ? "" : "或按 Ctrl+N"} 创建新笔记</p>
+            </div>
+          )}
         </div>
       </div>
     </div>
