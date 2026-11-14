@@ -320,6 +320,61 @@ static void test_atomic(void) {
         cJSON_Delete(j); ce_csl_xml_free(x); ce_csl_output_free(out); free(large);
     }
 }
+static void test_typed_views(void) {
+    char error[256];
+    cJSON *raw = json("{\"raw\":\"-0044-03-15\",\"circa\":true}");
+    cJSON *parts = json("{\"date-parts\":[[-44,3,15]],\"circa\":1}");
+    CeCslDateValueView a = {0}, b = {0};
+    assert(ce_csl_date_value_view(raw,&a,error,sizeof error));
+    assert(ce_csl_date_value_view(parts,&b,error,sizeof error));
+    assert(a.present && a.circa && a.endpoint_count == 1 && !a.literal);
+    assert(a.endpoints[0].year == -44 && a.endpoints[0].month == 3 && a.endpoints[0].day == 15);
+    assert(a.endpoints[0].year == b.endpoints[0].year && a.endpoints[0].month == b.endpoints[0].month &&
+           a.endpoints[0].day == b.endpoints[0].day && a.circa == b.circa);
+    cJSON_Delete(raw); cJSON_Delete(parts);
+    const char *seasons[] = {"{\"date-parts\":[[2020,22]]}","{\"date-parts\":[[2020]],\"season\":2}"};
+    for (size_t i = 0; i < COUNT(seasons); ++i) {
+        cJSON *value = json(seasons[i]);
+        assert(ce_csl_date_value_view(value,&a,error,sizeof error));
+        assert(a.endpoints[0].year == 2020 && !a.endpoints[0].month && !a.endpoints[0].day && a.endpoints[0].season == 2);
+        cJSON_Delete(value);
+    }
+    cJSON *value = json("{\"raw\":\"../2020-03\"}");
+    assert(ce_csl_date_value_view(value,&a,error,sizeof error));
+    assert(a.present && a.endpoint_count == 2 && !a.endpoints[0].year &&
+           a.endpoints[1].year == 2020 && a.endpoints[1].month == 3 && !a.endpoints[1].day);
+    cJSON_Delete(value);
+    value = json("{\"literal\":\" Forthcoming \",\"circa\":true}");
+    assert(ce_csl_date_value_view(value,&a,error,sizeof error));
+    assert(a.present && a.circa && !a.endpoint_count && a.literal_size == 13 && !strcmp(a.literal," Forthcoming "));
+    CeCslDateValueView before = a;
+    cJSON *bad = json("{\"raw\":\"May 2020\"}");
+    assert(!ce_csl_date_value_view(bad,&a,error,sizeof error));
+    assert(a.literal == before.literal && a.literal_size == before.literal_size && a.circa && a.present);
+    cJSON_Delete(bad);
+    assert(ce_csl_date_value_view(NULL,&a,error,sizeof error));
+    assert(!a.literal && !a.literal_size && !a.present && !a.circa && !a.endpoint_count);
+    cJSON_Delete(value);
+
+    const char *calls[] = {
+        "<date variable='issued'><date-part name='month'/><date-part name='year'/></date>",
+        "<date variable='issued' form='text' date-parts='year'/>",
+        "<date variable='issued' form='numeric' date-parts='year-month'/>",
+        "<date variable='issued' form='text'><date-part name='month' form='short'/></date>"};
+    const unsigned masks[] = {CE_CSL_DATE_PART_YEAR|CE_CSL_DATE_PART_MONTH,CE_CSL_DATE_PART_YEAR,
+        CE_CSL_DATE_PART_YEAR|CE_CSL_DATE_PART_MONTH,
+        CE_CSL_DATE_PART_YEAR|CE_CSL_DATE_PART_MONTH|CE_CSL_DATE_PART_DAY};
+    for (size_t i = 0; i < COUNT(calls); ++i) {
+        CeCslXml *x = node(calls[i]); unsigned mask = 99;
+        assert(ce_csl_date_selected_parts(x->root->children,en,&mask,error,sizeof error));
+        assert(mask == masks[i]); ce_csl_xml_free(x);
+    }
+    CeCslXml *x = node("<date variable='issued' form='text' date-parts='year'><date-part name='month' form='invalid'/></date>");
+    unsigned mask = 99;
+    assert(!ce_csl_date_selected_parts(x->root->children,en,&mask,error,sizeof error) && mask == 99);
+    ce_csl_xml_free(x);
+    assert(!ce_csl_date_selected_parts(NULL,en,&mask,error,sizeof error) && mask == 99);
+}
 static char *read_file(const char *path) {
     FILE *f = fopen(path,"rb"); long length; char *text;
     assert(f && !fseek(f,0,SEEK_END)); length = ftell(f); assert(length >= 0 && length < 4*1024*1024);
@@ -368,7 +423,7 @@ static void official(const char *path) {
     cJSON_Delete(tests); free(text); printf("Official date cases passed: %zu\n",count);
 }
 int main(int argc, char **argv) {
-    setup(); test_basic(); test_parts_ranges(); test_locale_and_case(); test_format(); test_invalid(); test_atomic();
+    setup(); test_basic(); test_parts_ranges(); test_locale_and_case(); test_format(); test_invalid(); test_atomic(); test_typed_views();
     if (argc >= 3) real_locales(argv[1],argv[2]);
     if (argc >= 4) official(argv[3]);
     ce_csl_locale_free(en); ce_csl_xml_free(en_xml);

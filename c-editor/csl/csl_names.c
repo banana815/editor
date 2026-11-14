@@ -21,6 +21,8 @@ struct CeCslNamesResult {
     CeCslNamesData **data;
     size_t binding_count, person_count, person_capacity;
     CeCslNameRendered *people;
+    CeCslNameSortView *sort_people;
+    size_t sort_bytes;
     unsigned char *overrides;
 };
 static bool fail(char *error, size_t capacity, const char *message) {
@@ -694,15 +696,68 @@ static CeCslGivenExpansion given_override(Render *r, size_t binding, size_t inde
 static bool part_emit(Render *r, CeCslOutput *out, const CeCslXmlNode *part, const CeCslOutput *body) {
     return affix(r, out, part, body, r->name_format);
 }
+/* Copy semantic components while their exact rendered bodies still exist.
+ * A single allocation holds all five strings, with primary_family at its base.
+ * This does not infer components from the punctuated/display-affixed output. */
+static bool sort_store(Render *r, CeCslNameSortView *view, CeCslNameKind kind, const CeCslOutput *family,
+                       const CeCslOutput *particles, const char *given, const char *suffix,
+                       const char *literal) {
+    size_t lengths[] = {ce_csl_output_text_bytes(family), ce_csl_output_text_bytes(particles),
+                        strlen(empty(given)), strlen(empty(suffix)), strlen(empty(literal))};
+    size_t total = 0;
+    for (size_t i = 0; i < 5; ++i) {
+        if (lengths[i] > CE_CSL_NAMES_MAX_BYTES - total)
+            return fail(r->error, r->cap, "name sort component size limit exceeded");
+        total += lengths[i];
+    }
+    if (total > CE_CSL_NAMES_MAX_BYTES - r->result->sort_bytes)
+        return fail(r->error, r->cap, "combined name sort component size limit exceeded");
+    char *storage = r->result->allocator.allocate(r->result->allocator.context, total + 5);
+    if (!storage)
+        return fail(r->error, r->cap, "out of memory");
+    const CeCslOutput *outputs[] = {family, particles};
+    const char *strings[] = {given, suffix, literal};
+    const char *fields[5];
+    char *next = storage;
+    for (size_t i = 0; i < 5; ++i) {
+        fields[i] = next;
+        if (i < 2) {
+            for (size_t j = 0; j < ce_csl_output_run_count(outputs[i]); ++j) {
+                const CeCslOutputRun *run = ce_csl_output_run(outputs[i], j);
+                memcpy(next, run->text, run->byte_length);
+                next += run->byte_length;
+            }
+        } else {
+            memcpy(next, empty(strings[i - 2]), lengths[i]);
+            next += lengths[i];
+        }
+        *next++ = 0;
+    }
+    *view = (CeCslNameSortView){.kind = kind,
+                                .primary_family = fields[0],
+                                .secondary_particles = fields[1],
+                                .given = fields[2],
+                                .suffix = fields[3],
+                                .literal = fields[4],
+                                .primary_family_length = lengths[0],
+                                .secondary_particles_length = lengths[1],
+                                .given_length = lengths[2],
+                                .suffix_length = lengths[3],
+                                .literal_length = lengths[4]};
+    r->result->sort_bytes += total;
+    return true;
+}
 static bool person_output(Render *r, const CeCslNameIdentity *p, size_t ordinal,
-                          CeCslGivenExpansion expansion, CeCslOutput *out, bool *inverted) {
+                          CeCslGivenExpansion expansion, CeCslOutput *out, bool *inverted,
+                          CeCslNameSortView *sort) {
     if (p->parse_names)
         return fail(r->error, r->cap, "parse-names=true requires an explicit name parsing layer");
     *inverted = false;
     if (p->kind == CE_CSL_NAME_EMPTY)
         return true;
     if (p->kind == CE_CSL_NAME_LITERAL)
-        return append(r, out, p->literal, r->name_format);
+        return sort_store(r, sort, p->kind, NULL, NULL, NULL, NULL, p->literal) &&
+               append(r, out, p->literal, r->name_format);
     bool short_form = r->options.form == CE_CSL_NAME_SHORT && expansion == CE_CSL_GIVEN_STYLE;
     bool initialize = r->options.initialize && expansion != CE_CSL_GIVEN_FULL;
     if (expansion == CE_CSL_GIVEN_INITIALS && (!r->options.initialize_with || !r->options.initialize))
@@ -717,7 +772,7 @@ static bool person_output(Render *r, const CeCslNameIdentity *p, size_t ordinal,
         return fail(r->error, r->cap,
                     "particles/suffix with family-first scripts require explicit ordering support");
     CeCslOutputString given = {0}, family = {0}, drop = {0}, non_drop = {0}, raw_given = {0};
-    CeCslOutput *family_body = new_output(r), *given_body = new_output(r);
+    CeCslOutput *family_body = new_output(r), *given_body = new_output(r), *particles = NULL;
     bool ok = false;
     if (!family_body || !given_body)
         goto done;
@@ -732,9 +787,18 @@ static bool person_output(Render *r, const CeCslNameIdentity *p, size_t ordinal,
     if (!join_text(r, family_body, family.data, r->family_format))
         goto done;
     if (short_form) {
-        ok = part_emit(r, out, r->options.family_part, family_body);
+        ok = sort_store(r, sort, p->kind, family_body, NULL, NULL, NULL, NULL) &&
+             part_emit(r, out, r->options.family_part, family_body);
         goto done;
     }
+    if (*drop.data || (demote && *non_drop.data)) {
+        particles = new_output(r);
+        if (!particles || !join_text(r, particles, drop.data, 0) ||
+            (demote && !join_text(r, particles, non_drop.data, 0)))
+            goto done;
+    }
+    if (!sort_store(r, sort, p->kind, family_body, particles, given.data, p->suffix, NULL))
+        goto done;
     if (!append(r, given_body, given.data, r->given_format))
         goto done;
     if (invert) {
@@ -784,6 +848,7 @@ static bool person_output(Render *r, const CeCslNameIdentity *p, size_t ordinal,
 done:
     ce_csl_output_free(family_body);
     ce_csl_output_free(given_body);
+    ce_csl_output_free(particles);
     ce_csl_output_string_free(&given);
     ce_csl_output_string_free(&family);
     ce_csl_output_string_free(&drop);
@@ -859,9 +924,15 @@ static bool setup(Render *r, const CeCslNamesBinding *bindings, size_t count, co
         result->data = a.allocate(a.context, count * sizeof(*result->data));
     if (total)
         result->people = a.allocate(a.context, total * sizeof(*result->people));
+    if (total) {
+        result->sort_people = a.allocate(a.context, total * sizeof(*result->sort_people));
+        if (result->sort_people)
+            memset(result->sort_people, 0, total * sizeof(*result->sort_people));
+    }
     if (total)
         result->overrides = a.allocate(a.context, total);
-    if (!result->output || (count && !result->data) || (total && (!result->people || !result->overrides)))
+    if (!result->output || (count && !result->data) ||
+        (total && (!result->people || !result->sort_people || !result->overrides)))
         return fail(error, cap, "out of memory");
     if (total)
         memset(result->overrides, 0, total);
@@ -889,6 +960,13 @@ void ce_csl_names_result_free(CeCslNamesResult *r) {
         r->allocator.deallocate(r->allocator.context, r->data);
     if (r->people)
         r->allocator.deallocate(r->allocator.context, r->people);
+    if (r->sort_people) {
+        /* Includes an in-progress person when rendering failed before commit. */
+        for (size_t i = 0; i < r->person_capacity; ++i)
+            if (r->sort_people[i].primary_family)
+                r->allocator.deallocate(r->allocator.context, (void *)r->sort_people[i].primary_family);
+        r->allocator.deallocate(r->allocator.context, r->sort_people);
+    }
     if (r->overrides)
         r->allocator.deallocate(r->allocator.context, r->overrides);
     ce_csl_output_free(r->output);
@@ -901,6 +979,9 @@ const CeCslNamesSummary *ce_csl_names_result_summary(const CeCslNamesResult *r) 
 size_t ce_csl_names_result_person_count(const CeCslNamesResult *r) { return r ? r->person_count : 0; }
 const CeCslNameRendered *ce_csl_names_result_person(const CeCslNamesResult *r, size_t i) {
     return r && i < r->person_count ? &r->people[i] : NULL;
+}
+const CeCslNameSortView *ce_csl_names_result_sort_person(const CeCslNamesResult *r, size_t i) {
+    return r && i < r->person_count ? &r->sort_people[i] : NULL;
 }
 const CeCslNamesData *ce_csl_names_result_data(const CeCslNamesResult *r, size_t i) {
     return r && i < r->binding_count ? r->data[i] : NULL;
@@ -1065,7 +1146,8 @@ static bool group_output(Render *r, const CeCslNamesBinding *b, size_t binding, 
             goto done;
         bool inverted = false;
         CeCslGivenExpansion expansion = given_override(r, binding, i);
-        if (!person_output(r, person, current_ordinal, expansion, body, &inverted)) {
+        if (!person_output(r, person, current_ordinal, expansion, body, &inverted,
+                           &r->result->sort_people[r->result->person_count])) {
             ce_csl_output_free(body);
             goto done;
         }
@@ -1140,7 +1222,8 @@ bool ce_csl_name_render(const CeCslNamesData *data, size_t index, const CeCslNam
     for (size_t i = 0; i < index; ++i)
         if (data->people[i].kind != CE_CSL_NAME_EMPTY)
             ++ordinal;
-    if (!person_output(&r, &data->people[index], ordinal, expansion, r.result->output, &inverted)) {
+    if (!person_output(&r, &data->people[index], ordinal, expansion, r.result->output, &inverted,
+                       &r.result->sort_people[0])) {
         ce_csl_names_result_free(r.result);
         return false;
     }

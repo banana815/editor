@@ -9,6 +9,7 @@
 #define CE_CSL_SORT_MAX_KEY_BYTES ((size_t)512 * 1024)
 #define CE_CSL_SORT_MAX_TOTAL_KEY_BYTES ((size_t)64 * 1024 * 1024)
 #define CE_CSL_SORT_MAX_INTEGER_DIGITS ((size_t)4096)
+#define CE_CSL_SORT_MAX_KEY_PARTS ((size_t)65536)
 
 /* Binary key, not a C string. Initialize to {0}; free with key_free. Callback
  * fields are private. As with output objects, the allocator context is borrowed
@@ -42,6 +43,23 @@ bool ce_csl_sort_key_copy(const unsigned char *bytes, size_t size,
     char *error, size_t capacity);
 void ce_csl_sort_key_free(CeCslSortKey *key);
 void ce_csl_sort_order_free(CeCslSortOrder *order);
+
+/* Compose a lexicographic tuple of already compatible binary keys. Component
+ * boundaries are encoded, so a shorter family/part compares before a longer
+ * one before examining subsequent parts. Embedded NUL is escaped; encodings
+ * cannot collide by concatenating different component boundaries. Complete
+ * component ties proceed to the next component; a shorter tuple precedes its
+ * extension. Empty components are allowed. Semantic missing components are
+ * rejected: callers must explicitly choose their presence/empty-part policy.
+ *
+ * This preserves component byte order; it does not generate name/date keys,
+ * choose language rules, or define mixed-type ordering. Packed output is at
+ * most MAX_KEY_BYTES, including escape bytes and two bytes per component.
+ * Count=0 produces a present empty binary key. Ownership/atomicity match copy;
+ * parts may borrow from the old output key until a successful replacement. */
+bool ce_csl_sort_key_sequence(const CeCslSortKeyView *parts, size_t count,
+    const CeCslOutputAllocator *allocator, CeCslSortKey *out,
+    char *error, size_t capacity);
 
 /* Stable, lexicographic, row-major matrix sort. All keys must already have
  * been generated successfully. Comparison allocates nothing and does no locale

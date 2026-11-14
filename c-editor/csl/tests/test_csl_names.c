@@ -61,7 +61,16 @@ static void plain_is(const CeCslNamesResult *result, const char *s) {
     for (size_t i = 0; i < ce_csl_names_result_person_count(result); ++i) {
         const CeCslNameRendered *p = ce_csl_names_result_person(result, i);
         assert(p && p->identity && p->output_offset + p->output_length <= text.length);
+        const CeCslNameSortView *sort = ce_csl_names_result_sort_person(result, i);
+        assert(sort && sort->kind == p->identity->kind);
+        assert(sort->primary_family && strlen(sort->primary_family) == sort->primary_family_length);
+        assert(sort->secondary_particles &&
+               strlen(sort->secondary_particles) == sort->secondary_particles_length);
+        assert(sort->given && strlen(sort->given) == sort->given_length);
+        assert(sort->suffix && strlen(sort->suffix) == sort->suffix_length);
+        assert(sort->literal && strlen(sort->literal) == sort->literal_length);
     }
+    assert(!ce_csl_names_result_sort_person(result, ce_csl_names_result_person_count(result)));
     ce_csl_output_string_free(&text);
 }
 static CeCslNamesResult *render(const char *input, const char *root, const char *section, const char *body,
@@ -88,7 +97,7 @@ static void expect(const char *input, const char *root, const char *section, con
 static void setup(void) {
     locale_xml = xml(
         "<locale xmlns='" NS "' version='1.0' xml:lang='en-US'><style-options/><date form='text'><date-part "
-                             "name='year'/></date><terms>"
+        "name='year'/></date><terms>"
         "<term name='and'>and</term><term name='et-al'>et al.</term><term name='and others'>and others</term>"
         "<term name='editor'><single>editor</single><multiple>editors</multiple></term>"
         "<term name='editor' form='short'><single>ed.</single><multiple>eds.</multiple></term>"
@@ -351,13 +360,17 @@ static void test_scalar_and_empty(void) {
     const CeCslNameRendered *person = ce_csl_names_result_person(r, 0);
     assert(person->person_index == 1 && person->inverted && person->given_initialized &&
            person->given_visible);
+    const CeCslNameSortView *sort = ce_csl_names_result_sort_person(r, 0);
+    assert(sort && !strcmp(sort->primary_family, "Doe") && !strcmp(sort->given, "J."));
     assert(ce_csl_name_render(d, 0, &o, locale, NULL, &r, error, sizeof(error)));
     plain_is(r, "");
     assert(!ce_csl_names_result_summary(r)->rendered);
+    assert(!ce_csl_names_result_sort_person(r, 0));
     CeCslNamesBinding b = {"author", d};
     o.form = CE_CSL_NAME_COUNT;
     assert(ce_csl_names_render(&b, 1, &o, locale, NULL, &r, error, sizeof(error)));
     plain_is(r, "[(1)]");
+    assert(!ce_csl_names_result_sort_person(r, 0));
     CeCslNamesResult *saved = r;
     ctx.override_count = 2;
     CeCslNameOverride duplicate[] = {override, override};
@@ -378,6 +391,87 @@ static void test_scalar_and_empty(void) {
     ce_csl_names_result_free(r);
     ce_csl_names_data_free(d);
     ce_csl_xml_free(x);
+}
+static void sort_is(const CeCslNamesResult *result, size_t index, CeCslNameKind kind, const char *family,
+                    const char *particles, const char *given, const char *suffix, const char *literal) {
+    const CeCslNameSortView *view = ce_csl_names_result_sort_person(result, index);
+    assert(view && view->kind == kind);
+    assert(!strcmp(view->primary_family, family));
+    assert(!strcmp(view->secondary_particles, particles));
+    assert(!strcmp(view->given, given));
+    assert(!strcmp(view->suffix, suffix));
+    assert(!strcmp(view->literal, literal));
+}
+static void test_sort_components(void) {
+    const char *input = "[{\"family\":\"Martinière\",\"given\":\"Gérard Jean-Luc\","
+                        "\"dropping-particle\":\"de\",\"non-dropping-particle\":\"la\","
+                        "\"suffix\":\"III\"}]";
+    const char *body =
+        "<names variable='author' prefix='N[' suffix=']'><name initialize-with='. ' prefix='P[' "
+        "suffix=']'><name-part name='given' text-case='lowercase' prefix='G[' suffix=']'/>"
+        "<name-part name='family' text-case='uppercase' prefix='F[' suffix=']'/></name>"
+        "<label prefix=' role:'/></names>";
+    CeCslNameRenderContext ctx = {.sorting = true};
+    CeCslNamesResult *r = render(input, "demote-non-dropping-particle='never'", "", body, &ctx);
+    sort_is(r, 0, CE_CSL_NAME_PERSONAL, "LA MARTINIÈRE", "de", "g. j.-l.", "III", "");
+    /* render() freed both the source JSON/data and XML before these getters. */
+    assert(!strcmp(ce_csl_names_result_person(r, 0)->identity->given, "Gérard Jean-Luc"));
+    ce_csl_names_result_free(r);
+    r = render(input, "demote-non-dropping-particle='sort-only'", "", body, &ctx);
+    sort_is(r, 0, CE_CSL_NAME_PERSONAL, "MARTINIÈRE", "de LA", "g. j.-l.", "III", "");
+    ce_csl_names_result_free(r);
+    /* Display inversion alone does not demote sort-only particles. */
+    r = render(input, "demote-non-dropping-particle='sort-only' name-as-sort-order='all'", "", body, NULL);
+    sort_is(r, 0, CE_CSL_NAME_PERSONAL, "LA MARTINIÈRE", "de", "g. j.-l.", "III", "");
+    ce_csl_names_result_free(r);
+    r = render(input, "demote-non-dropping-particle='display-and-sort' name-as-sort-order='all'", "", body,
+               NULL);
+    sort_is(r, 0, CE_CSL_NAME_PERSONAL, "MARTINIÈRE", "de LA", "g. j.-l.", "III", "");
+    ce_csl_names_result_free(r);
+    CeCslNameOverride override = {0, 0, CE_CSL_GIVEN_FULL};
+    ctx.overrides = &override;
+    ctx.override_count = 1;
+    r = render(input, "", "", body, &ctx);
+    sort_is(r, 0, CE_CSL_NAME_PERSONAL, "MARTINIÈRE", "de LA", "gérard jean-luc", "III", "");
+    ce_csl_names_result_free(r);
+    override.given = CE_CSL_GIVEN_INITIALS;
+    r = render(input, "name-form='short'", "", body, &ctx);
+    sort_is(r, 0, CE_CSL_NAME_PERSONAL, "MARTINIÈRE", "de LA", "g. j.-l.", "III", "");
+    ce_csl_names_result_free(r);
+    ctx.overrides = NULL;
+    ctx.override_count = 0;
+    r = render(input, "name-form='short'", "", body, &ctx);
+    sort_is(r, 0, CE_CSL_NAME_PERSONAL, "LA MARTINIÈRE", "", "", "", "");
+    ce_csl_names_result_free(r);
+    r = render("[{\"family\":\"Artagnan\",\"given\":\"Charles\",\"non-dropping-particle\":\"d’\"}]",
+               "demote-non-dropping-particle='never'", "", "<names variable='author'/>", &ctx);
+    sort_is(r, 0, CE_CSL_NAME_PERSONAL, "d’Artagnan", "", "Charles", "", "");
+    ce_csl_names_result_free(r);
+    r = render("[{\"family\":\"Family\",\"given\":\"émile ǳuro ßeta\","
+               "\"dropping-particle\":\"d’\",\"non-dropping-particle\":\"al-\"}]",
+               "initialize-with='. '", "", "<names variable='author'/>", &ctx);
+    sort_is(r, 0, CE_CSL_NAME_PERSONAL, "Family", "d’al-", "É. ǲ. Ss.", "", "");
+    ce_csl_names_result_free(r);
+    r = render("[{\"family\":\"张\",\"given\":\"三\"},{\"family\":\"Mao\",\"given\":\"泽东\"},"
+               "{\"literal\":\"The Royal Society & <友>\"}]",
+               "initialize-with='. '", "", "<names variable='author'/>", &ctx);
+    sort_is(r, 0, CE_CSL_NAME_PERSONAL, "张", "", "三", "", "");
+    sort_is(r, 1, CE_CSL_NAME_PERSONAL, "Mao", "", "泽东", "", "");
+    sort_is(r, 2, CE_CSL_NAME_LITERAL, "", "", "", "", "The Royal Society & <友>");
+    ce_csl_names_result_free(r);
+    /* Selected indices stay aligned with semantic identity through et-al use-last. */
+    const char *three = "[{}, {\"family\":\"A\"},{\"family\":\"B\"},{\"family\":\"C\"}]";
+    r = render(three, "", "",
+               "<names variable='author'><name et-al-min='3' et-al-use-first='1' "
+               "et-al-use-last='true'/></names>",
+               NULL);
+    assert(ce_csl_names_result_person_count(r) == 2);
+    assert(ce_csl_names_result_person(r, 0)->person_index == 1);
+    assert(ce_csl_names_result_person(r, 1)->person_index == 3);
+    sort_is(r, 0, CE_CSL_NAME_PERSONAL, "A", "", "", "", "");
+    sort_is(r, 1, CE_CSL_NAME_PERSONAL, "C", "", "", "", "");
+    ce_csl_names_result_free(r);
+    assert(!ce_csl_names_result_sort_person(NULL, 0));
 }
 static void test_substitute_and_invalid(void) {
     CeCslXml *x =
@@ -457,7 +551,9 @@ static void release(void *context, void *pointer) {
     free(p);
 }
 static void test_oom_limits(void) {
-    cJSON *j = json("[{\"family\":\"Doe\",\"given\":\"Jane\"},{\"family\":\"张\",\"given\":\"三\"}]");
+    cJSON *j = json("[{\"family\":\"Doe\",\"given\":\"Jane\",\"dropping-particle\":\"de\","
+                    "\"non-dropping-particle\":\"van\",\"suffix\":\"Jr.\"},"
+                    "{\"family\":\"张\",\"given\":\"三\"},{\"literal\":\"The <Group>\"}]");
     for (size_t at = 0; at < 8; ++at) {
         Memory m = {.fail_at = at};
         CeCslOutputAllocator a = {&m, allocate, release};
@@ -493,14 +589,17 @@ static void test_oom_limits(void) {
             old = NULL;
             m.fail_at = SIZE_MAX;
             assert(m.live);
-            plain_is(r, "(DOE, J., 张三)");
+            plain_is(r, "(DOE, J. de VAN, Jr., 张三, The <Group>)");
+            sort_is(r, 0, CE_CSL_NAME_PERSONAL, "DOE", "de VAN", "J.", "Jr.", "");
+            sort_is(r, 2, CE_CSL_NAME_LITERAL, "", "", "", "", "The <Group>");
             ce_csl_names_result_free(r);
             assert(!m.live);
             success = at;
             break;
         }
         assert(r == old && !m.live);
-        plain_is(old, "(DOE, J., 张三)");
+        plain_is(old, "(DOE, J. de VAN, Jr., 张三, The <Group>)");
+        sort_is(old, 0, CE_CSL_NAME_PERSONAL, "DOE", "de VAN", "J.", "Jr.", "");
     }
     assert(success > 20 && success < 1000);
     ce_csl_names_result_free(old);
@@ -523,6 +622,35 @@ static void test_oom_limits(void) {
     assert(!ce_csl_names_inspect(j, &count, error, sizeof(error)));
     cJSON_Delete(j);
     free(huge);
+}
+static void test_sort_component_limit(void) {
+    size_t size = CE_CSL_NAMES_MAX_BYTES / 2;
+    char *text = malloc(size + 1);
+    assert(text);
+    memset(text, 'x', size);
+    text[size] = 0;
+    cJSON *j = cJSON_CreateArray(), *person = cJSON_CreateObject();
+    assert(j && person && cJSON_AddStringToObject(person, "literal", text));
+    assert(cJSON_AddItemToArray(j, person));
+    free(text);
+    CeCslNamesData *d = NULL;
+    assert(ce_csl_names_data_load(j, NULL, NULL, &d, error, sizeof(error)));
+    cJSON_Delete(j);
+    CeCslXml *x = style("", "", "<names variable='author editor translator' delimiter=''><name/></names>");
+    CeCslNameOptions o = options(x);
+    CeCslNamesBinding bindings[] = {{"author", d}, {"editor", d}, {"translator", d}};
+    CeCslNamesResult *r = NULL;
+    assert(ce_csl_names_render(bindings, 2, &o, locale, NULL, &r, error, sizeof(error)));
+    assert(ce_csl_names_result_person_count(r) == 2);
+    assert(ce_csl_names_result_sort_person(r, 1)->literal_length == size);
+    assert(ce_csl_output_text_bytes(ce_csl_names_result_output(r)) == CE_CSL_NAMES_MAX_BYTES);
+    CeCslNamesResult *old = r;
+    assert(!ce_csl_names_render(bindings, 3, &o, locale, NULL, &r, error, sizeof(error)));
+    assert(r == old && strstr(error, "combined name sort component size limit"));
+    assert(ce_csl_names_result_sort_person(r, 0)->literal_length == size);
+    ce_csl_names_result_free(r);
+    ce_csl_names_data_free(d);
+    ce_csl_xml_free(x);
 }
 static char *read_file(const char *path) {
     FILE *f = fopen(path, "rb");
@@ -617,13 +745,15 @@ int main(int argc, char **argv) {
     test_lists();
     test_roles_format_identity();
     test_scalar_and_empty();
+    test_sort_components();
     test_substitute_and_invalid();
     test_oom_limits();
+    test_sort_component_limit();
     if (argc > 1)
         real_resources(argc - 1, argv + 1);
     ce_csl_locale_free(locale);
     ce_csl_xml_free(locale_xml);
     puts("CSL names: identity, inheritance, initials/scripts, parts, lists/count, role labels, overrides, "
-         "retention and OOM passed");
+         "sort components, retention and OOM passed");
     return 0;
 }

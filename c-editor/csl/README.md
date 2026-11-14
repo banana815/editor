@@ -1,7 +1,7 @@
 # C citation processor — development module
 
 This is the beginning of an original C implementation of CSL processing. It is
-not connected to the editor and does not yet format citations. The existing
+not connected to the editor and is not yet a complete document citation processor. The existing
 editor continues to label its output as approximate. No JavaScript interpreter
 or third-party JavaScript formatter will be part of this implementation.
 
@@ -37,9 +37,21 @@ The current modules provide:
 - Bibliography eligibility and citation numbering: cited items by default, plus
   explicitly included items, with stable initial order and an external sort
   permutation. Importing a library alone never includes every item in a document.
+- Rich metadata fields with controlled font tags and protected case, scalar
+  slicing and source maps through period removal and whole-parent case changes.
+- Semantic style evaluation with transactional substitution, typed leaf values,
+  macro-call occurrences, group suppression and retained name/date identities.
+- Entry finalization with nested locale quotation marks, generated punctuation
+  boundaries and mapped name/display ranges. [FINALIZE.md](FINALIZE.md) documents
+  the supported cleanup rules and the remaining document-level work.
+- A bounded document-wide disambiguation driver with typed rendering callbacks,
+  primary-name initials, added names, conditional branches and ordered year
+  suffixes. [DISAMBIGUATION.md](DISAMBIGUATION.md) describes the initial supported
+  rule and the required real-renderer integration; mock-provider checks do not
+  establish citation-format conformance.
 
-These components still need a style evaluator, style-driven sort-key generation,
-disambiguation, rich metadata handling and document integration. Date parsing currently rejects
+These components still need style-driven sort-key generation, document-wide
+disambiguation integration, citation collapse and document integration. Date parsing currently rejects
 mixed-precision intervals and unsupported raw date syntax; Roman numerals are
 limited to 1–3999. Automatic name-particle parsing is not implemented; explicit
 `parse-names=true` is rejected. The default collation does not provide Chinese

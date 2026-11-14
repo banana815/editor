@@ -56,6 +56,43 @@ bool ce_csl_sort_key_copy(const unsigned char *bytes, size_t size,
     return true;
 }
 
+bool ce_csl_sort_key_sequence(const CeCslSortKeyView *parts, size_t count,
+    const CeCslOutputAllocator *allocator, CeCslSortKey *out,
+    char *error, size_t capacity) {
+    if (error && capacity) *error = 0;
+    CeCslOutputAllocator a;
+    if (!out || (count && !parts) || !allocator_get(allocator, &a))
+        return fail(error, capacity, "Invalid CSL key sequence argument");
+    if (count > CE_CSL_SORT_MAX_KEY_PARTS)
+        return fail(error, capacity, "CSL key sequence component limit exceeded");
+    size_t bytes = count * 2;
+    for (size_t i = 0; i < count; ++i) {
+        if (parts[i].missing || (!parts[i].data && parts[i].length))
+            return fail(error, capacity, "Missing or invalid CSL key component");
+        if (parts[i].length > CE_CSL_SORT_MAX_KEY_BYTES - bytes)
+            return fail(error, capacity, "CSL packed key byte limit exceeded");
+        bytes += parts[i].length;
+        for (size_t j = 0; j < parts[i].length; ++j) if (!parts[i].data[j]) {
+            if (bytes == CE_CSL_SORT_MAX_KEY_BYTES)
+                return fail(error, capacity, "CSL packed key escape limit exceeded");
+            ++bytes;
+        }
+    }
+    unsigned char *data = bytes ? a.allocate(a.context, bytes) : NULL;
+    if (bytes && !data) return fail(error, capacity, "Cannot allocate CSL packed key");
+    size_t offset = 0;
+    for (size_t i = 0; i < count; ++i) {
+        for (size_t j = 0; j < parts[i].length; ++j) {
+            data[offset++] = parts[i].data[j];
+            if (!parts[i].data[j]) data[offset++] = 255;
+        }
+        data[offset++] = 0; data[offset++] = 0;
+    }
+    ce_csl_sort_key_free(out);
+    *out = (CeCslSortKey){data, bytes, a.deallocate, a.context};
+    return true;
+}
+
 static int rows_compare(const CeCslSortKeyView *keys, size_t columns,
                         const bool *descending, size_t left, size_t right) {
     const CeCslSortKeyView *a = keys + left * columns;

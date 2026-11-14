@@ -316,6 +316,45 @@ bool ce_csl_date_inspect(const cJSON *value, CeCslDateInfo *info, char *error, s
     return true;
 }
 
+bool ce_csl_date_value_view(const cJSON *value, CeCslDateValueView *out,
+    char *error, size_t capacity) {
+    const CeCslDateOptions options = {0};
+    Render r = {NULL,&options,{0},error,capacity};
+    DateValue date = {0};
+    CeCslDateValueView next = {0};
+    if (error && capacity) *error = 0;
+    if (!out) return fail(error,capacity,"typed date view output is required");
+    if (!parse_value(value,&date,&r)) return false;
+    next.endpoint_count = date.count;
+    next.literal = date.literal;
+    next.literal_size = date.literal ? strlen(date.literal) : 0;
+    next.present = next.literal_size != 0;
+    next.circa = date.circa;
+    for (unsigned i = 0; i < date.count; ++i) {
+        next.endpoints[i].year = date.end[i].part[YEAR];
+        next.endpoints[i].day = (unsigned)date.end[i].part[DAY];
+        if (date.end[i].season) next.endpoints[i].season = (unsigned)date.end[i].part[MONTH];
+        else next.endpoints[i].month = (unsigned)date.end[i].part[MONTH];
+        next.present |= next.endpoints[i].year != 0;
+    }
+    *out = next;
+    return true;
+}
+
+bool ce_csl_date_selected_parts(const CeCslXmlNode *date_node,
+    const CeCslLocale *locale, unsigned *mask, char *error, size_t capacity) {
+    const CeCslDateOptions options = {0};
+    Render r = {locale,&options,{0},error,capacity};
+    DatePlan plan = {0};
+    unsigned selected = 0;
+    if (error && capacity) *error = 0;
+    if (!mask) return fail(error,capacity,"selected date-part mask output is required");
+    if (!make_plan(date_node,&plan,&r)) return false;
+    for (size_t i = 0; i < plan.count; ++i) selected |= 1u << (unsigned)plan.parts[i].kind;
+    *mask = selected;
+    return true;
+}
+
 static bool append(CeCslOutput *out, const char *text, unsigned format, Render *r) {
     return ce_csl_output_append(out,or_empty(text),text ? strlen(text) : 0,format,NULL,r->error,r->capacity);
 }

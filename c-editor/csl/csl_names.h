@@ -125,6 +125,11 @@ typedef struct CeCslNameRendered {
     bool inverted, given_visible, given_initialized;
     size_t output_offset, output_length; /* Plain UTF-8 bytes within result. */
 } CeCslNameRendered;
+typedef struct CeCslNameSortView {
+    CeCslNameKind kind;
+    const char *primary_family, *secondary_particles, *given, *suffix, *literal;
+    size_t primary_family_length, secondary_particles_length, given_length, suffix_length, literal_length;
+} CeCslNameSortView;
 typedef struct CeCslNamesSummary {
     size_t total_names, rendered_names;
     bool rendered, truncated, used_last, collapsed_editor_translator;
@@ -162,6 +167,17 @@ const CeCslOutput *ce_csl_names_result_output(const CeCslNamesResult *result);
 const CeCslNamesSummary *ce_csl_names_result_summary(const CeCslNamesResult *result);
 size_t ce_csl_names_result_person_count(const CeCslNamesResult *result);
 const CeCslNameRendered *ce_csl_names_result_person(const CeCslNamesResult *result, size_t index);
+/* Components of the corresponding rendered person, owned by result. Every
+ * field is non-NULL, NUL-terminated exact UTF-8 with its byte length. Personal
+ * primary_family contains family plus a non-demoted non-dropping particle;
+ * secondary_particles contains dropping then any demoted non-dropping particle.
+ * given reflects the actual initialization/expansion and name-part text case.
+ * Short form hides given/secondary_particles/suffix. Literal names retain the
+ * original literal text (including articles); other fields are empty. Affixes,
+ * labels, display separators and font decorations are not included. The view is not a
+ * collation key or an identity; use the original identity for equality. Count
+ * form, absent persons and out-of-range indices return NULL. */
+const CeCslNameSortView *ce_csl_names_result_sort_person(const CeCslNamesResult *result, size_t index);
 /* All sources, including omitted names, remain queryable for disambiguation. */
 const CeCslNamesData *ce_csl_names_result_data(const CeCslNamesResult *result, size_t binding);
 #endif

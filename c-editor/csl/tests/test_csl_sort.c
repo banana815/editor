@@ -194,6 +194,70 @@ static uint32_t random_number(void) {
     random_state = random_state * UINT32_C(1664525) + UINT32_C(1013904223);
     return random_state;
 }
+static int component_order(const CeCslSortKeyView *a, const CeCslSortKeyView *b) {
+    size_t n = a->length < b->length ? a->length : b->length;
+    int c = n ? memcmp(a->data,b->data,n) : 0;
+    return c < 0 ? -1 : c > 0 ? 1 : a->length < b->length ? -1 : a->length > b->length ? 1 : 0;
+}
+static void sequences(void) {
+    CeCslSortKey a = {0}, b = {0};
+    CeCslSortKeyView first[] = {{(const unsigned char *)"ab",2,false},{(const unsigned char *)"c",1,false}};
+    CeCslSortKeyView second[] = {{(const unsigned char *)"a",1,false},{(const unsigned char *)"bc",2,false}};
+    assert(ce_csl_sort_key_sequence(first,2,NULL,&a,error,sizeof error));
+    assert(ce_csl_sort_key_sequence(second,2,NULL,&b,error,sizeof error));
+    assert(compare(&a,&b) > 0); /* Concatenating raw text would collide at abc. */
+    for (size_t trial = 0; trial < 400; ++trial) {
+        unsigned char aa[4][16], bb[4][16];
+        CeCslSortKeyView av[4], bv[4];
+        size_t ac = random_number()%5, bc = random_number()%5;
+        for (size_t i = 0; i < 4; ++i) {
+            for (size_t j = 0; j < 16; ++j) {
+                aa[i][j] = (unsigned char)(random_number()%4);
+                bb[i][j] = (unsigned char)(random_number()%4);
+            }
+            av[i] = (CeCslSortKeyView){aa[i],random_number()%17,false};
+            bv[i] = (CeCslSortKeyView){bb[i],random_number()%17,false};
+        }
+        assert(ce_csl_sort_key_sequence(av,ac,NULL,&a,error,sizeof error));
+        assert(ce_csl_sort_key_sequence(bv,bc,NULL,&b,error,sizeof error));
+        int expected = 0;
+        for (size_t i = 0; i < ac && i < bc && !expected; ++i) expected = component_order(&av[i],&bv[i]);
+        if (!expected) expected = ac < bc ? -1 : ac > bc ? 1 : 0;
+        assert(compare(&a,&b) == expected);
+    }
+    unsigned char zero_ff[] = {0,255,0};
+    CeCslSortKeyView part = {zero_ff,sizeof zero_ff,false};
+    assert(ce_csl_sort_key_sequence(&part,1,NULL,&a,error,sizeof error));
+    const unsigned char expected_bytes[] = {0,255,255,0,255,0,0};
+    assert(a.length == sizeof expected_bytes && !memcmp(a.data,expected_bytes,sizeof expected_bytes));
+    CeCslSortKeyView alias = view(&a);
+    assert(ce_csl_sort_key_sequence(&alias,1,NULL,&a,error,sizeof error));
+    Fault f = {0,1,0}; CeCslOutputAllocator allocator = {&f,allocate,deallocate};
+    unsigned char *old = a.data;
+    assert(!ce_csl_sort_key_sequence(&part,1,&allocator,&a,error,sizeof error));
+    assert(a.data == old && !f.live);
+    part.missing = true;
+    assert(!ce_csl_sort_key_sequence(&part,1,NULL,&a,error,sizeof error) && a.data == old);
+    assert(!ce_csl_sort_key_sequence(&part,SIZE_MAX,NULL,&a,error,sizeof error) && a.data == old);
+    CeCslSortKeyView *empty = calloc(CE_CSL_SORT_MAX_KEY_PARTS,sizeof *empty); assert(empty);
+    assert(ce_csl_sort_key_sequence(empty,CE_CSL_SORT_MAX_KEY_PARTS,NULL,&a,error,sizeof error));
+    assert(a.length == 2 * CE_CSL_SORT_MAX_KEY_PARTS);
+    free(empty);
+    unsigned char *boundary = malloc(CE_CSL_SORT_MAX_KEY_BYTES); assert(boundary);
+    memset(boundary,1,CE_CSL_SORT_MAX_KEY_BYTES);
+    part = (CeCslSortKeyView){boundary,CE_CSL_SORT_MAX_KEY_BYTES-2,false};
+    assert(ce_csl_sort_key_sequence(&part,1,NULL,&a,error,sizeof error));
+    assert(a.length == CE_CSL_SORT_MAX_KEY_BYTES);
+    old = a.data; ++part.length;
+    assert(!ce_csl_sort_key_sequence(&part,1,NULL,&a,error,sizeof error) && a.data == old);
+    memset(boundary,0,CE_CSL_SORT_MAX_KEY_BYTES);
+    part.length = (CE_CSL_SORT_MAX_KEY_BYTES-2)/2;
+    assert(ce_csl_sort_key_sequence(&part,1,NULL,&a,error,sizeof error));
+    assert(a.length == CE_CSL_SORT_MAX_KEY_BYTES);
+    old = a.data; ++part.length;
+    assert(!ce_csl_sort_key_sequence(&part,1,NULL,&a,error,sizeof error) && a.data == old);
+    free(boundary); ce_csl_sort_key_free(&a); ce_csl_sort_key_free(&b);
+}
 static void randomized(void) {
     enum {ROWS=513, COLS=4};
     int values[ROWS][COLS]; bool absent[ROWS][COLS];
@@ -239,7 +303,7 @@ static void randomized(void) {
     ce_csl_sort_order_free(&order); free(ties);
 }
 int main(void) {
-    integers(); dates(); matrix(); failures(); randomized();
+    integers(); dates(); matrix(); failures(); sequences(); randomized();
     puts("CSL stable sort, exact integer/date keys, bounds and allocation failures passed");
     return 0;
 }
