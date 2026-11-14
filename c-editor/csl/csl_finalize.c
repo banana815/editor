@@ -290,10 +290,13 @@ static bool punctuation(CeCslFinalized *r) {
     generated_bytes(r, generated, size);
     for (size_t i = 0; i < r->count; ++i) {
         const CeCslFinalSpan *s = &r->spans[i];
-        if (s->kind == BOUNDARY && s->offset && s->offset < size &&
-            duplicate((unsigned char)text[s->offset - 1], (unsigned char)text[s->offset]) &&
-            (text[s->offset] != ',' || generated[s->offset - 1] || generated[s->offset]))
-            edits[count++] = (Edit){s->offset, s->offset + 1, false};
+        if (s->kind == BOUNDARY && s->offset && s->offset < size) {
+            bool repeated = duplicate((unsigned char)text[s->offset - 1], (unsigned char)text[s->offset]) &&
+                (text[s->offset] != ',' || generated[s->offset - 1] || generated[s->offset]);
+            bool spaces = text[s->offset - 1] == ' ' && text[s->offset] == ' ' &&
+                generated[s->offset - 1] && generated[s->offset];
+            if (repeated || spaces) edits[count++] = (Edit){s->offset, s->offset + 1, false};
+        }
     }
     qsort(edits, count, sizeof(*edits), compare_edit);
     size_t unique = 0;

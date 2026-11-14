@@ -95,6 +95,14 @@ documented hooks, not every transitive library allocation. The input model's
 numeric identity checks use original decimal tokens before conversion to double;
 ordinary metadata numbers remain cJSON doubles and are not lossless JSON text.
 
+The profile integration suite checks 36 representative citation/bibliography
+texts and 540 typed evaluation/finalization combinations against the pinned
+styles. Its test adapter wraps a single citation layout and represents aligned
+bibliography fields with a space; the application document adapter is still
+pending. One recorded processor difference is intentional: a family name-part
+case rule does not uppercase a non-personal literal name. Multi-citation sorting,
+disambiguation and collapse are not established by these single-entry examples.
+
 The dedicated `C citation processor` workflow runs this independent module on
 Windows, macOS, Linux and WebAssembly, plus mobile cross-compilation. Mobile
 library compilation is not mobile runtime conformance. Until this library is

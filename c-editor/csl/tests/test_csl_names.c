@@ -362,6 +362,8 @@ static void test_scalar_and_empty(void) {
            person->given_visible);
     const CeCslNameSortView *sort = ce_csl_names_result_sort_person(r, 0);
     assert(sort && !strcmp(sort->primary_family, "Doe") && !strcmp(sort->given, "J."));
+    assert(ce_csl_names_result_binding_count(r) == 1);
+    assert(!ce_csl_names_result_selection(r, 0) && !ce_csl_names_result_next_minimum(r, 0));
     assert(ce_csl_name_render(d, 0, &o, locale, NULL, &r, error, sizeof(error)));
     plain_is(r, "");
     assert(!ce_csl_names_result_summary(r)->rendered);
@@ -473,6 +475,132 @@ static void test_sort_components(void) {
     ce_csl_names_result_free(r);
     assert(!ce_csl_names_result_sort_person(NULL, 0));
 }
+static void selection_is(const CeCslNamesResult *r, size_t binding, size_t total, size_t prefix,
+                         size_t rendered, bool truncated, bool last, bool collapsed) {
+    const CeCslNamesSelection *s = ce_csl_names_result_selection(r, binding);
+    assert(s && s->total_nonempty == total && s->prefix_count == prefix && s->rendered_count == rendered &&
+           s->truncated == truncated && s->used_last == last && s->collapsed == collapsed);
+}
+static bool keeps_selected(const CeCslNamesResult *old, const CeCslNamesResult *trial) {
+    for (size_t i = 0; i < ce_csl_names_result_person_count(old); ++i) {
+        const CeCslNameRendered *person = ce_csl_names_result_person(old, i);
+        bool found = false;
+        for (size_t j = 0; j < ce_csl_names_result_person_count(trial); ++j) {
+            const CeCslNameRendered *candidate = ce_csl_names_result_person(trial, j);
+            if (person->binding == candidate->binding && person->person_index == candidate->person_index)
+                found = true;
+        }
+        if (!found)
+            return false;
+    }
+    return true;
+}
+static void test_selection(void) {
+    CeCslXml *x = style("", "",
+                        "<names variable='author'><name et-al-min='3' et-al-use-first='1' "
+                        "et-al-use-last='true'/></names>");
+    CeCslNameOptions o = options(x);
+    CeCslNamesData *d =
+        data("[{}, {\"family\":\"A\"}, {}, {\"family\":\"B\"}, {\"family\":\"C\"}, {}]", NULL);
+    CeCslNamesBinding binding = {"author", d};
+    CeCslNamesResult *r = NULL;
+    assert(ce_csl_names_render(&binding, 1, &o, locale, NULL, &r, error, sizeof(error)));
+    plain_is(r, "A, … C");
+    selection_is(r, 0, 3, 1, 2, true, true, false);
+    assert(ce_csl_names_result_person(r, 0)->person_index == 1);
+    assert(ce_csl_names_result_person(r, 1)->person_index == 4);
+    assert(ce_csl_names_result_next_minimum(r, 0) == 3);
+    CeCslNameRenderContext context = {.minimum_names = ce_csl_names_result_next_minimum(r, 0)};
+    assert(ce_csl_names_render(&binding, 1, &o, locale, &context, &r, error, sizeof(error)));
+    plain_is(r, "A, B, C");
+    selection_is(r, 0, 3, 3, 3, false, false, false);
+    assert(!ce_csl_names_result_next_minimum(r, 3));
+    assert(!ce_csl_names_result_selection(r, 1));
+    assert(!ce_csl_names_result_next_minimum(r, SIZE_MAX));
+    ce_csl_names_result_free(r);
+    r = NULL;
+    CeCslNamesBinding roles[] = {{"editor", d}, {"translator", d}};
+    assert(ce_csl_names_render(roles, 2, &o, locale, NULL, &r, error, sizeof(error)));
+    plain_is(r, "A, … C");
+    assert(ce_csl_names_result_binding_count(r) == 2);
+    selection_is(r, 0, 3, 1, 2, true, true, false);
+    selection_is(r, 1, 3, 0, 0, false, false, true);
+    assert(ce_csl_names_result_data(r, 1) == d);
+    assert(ce_csl_names_result_next_minimum(r, 0) == 3);
+    o.form = CE_CSL_NAME_COUNT;
+    assert(ce_csl_names_render(roles, 2, &o, locale, NULL, &r, error, sizeof(error)));
+    plain_is(r, "2");
+    assert(!ce_csl_names_result_person_count(r));
+    selection_is(r, 0, 3, 1, 2, true, true, false);
+    selection_is(r, 1, 3, 0, 0, false, false, true);
+    assert(ce_csl_names_result_next_minimum(r, 0) == 3);
+    context.minimum_names = 3;
+    assert(ce_csl_names_render(roles, 2, &o, locale, &context, &r, error, sizeof(error)));
+    plain_is(r, "3");
+    assert(!ce_csl_names_result_next_minimum(r, 3));
+    ce_csl_names_result_free(r);
+    ce_csl_names_data_free(d);
+    ce_csl_xml_free(x);
+    assert(!ce_csl_names_result_binding_count(NULL));
+    assert(!ce_csl_names_result_selection(NULL, 0) && !ce_csl_names_result_next_minimum(NULL, 0));
+}
+static void test_selection_trials(void) {
+    CeCslXml *x = style("", "",
+                        "<names variable='author editor translator recipient'><name "
+                        "et-al-min='1' et-al-use-first='1' et-al-use-last='true'/></names>");
+    CeCslNameOptions o = options(x);
+    CeCslNamesData *four =
+        data("[{\"family\":\"D\"},{\"family\":\"E\"},{\"family\":\"F\"},{\"family\":\"G\"}]", NULL);
+    CeCslNamesData *three =
+        data("[{}, {\"family\":\"A\"}, {}, {\"family\":\"B\"}, {\"family\":\"C\"}]", NULL);
+    CeCslNamesData *five = data(
+        "[{\"family\":\"H\"},{\"family\":\"I\"},{\"family\":\"J\"},{\"family\":\"K\"},{\"family\":\"L\"}]",
+        NULL);
+    CeCslNamesData *empty = data("[{}, {\"literal\":\"\"}]", NULL);
+    CeCslNamesBinding bindings[] = {
+        {"author", four}, {"editor", three}, {"translator", five}, {"recipient", empty}};
+    CeCslNamesResult *r = NULL, *trial = NULL;
+    assert(ce_csl_names_render(bindings, COUNT(bindings), &o, locale, NULL, &r, error, sizeof(error)));
+    /* Starts at 2: the second binding jumps to 3, then the first to 4, then
+     * the third to 5. Reaching the safe fixed point requires revisiting. */
+    assert(ce_csl_names_result_next_minimum(r, 0) == 5);
+    selection_is(r, 0, 4, 1, 2, true, true, false);
+    selection_is(r, 1, 3, 1, 2, true, true, false);
+    selection_is(r, 2, 5, 1, 2, true, true, false);
+    selection_is(r, 3, 0, 0, 0, false, false, false);
+    for (size_t first = 0; first <= 5; ++first) {
+        for (size_t last = 0; last < 2; ++last) {
+            o.et_al_use_first = first;
+            o.et_al_use_last = last != 0;
+            for (size_t minimum = 0; minimum <= 5; ++minimum) {
+                CeCslNameRenderContext context = {.minimum_names = minimum};
+                assert(ce_csl_names_render(bindings, COUNT(bindings), &o, locale, &context, &r, error,
+                                           sizeof(error)));
+                size_t expected = 0;
+                /* Independent oracle: actually rerender every smaller trial
+                 * and compare semantic selected indices, not prefix formulas. */
+                for (size_t candidate = minimum + 1; candidate <= 5; ++candidate) {
+                    context.minimum_names = candidate;
+                    assert(ce_csl_names_render(bindings, COUNT(bindings), &o, locale, &context, &trial, error,
+                                               sizeof(error)));
+                    if (ce_csl_names_result_person_count(trial) > ce_csl_names_result_person_count(r) &&
+                        keeps_selected(r, trial)) {
+                        expected = candidate;
+                        break;
+                    }
+                }
+                assert(ce_csl_names_result_next_minimum(r, minimum) == expected);
+            }
+        }
+    }
+    ce_csl_names_result_free(r);
+    ce_csl_names_result_free(trial);
+    ce_csl_names_data_free(four);
+    ce_csl_names_data_free(three);
+    ce_csl_names_data_free(five);
+    ce_csl_names_data_free(empty);
+    ce_csl_xml_free(x);
+}
 static void test_substitute_and_invalid(void) {
     CeCslXml *x =
         style("initialize-with='. '", "et-al-min='3' et-al-use-first='1'",
@@ -578,6 +706,7 @@ static void test_oom_limits(void) {
     CeCslNamesBinding b = {"author", d};
     CeCslNamesResult *old = NULL;
     assert(ce_csl_names_render(&b, 1, &o, locale, NULL, &old, error, sizeof(error)));
+    selection_is(old, 0, 3, 3, 3, false, false, false);
     size_t success = 0;
     for (size_t at = 0; at < 1000; ++at) {
         Memory m = {.fail_at = at};
@@ -598,8 +727,46 @@ static void test_oom_limits(void) {
             break;
         }
         assert(r == old && !m.live);
+        selection_is(old, 0, 3, 3, 3, false, false, false);
+        assert(!ce_csl_names_result_next_minimum(old, 0));
         plain_is(old, "(DOE, J. de VAN, Jr., 张三, The <Group>)");
         sort_is(old, 0, CE_CSL_NAME_PERSONAL, "DOE", "de VAN", "J.", "Jr.", "");
+    }
+    assert(success > 20 && success < 1000);
+    ce_csl_names_result_free(old);
+    ce_csl_names_data_free(d);
+    ce_csl_xml_free(x);
+    x = style("", "",
+              "<names variable='author'><name et-al-min='3' et-al-use-first='1' "
+              "et-al-use-last='true'/></names>");
+    o = options(x);
+    d = data("[{}, {\"family\":\"A\"}, {}, {\"family\":\"B\"}, {\"family\":\"C\"}]", NULL);
+    b.data = d;
+    old = NULL;
+    assert(ce_csl_names_render(&b, 1, &o, locale, NULL, &old, error, sizeof(error)));
+    success = 0;
+    for (size_t at = 0; at < 1000; ++at) {
+        Memory m = {.fail_at = at};
+        CeCslOutputAllocator a = {&m, allocate, release};
+        CeCslNameRenderContext context = {.allocator = &a, .minimum_names = 3};
+        CeCslNamesResult *r = old;
+        bool ok = ce_csl_names_render(&b, 1, &o, locale, &context, &r, error, sizeof(error));
+        if (ok) {
+            old = NULL;
+            selection_is(r, 0, 3, 3, 3, false, false, false);
+            size_t calls = m.calls;
+            m.fail_at = m.calls;
+            assert(!ce_csl_names_result_next_minimum(r, 3) && m.calls == calls);
+            ce_csl_names_result_free(r);
+            assert(!m.live);
+            success = at;
+            break;
+        }
+        assert(r == old && !m.live);
+        plain_is(old, "A, … C");
+        selection_is(old, 0, 3, 1, 2, true, true, false);
+        assert(ce_csl_names_result_person(old, 1)->person_index == 4);
+        assert(ce_csl_names_result_next_minimum(old, 0) == 3);
     }
     assert(success > 20 && success < 1000);
     ce_csl_names_result_free(old);
@@ -746,6 +913,8 @@ int main(int argc, char **argv) {
     test_roles_format_identity();
     test_scalar_and_empty();
     test_sort_components();
+    test_selection();
+    test_selection_trials();
     test_substitute_and_invalid();
     test_oom_limits();
     test_sort_component_limit();

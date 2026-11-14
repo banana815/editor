@@ -396,7 +396,10 @@ static bool number_leaf(CeCslEvaluation *e, CeCslEvalNode *n) {
     if (!ce_csl_number_field_scan(text, size, &n->number, e->error, e->capacity)) return false;
     CeCslOutputString rendered = {0};
     bool missing = false;
-    bool ok = ce_csl_number_field_render(text, size, form, e->request.locale,
+    /* CSL Sorting Macros returns numeric fields as integers, regardless of the
+     * display form on cs:number. Retain original typed value/source metadata. */
+    CeCslNumberForm rendered_form = e->request.sorting ? CE_CSL_NUMBER_NUMERIC : form;
+    bool ok = ce_csl_number_field_render(text, size, rendered_form, e->request.locale,
         ce_csl_locale_noun_gender(e->request.locale, v->canonical_name), &e->allocator,
         &rendered, &missing, e->error, e->capacity);
     if (ok) ok = scalar_inline(e, n, rendered.data, rendered.length, v->canonical_name, false);

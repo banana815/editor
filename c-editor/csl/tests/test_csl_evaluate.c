@@ -327,6 +327,35 @@ static void test_providers_and_limits(void) {
     assert(!ce_csl_evaluate(&f.request, NULL, &f.result, error, sizeof(error)) && !f.result && strstr(error, "node limit"));
     fixture_free(&f);
 }
+static void test_sorting_numbers(void) {
+    const char *values[] = {"0", "4000", "1844674407370955161600001"};
+    for (size_t i=0;i<sizeof(values)/sizeof(*values);++i) {
+        Fixture f; char item[160]; snprintf(item,sizeof(item),"{\"edition\":\"%s\"}",values[i]);
+        fixture(&f,"<macro name='numeric'><number variable='edition' form='roman'/></macro>",
+            "<citation><layout><text macro='numeric'/></layout></citation>",item,NULL);
+        f.request.sorting=true; preview_is(&f,values[i]);
+        const CeCslEvalNode *number=child(child(ce_csl_evaluation_root(f.result),0),0);
+        const CeCslEvalVariableUse *use=ce_csl_eval_node_variable(number,0);
+        size_t bytes=0; const char *raw=ce_csl_variable_text(&use->value,&bytes);
+        assert(bytes==strlen(values[i]) && !memcmp(raw,values[i],bytes));
+        assert(cJSON_IsString(use->value.node) && !strcmp(use->value.node->valuestring,values[i]));
+        assert(!strcmp(ce_csl_xml_attribute(ce_csl_eval_node_info(number)->occurrence.source,"form"),"roman"));
+        CeCslEvaluation *old=f.result; f.request.sorting=false;
+        assert(!ce_csl_evaluate(&f.request,NULL,&f.result,error,sizeof(error)) && f.result==old && *error);
+        fixture_free(&f);
+    }
+    Fixture f;
+    fixture(&f,"<macro name='authors'><names variable='author'><name et-al-min='4' et-al-use-first='1'/></names></macro>",
+        "<citation><layout><text macro='authors'/></layout></citation>",
+        "{\"author\":[{\"family\":\"One\"},{\"family\":\"Two\"},{\"family\":\"Three\"},{\"family\":\"Four\"}]}",NULL);
+    f.request.sorting=true; f.request.has_sort_min=true; f.request.sort_min=2;
+    f.request.has_sort_first=true; f.request.sort_first=2; f.request.has_sort_last=true; f.request.sort_last=false;
+    preview_is(&f,"One, Two");
+    const CeCslNamesResult *names=ce_csl_eval_node_names(child(child(ce_csl_evaluation_root(f.result),0),0));
+    assert(ce_csl_names_result_person_count(names)==2);
+    assert(ce_csl_names_data_count(ce_csl_names_result_data(names,0))==4);
+    fixture_free(&f);
+}
 static char *read_file(const char *path) {
     FILE *file = fopen(path, "rb"); assert(file);
     assert(!fseek(file, 0, SEEK_END)); long size = ftell(file); assert(size >= 0);
@@ -398,6 +427,7 @@ static void real_resources(int argc, char **argv) {
 int main(int argc, char **argv) {
     test_groups(); test_delimiters_and_conditions(); test_substitute();
     test_typed_and_inline(); test_occurrences(); test_atomic_and_oom(); test_providers_and_limits();
+    test_sorting_numbers();
     if (argc > 1) real_resources(argc - 1, argv + 1);
     puts("CSL semantic evaluation: groups, transactions, typed leaves, inline, occurrences and OOM passed");
     return 0;

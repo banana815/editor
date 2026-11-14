@@ -29,6 +29,11 @@ ellipses are preserved, and U+2026 is not treated as three ASCII periods. These
 are explicitly bounded cleanup rules, not a claim to reproduce every historical
 processor's punctuation rearrangement.
 
+When both sides of a boundary supply an ASCII space through affixes or
+delimiters, one of those two spaces is removed. This is not general whitespace
+normalization: two spaces joined to two spaces leave three, metadata whitespace
+is retained, and tabs or nonbreaking spaces are not merged.
+
 Node, person and quotation spans refer to the final UTF-8 bytes. Case expansion,
 deletion and punctuation movement update these ranges. A span is a bounding
 range and can overlap another span after punctuation movement. Use retained

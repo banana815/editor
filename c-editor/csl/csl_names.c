@@ -22,6 +22,7 @@ struct CeCslNamesResult {
     size_t binding_count, person_count, person_capacity;
     CeCslNameRendered *people;
     CeCslNameSortView *sort_people;
+    CeCslNamesSelection *selections;
     size_t sort_bytes;
     unsigned char *overrides;
 };
@@ -969,6 +970,8 @@ void ce_csl_names_result_free(CeCslNamesResult *r) {
     }
     if (r->overrides)
         r->allocator.deallocate(r->allocator.context, r->overrides);
+    if (r->selections)
+        r->allocator.deallocate(r->allocator.context, r->selections);
     ce_csl_output_free(r->output);
     r->allocator.deallocate(r->allocator.context, r);
 }
@@ -982,6 +985,45 @@ const CeCslNameRendered *ce_csl_names_result_person(const CeCslNamesResult *r, s
 }
 const CeCslNameSortView *ce_csl_names_result_sort_person(const CeCslNamesResult *r, size_t i) {
     return r && i < r->person_count ? &r->sort_people[i] : NULL;
+}
+size_t ce_csl_names_result_binding_count(const CeCslNamesResult *r) { return r ? r->binding_count : 0; }
+const CeCslNamesSelection *ce_csl_names_result_selection(const CeCslNamesResult *r, size_t i) {
+    return r && r->selections && i < r->binding_count ? &r->selections[i] : NULL;
+}
+size_t ce_csl_names_result_next_minimum(const CeCslNamesResult *r, size_t current) {
+    if (!r || !r->selections || current >= CE_CSL_NAMES_MAX_PEOPLE)
+        return 0;
+    size_t candidate = SIZE_MAX, maximum = 0;
+    for (size_t i = 0; i < r->binding_count; ++i) {
+        const CeCslNamesSelection *s = &r->selections[i];
+        if (s->collapsed || !s->truncated)
+            continue;
+        if (s->prefix_count + 1 < candidate)
+            candidate = s->prefix_count + 1;
+        if (maximum < s->total_nonempty)
+            maximum = s->total_nonempty;
+    }
+    if (candidate == SIZE_MAX)
+        return 0;
+    if (candidate <= current)
+        candidate = current + 1;
+    if (candidate > maximum)
+        return 0;
+    /* A jump for a later binding can expose the one-name gap of an earlier
+     * binding. Revisit until stable; each jump reaches a new binding total. */
+    bool changed;
+    do {
+        changed = false;
+        for (size_t i = 0; i < r->binding_count; ++i) {
+            const CeCslNamesSelection *s = &r->selections[i];
+            if (!s->collapsed && s->used_last && candidate > s->prefix_count &&
+                candidate < s->total_nonempty && s->total_nonempty - candidate < 2) {
+                candidate = s->total_nonempty;
+                changed = true;
+            }
+        }
+    } while (changed);
+    return candidate;
 }
 const CeCslNamesData *ce_csl_names_result_data(const CeCslNamesResult *r, size_t i) {
     return r && i < r->binding_count ? r->data[i] : NULL;
@@ -1262,6 +1304,15 @@ bool ce_csl_names_render(const CeCslNamesBinding *bindings, size_t count, const 
         ce_csl_names_result_free(r.result);
         return false;
     }
+    if (count) {
+        r.result->selections =
+            r.result->allocator.allocate(r.result->allocator.context, count * sizeof(*r.result->selections));
+        if (!r.result->selections) {
+            fail(error, cap, "out of memory");
+            goto failed;
+        }
+        memset(r.result->selections, 0, count * sizeof(*r.result->selections));
+    }
     bool collapse = count == 2 &&
                     ((eq(bindings[0].variable, "editor") && eq(bindings[1].variable, "translator")) ||
                      (eq(bindings[0].variable, "translator") && eq(bindings[1].variable, "editor"))) &&
@@ -1270,12 +1321,20 @@ bool ce_csl_names_render(const CeCslNamesBinding *bindings, size_t count, const 
     bool prior = false;
     size_t displayed = 0;
     for (size_t i = 0; i < count; ++i) {
-        if (collapse && i == 1)
-            continue;
         CeCslNamesBinding b = bindings[i];
+        Selection s = selection(&r, b.data);
+        CeCslNamesSelection *chosen = &r.result->selections[i];
+        chosen->total_nonempty = s.total;
+        if (collapse && i == 1) {
+            chosen->collapsed = true;
+            continue;
+        }
+        chosen->prefix_count = s.first;
+        chosen->rendered_count = s.count;
+        chosen->truncated = s.truncated;
+        chosen->used_last = s.last;
         if (collapse)
             b.variable = "editor-translator";
-        Selection s = selection(&r, b.data);
         if (!s.total)
             continue;
         r.result->summary.total_names += s.total;

@@ -188,6 +188,23 @@ static void test_limits_and_empty(void) {
     assert(!ce_csl_finalize(f.result, &invalid, &out, error, sizeof(error)) && out == old);
     ce_csl_finalized_free(out); fixture_free(&f); free(large);
 }
+static void test_generated_spaces(void) {
+    static const struct { const char *section, *expected; } cases[] = {
+        {"<citation><layout><group delimiter=' '><text value='A' suffix=' '/><text value='B'/></group></layout></citation>", "A B"},
+        {"<citation><layout><group delimiter='  '><text value='A' suffix='  '/><text value='B'/></group></layout></citation>", "A   B"},
+        {"<citation><layout><text value='A' suffix=' '/><text value='B' prefix=' '/></layout></citation>", "A B"},
+        {"<citation><layout><group delimiter=' '><text variable='title'/><text variable='publisher'/></group></layout></citation>", "A   B"},
+        {"<citation><layout><text variable='title' suffix=' '/><text variable='publisher'/></layout></citation>", "A   B"},
+        {"<citation><layout><text value='A' suffix='&#x9;'/><text value='B' prefix=' '/></layout></citation>", "A\t B"},
+        {"<citation><layout><text value='A' suffix=' '/><text value='B' prefix=' '/></layout></citation>", "A  B"}
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); ++i) {
+        Fixture f; CeCslFinalized *out = NULL;
+        fixture(&f, NULL, cases[i].section, "{\"title\":\"A \",\"publisher\":\" B\"}", NULL);
+        finalize(&f, &out, cases[i].expected);
+        ce_csl_finalized_free(out); fixture_free(&f);
+    }
+}
 typedef struct Allocation { size_t calls, fail_at, live; } Allocation;
 static void *allocate(void *context, size_t bytes) {
     Allocation *a = context; if (++a->calls == a->fail_at) return NULL;
@@ -297,6 +314,6 @@ static void test_independent_unicode_spans(void) {
 }
 
 int main(void) {
-    test_structure(); test_case_and_persons(); test_quotes(); test_boundaries(); test_limits_and_empty(); test_independent_unicode_spans(); test_oom();
+    test_structure(); test_case_and_persons(); test_quotes(); test_boundaries(); test_generated_spaces(); test_limits_and_empty(); test_independent_unicode_spans(); test_oom();
     puts("CSL finalization: semantic spans, case, rich fields, quotation boundaries and atomic OOM passed"); return 0;
 }

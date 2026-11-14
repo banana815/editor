@@ -756,7 +756,7 @@ CeCslDisambiguationStatus ce_csl_disambiguation_build(const CeCslInput *input,
     }
 #define ARRAY(field, elements) do { \
     d.field = zero_array(&d, (elements), sizeof(*d.field)); \
-    if ((elements) && !d.field) goto cleanup; \
+    if ((elements) != 0 && !d.field) goto cleanup; \
 } while (0)
     ARRAY(probes, count * d.profile_count);
     ARRAY(parents, count); ARRAY(sizes, count); ARRAY(members, count);

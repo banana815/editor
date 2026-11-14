@@ -135,6 +135,10 @@ typedef struct CeCslNamesSummary {
     bool rendered, truncated, used_last, collapsed_editor_translator;
     bool missing_term, needs_substitute;
 } CeCslNamesSummary;
+typedef struct CeCslNamesSelection {
+    size_t total_nonempty, prefix_count, rendered_count;
+    bool truncated, used_last, collapsed;
+} CeCslNamesSelection;
 typedef struct CeCslNamesResult CeCslNamesResult;
 
 /* Each result owns controlled output IR and metadata, retaining its input data.
@@ -178,6 +182,24 @@ const CeCslNameRendered *ce_csl_names_result_person(const CeCslNamesResult *resu
  * collation key or an identity; use the original identity for equality. Count
  * form, absent persons and out-of-range indices return NULL. */
 const CeCslNameSortView *ce_csl_names_result_sort_person(const CeCslNamesResult *result, size_t index);
+size_t ce_csl_names_result_binding_count(const CeCslNamesResult *result);
+/* Actual list selection per original binding, including empty bindings. Prefix
+ * counts nonempty names, never JSON array indices; rendered-person metadata
+ * retains original indices. rendered_count includes a selected final name.
+ * Count form records the selection contributing to its numeric count even
+ * though it has no rendered-person records. For identical editor+translator,
+ * only the skipped duplicate binding has collapsed=true: its total_nonempty
+ * remains queryable but other counts/flags are zero. The representative stays
+ * active. Borrowed until result free; NULL for scalar renders/invalid index. */
+const CeCslNamesSelection *ce_csl_names_result_selection(const CeCslNamesResult *result, size_t binding);
+/* Smallest next minimum prefix that adds selected names while preserving every
+ * currently selected name across all active bindings. Skips a prefix that
+ * would lose et-al-use-last before the full list is reached (A,C -> A,B,C).
+ * Pass the minimum_names used to create this result. Zero means no further
+ * selection, or a NULL/scalar result. Does not mutate or allocate; bounds work
+ * by binding count, not the requested minimum. This helper supplies a trial
+ * selection, not proof that the finalized citation becomes distinguishable. */
+size_t ce_csl_names_result_next_minimum(const CeCslNamesResult *result, size_t current_minimum);
 /* All sources, including omitted names, remain queryable for disambiguation. */
 const CeCslNamesData *ce_csl_names_result_data(const CeCslNamesResult *result, size_t binding);
 #endif
