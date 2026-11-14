@@ -70,7 +70,10 @@ jobs:
 
       - name: Build Tauri Debian package
         working-directory: test-app
-        run: npm run tauri -- build --bundles deb
+        # Validation builds do not publish signed updater artifacts.
+        run: >-
+          npm run tauri -- build --bundles deb
+          --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
       - name: Upload Linux Debian package
         uses: actions/upload-artifact@v4
