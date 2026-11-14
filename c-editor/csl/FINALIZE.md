@@ -42,14 +42,40 @@ text during citation collapse. Display spans describe boundaries, not page
 layout. Keep the source evaluation and its borrowed inputs alive until the
 finalized result is freed.
 
+`ce_csl_finalize_with_options` can omit a specified names node belonging to the
+evaluation. It recomputes parent delimiters, case and group suppression while
+retaining the original chosen branches and substitution consumption. A title
+used as a name substitute does not reappear in a later field after the names
+are omitted. No text is removed by guessing a formatted name's byte range.
+
+The first-names getters retain an owned snapshot of the first emitted names
+element, including its substitute and its own decorations. Whole-parent case
+and period removal have already applied, but cross-boundary punctuation has
+not. This gives grouping an exact field key even if a later delimiter moves
+inside that field's closing quotation mark.
+
+`ce_csl_finalize_join` accepts a planned sequence of citation evaluations and
+optional names omissions. It applies the common citation layout envelope once
+and performs punctuation cleanup once after joining all pieces. Generated
+separators retain their origins; cite prefixes and suffixes are literal UTF-8,
+without markup parsing or added spaces. Empty projected pieces do not emit
+affixes or separators. Each evaluation uses the same layout and locale object.
+Public spans preserve an opaque source-cite index for evaluation content; cite
+affixes and the envelope have no public span. The caller retains whole-cite
+coverage, including any entries hidden by collapse. Joined results borrow all
+source evaluations and expose no standalone evaluation or first-names snapshot.
+
 The result is replaced atomically. A shared 128 MiB allocation budget includes
 the result, inline operations, case maps, span storage and punctuation maps.
 Payload is bounded to 1 MiB and there are at most 262,144 temporary/public spans.
 This budget excludes caller-owned source objects and the previous result, and
 does not measure the C stack. Allocation failure preserves the old result.
+Joins additionally bound the sum of evaluation node counts to 1,048,576,
+counting repeated inputs again before projection validation. This bounds work
+even when many large projected pieces produce no output.
 
-This module does not assemble citation clusters, inject implicit year suffixes,
-collapse repeated authors or number ranges, sort the bibliography, substitute
+This module does not plan citation grouping, inject implicit year suffixes,
+decide author or number-range collapse, sort the bibliography, substitute
 repeated bibliography authors, or integrate results with editor transactions.
 Those require the document processor. A finalized individual entry is not proof
 of complete APA, IEEE or GB/T behavior.

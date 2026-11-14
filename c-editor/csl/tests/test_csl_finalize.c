@@ -211,6 +211,154 @@ static void *allocate(void *context, size_t bytes) {
     void *p = malloc(bytes); if (p) ++a->live; return p;
 }
 static void release(void *context, void *p) { Allocation *a = context; if (p) { assert(a->live); --a->live; free(p); } }
+static const CeCslEvalNode *first_names(const CeCslEvalNode *node) {
+    if (ce_csl_eval_node_info(node)->kind == CE_CSL_EVAL_NAMES) return node;
+    for (const CeCslEvalNode *child = ce_csl_eval_node_info(node)->first_child; child;
+         child = ce_csl_eval_node_info(child)->next) {
+        const CeCslEvalNode *found = first_names(child); if (found) return found;
+    }
+    return NULL;
+}
+static void test_names_projection(void) {
+    Fixture f; CeCslFinalized *out = NULL;
+    fixture(&f, "<macro name='entry'><group delimiter=', '><group delimiter=' '><text value='by'/>"
+        "<names variable='author'><name/><substitute><text variable='title'/></substitute></names></group>"
+        "<date variable='issued'><date-part name='year'/></date><text variable='title'/></group></macro>",
+        "<citation><layout prefix='(' suffix=')'><text macro='entry' text-case='uppercase'/></layout></citation>",
+        "{\"title\":\"A book\",\"issued\":{\"date-parts\":[[2025]]}}", NULL);
+    finalize(&f, &out, "BY A BOOK, 2025");
+    const CeCslEvalNode *names = first_names(ce_csl_evaluation_root(f.result)); assert(names);
+    assert(ce_csl_finalized_first_names(out) == names);
+    text_is(ce_csl_finalized_first_names_inline(out), "A BOOK");
+    CeCslFinalizeOptions options = {.omit_names = names};
+    assert(ce_csl_finalize_with_options(f.result, &options, NULL, &out, error, sizeof(error)));
+    text_is(ce_csl_finalized_inline(out), "2025");
+    assert(!ce_csl_finalized_first_names(out) && !ce_csl_finalized_first_names_inline(out));
+    text_is(ce_csl_eval_node_preview(ce_csl_evaluation_root(f.result)), "BY A BOOK, 2025");
+    for (size_t i = 0; i < ce_csl_finalized_span_count(out); ++i) assert(ce_csl_finalized_span(out, i)->node != names);
+    Allocation a = {0}; CeCslOutputAllocator hooks = {&a, allocate, release};
+    CeCslFinalized *probe = NULL, *old = out;
+    assert(ce_csl_finalize_with_options(f.result, &options, &hooks, &probe, error, sizeof(error)));
+    size_t calls = a.calls; ce_csl_finalized_free(probe); assert(!a.live);
+    for (size_t i = 1; i <= calls; ++i) {
+        a = (Allocation){.fail_at = i};
+        assert(!ce_csl_finalize_with_options(f.result, &options, &hooks, &out, error, sizeof(error)));
+        assert(out == old && !a.live && *error);
+    }
+    options.omit_names = ce_csl_evaluation_root(f.result);
+    assert(!ce_csl_finalize_with_options(f.result, &options, NULL, &out, error, sizeof(error)) && out == old);
+    Fixture foreign;
+    fixture(&foreign, NULL, "<citation><layout><names variable='author'><name/></names></layout></citation>", "{\"author\":[{\"family\":\"Doe\"}]}", NULL);
+    evaluate(&foreign); options.omit_names = first_names(ce_csl_evaluation_root(foreign.result));
+    assert(!ce_csl_finalize_with_options(f.result, &options, NULL, &out, error, sizeof(error)) && out == old);
+    fixture_free(&foreign);
+    assert(ce_csl_finalize(f.result, NULL, &out, error, sizeof(error)));
+    text_is(ce_csl_finalized_inline(out), "BY A BOOK, 2025");
+    ce_csl_finalized_free(out); fixture_free(&f);
+}
+static void test_join(void) {
+    Fixture f; CeCslFinalized *out = NULL;
+    fixture(&f, "<locale xml:lang='en-US'><style-options punctuation-in-quote='true'/></locale>",
+        "<citation><layout prefix='(' suffix=')' delimiter=', '><text variable='title' quotes='true' font-style='italic'/></layout></citation>",
+        "{\"title\":\"A\"}", NULL);
+    evaluate(&f);
+    cJSON *json = cJSON_Parse("{\"title\":\"B<span class='nocase'>x</span>\"}"); assert(json);
+    CeCslInputItem item = {.id = "second", .data = json};
+    CeCslEvalRequest request = f.request; request.variables.item = &item;
+    CeCslEvaluation *second = NULL;
+    assert(ce_csl_evaluate(&request, NULL, &second, error, sizeof(error)));
+    CeCslFinalizeJoinEntry entries[2] = {
+        {.evaluation = f.result, .before_delimiter = "IGNORED", .source_cite_index = 3},
+        {.evaluation = second, .before_delimiter = ", ", .source_cite_index = 9}
+    };
+    assert(ce_csl_finalize_join(entries, 2, NULL, &out, error, sizeof(error)));
+    text_is(ce_csl_finalized_inline(out), "(“A,” “Bx”)");
+    assert(!ce_csl_finalized_evaluation(out) && !ce_csl_finalized_first_names(out));
+    assert(!ce_csl_finalized_first_names_inline(out));
+    bool first_seen = false, second_seen = false, nocase = false;
+    for (size_t i = 0; i < ce_csl_finalized_span_count(out); ++i) {
+        const CeCslFinalSpan *s = ce_csl_finalized_span(out, i);
+        assert(s->source_cite_index == 3 || s->source_cite_index == 9);
+        first_seen |= s->source_cite_index == 3;
+        second_seen |= s->source_cite_index == 9;
+    }
+    for (size_t i = 0; i < ce_csl_inline_run_count(ce_csl_finalized_inline(out)); ++i) {
+        const CeCslInlineRun *run = ce_csl_inline_run(ce_csl_finalized_inline(out), i);
+        if (run->nocase) { assert(run->length == 1 && run->format == CE_CSL_ITALIC); nocase = true; }
+    }
+    assert(first_seen && second_seen && nocase);
+    entries[1].before_delimiter = ""; entries[1].prefix = ",<b>"; entries[1].suffix = "</b>";
+    assert(ce_csl_finalize_join(entries, 2, NULL, &out, error, sizeof(error)));
+    text_is(ce_csl_finalized_inline(out), "(“A”,<b>“Bx”</b>)");
+    entries[1].before_delimiter = ", "; entries[1].prefix = NULL; entries[1].suffix = NULL;
+    Allocation a = {0}; CeCslOutputAllocator hooks = {&a, allocate, release};
+    CeCslFinalized *probe = NULL, *old = out;
+    assert(ce_csl_finalize_join(entries, 2, &hooks, &probe, error, sizeof(error)));
+    size_t calls = a.calls; ce_csl_finalized_free(probe); assert(!a.live);
+    for (size_t i = 1; i <= calls; ++i) {
+        a = (Allocation){.fail_at = i};
+        bool ok = ce_csl_finalize_join(entries, 2, &hooks, &out, error, sizeof(error));
+        if (ok || out != old || a.live) fprintf(stderr, "join OOM %zu/%zu %s\n", i, calls, error);
+        assert(!ok && out == old && !a.live && *error);
+    }
+    entries[1].source_cite_index = SIZE_MAX;
+    assert(!ce_csl_finalize_join(entries, 2, NULL, &out, error, sizeof(error)) && out == old);
+    entries[1].source_cite_index = 9;
+    Fixture foreign;
+    fixture(&foreign, NULL, "<citation><layout><text variable='title'/></layout></citation>", "{\"title\":\"Other\"}", NULL);
+    evaluate(&foreign); entries[1].evaluation = foreign.result;
+    assert(!ce_csl_finalize_join(entries, 2, NULL, &out, error, sizeof(error)) && out == old);
+    fixture_free(&foreign);
+    entries[1].evaluation = NULL;
+    assert(!ce_csl_finalize_join(entries, 2, NULL, &out, error, sizeof(error)) && out == old);
+    assert(!ce_csl_finalize_join(entries, 0, NULL, &out, error, sizeof(error)) && out == old);
+    ce_csl_finalized_free(out); out = NULL;
+    ce_csl_evaluation_free(second); cJSON_Delete(json); fixture_free(&f);
+
+    fixture(&f, NULL, "<citation><layout prefix='(' suffix=')' delimiter='; '><group delimiter=', '><names variable='author'><name form='short'/><substitute><text variable='title'/></substitute></names><date variable='issued'><date-part name='year'/></date><text variable='title'/></group></layout></citation>",
+        "{\"title\":\"Book\",\"issued\":{\"date-parts\":[[2020]]}}", NULL);
+    evaluate(&f);
+    json = cJSON_Parse("{\"title\":\"Book\",\"issued\":{\"date-parts\":[[2021]]}}"); assert(json);
+    item = (CeCslInputItem){.id = "second", .data = json}; request = f.request; request.variables.item = &item;
+    second = NULL; assert(ce_csl_evaluate(&request, NULL, &second, error, sizeof(error)));
+    entries[0] = (CeCslFinalizeJoinEntry){.evaluation = f.result, .source_cite_index = 0};
+    entries[1] = (CeCslFinalizeJoinEntry){.evaluation = second, .omit_names = first_names(ce_csl_evaluation_root(second)), .before_delimiter = ", ", .source_cite_index = 1};
+    assert(ce_csl_finalize_join(entries, 2, NULL, &out, error, sizeof(error)));
+    text_is(ce_csl_finalized_inline(out), "(Book, 2020, 2021)");
+    text_is(ce_csl_eval_node_preview(ce_csl_evaluation_root(second)), "Book, 2021");
+    ce_csl_finalized_free(out); out = NULL;
+    ce_csl_evaluation_free(second); cJSON_Delete(json); fixture_free(&f);
+
+    fixture(&f, NULL, "<citation><layout prefix='[' suffix=']'><text variable='title'/></layout></citation>", "{}", NULL);
+    evaluate(&f); json = cJSON_Parse("{\"title\":\"Only\"}"); assert(json);
+    item = (CeCslInputItem){.id = "second", .data = json}; request = f.request; request.variables.item = &item;
+    second = NULL; assert(ce_csl_evaluate(&request, NULL, &second, error, sizeof(error)));
+    entries[0] = (CeCslFinalizeJoinEntry){.evaluation = f.result, .prefix = "unused", .suffix = "unused", .source_cite_index = 0};
+    entries[1] = (CeCslFinalizeJoinEntry){.evaluation = second, .before_delimiter = "unused", .source_cite_index = 1};
+    assert(ce_csl_finalize_join(entries, 2, NULL, &out, error, sizeof(error)));
+    text_is(ce_csl_finalized_inline(out), "[Only]");
+    entries[1].evaluation = f.result;
+    assert(ce_csl_finalize_join(entries, 2, NULL, &out, error, sizeof(error)));
+    text_is(ce_csl_finalized_inline(out), "");
+    assert(!ce_csl_finalized_span_count(out));
+    ce_csl_finalized_free(out); ce_csl_evaluation_free(second); cJSON_Delete(json); fixture_free(&f);
+    out = NULL;
+    fixture(&f, NULL, "<citation><layout><group><text value='1'/><text value='2'/><text value='3'/><text value='4'/><text value='5'/><text value='6'/><text value='7'/><text value='8'/><text value='9'/><text value='10'/><text value='11'/></group></layout></citation>", "{}", NULL);
+    evaluate(&f);
+    size_t repeat_count = CE_CSL_FINALIZE_MAX_JOIN_NODES / ce_csl_evaluation_summary(f.result)->node_count + 1;
+    assert(repeat_count <= CE_CSL_INPUT_MAX_CITES);
+    CeCslFinalizeJoinEntry *repeated = calloc(repeat_count, sizeof(*repeated)); assert(repeated);
+    for (size_t i = 0; i < repeat_count; ++i) repeated[i] = (CeCslFinalizeJoinEntry){.evaluation = f.result, .source_cite_index = i};
+    a = (Allocation){0};
+    assert(!ce_csl_finalize_join(repeated, repeat_count, &hooks, &out, error, sizeof(error)));
+    assert(!out && !a.calls && strstr(error, "node work limit"));
+    free(repeated); fixture_free(&f);
+    fixture(&f, NULL, "<bibliography><layout><text value='B'/></layout></bibliography>", "{}", NULL);
+    evaluate(&f); entries[0] = (CeCslFinalizeJoinEntry){.evaluation = f.result, .source_cite_index = 0};
+    assert(!ce_csl_finalize_join(entries, 1, NULL, &out, error, sizeof(error)) && !out);
+    fixture_free(&f);
+    printf("joined finalizer allocation failure points: %zu\n", calls);
+}
 static void test_oom(void) {
     Fixture f; CeCslFinalized *old = NULL, *probe = NULL;
     fixture(&f, "<locale xml:lang='en-US'><style-options punctuation-in-quote='true'/></locale><macro name='entry'><group delimiter='; '><names variable='author'><name initialize-with='. '/></names>"
@@ -314,6 +462,6 @@ static void test_independent_unicode_spans(void) {
 }
 
 int main(void) {
-    test_structure(); test_case_and_persons(); test_quotes(); test_boundaries(); test_generated_spaces(); test_limits_and_empty(); test_independent_unicode_spans(); test_oom();
+    test_structure(); test_case_and_persons(); test_quotes(); test_boundaries(); test_generated_spaces(); test_limits_and_empty(); test_independent_unicode_spans(); test_names_projection(); test_join(); test_oom();
     puts("CSL finalization: semantic spans, case, rich fields, quotation boundaries and atomic OOM passed"); return 0;
 }

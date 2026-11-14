@@ -15,9 +15,9 @@ typedef struct Fixture {
     CeCslEvalRequest request;
     CeCslEvaluation *result;
 } Fixture;
-static void fixture(Fixture *f, const char *macros, const char *section, const char *item, const char *cite) {
+static void fixture_options(Fixture *f, const char *style_options, const char *macros, const char *section, const char *item, const char *cite) {
     memset(f, 0, sizeof(*f));
-    const char *head = "<style xmlns='http://purl.org/net/xbiblio/csl' version='1.0' class='in-text' default-locale='en-US'>"
+    const char *head = "<style xmlns='http://purl.org/net/xbiblio/csl' version='1.0' class='in-text' default-locale='en-US' %s>"
         "<info><title>Owned evaluator regression</title><id>https://example.invalid/evaluator</id>"
         "<updated>2026-01-01T00:00:00+00:00</updated></info>"
         "<locale><terms><term name='open-quote'>“</term><term name='close-quote'>”</term>"
@@ -30,9 +30,10 @@ static void fixture(Fixture *f, const char *macros, const char *section, const c
         "</terms></locale>";
     bool bibliography = !strncmp(section, "<bibliography", 13);
     const char *citation = bibliography ? "<citation><layout><text value='unused'/></layout></citation>" : "";
-    size_t size = strlen(head) + strlen(macros ? macros : "") + strlen(section) + strlen(citation) + 16;
+    size_t size = strlen(head) + strlen(style_options ? style_options : "") + strlen(macros ? macros : "") + strlen(section) + strlen(citation) + 16;
     char *xml = malloc(size); assert(xml);
-    snprintf(xml, size, "%s%s%s%s</style>", head, macros ? macros : "", citation, section);
+    int used = snprintf(xml, size, head, style_options ? style_options : ""); assert(used > 0 && (size_t)used < size);
+    snprintf(xml + used, size - (size_t)used, "%s%s%s</style>", macros ? macros : "", citation, section);
     bool ok = ce_csl_style_load(&f->style, xml, strlen(xml), error, sizeof(error));
     if (!ok) fprintf(stderr, "style: %s\n", error);
     assert(ok); free(xml);
@@ -50,6 +51,9 @@ static void fixture(Fixture *f, const char *macros, const char *section, const c
         .section = ce_csl_style_citation(f->style), .position = CE_CSL_POSITION_FIRST,
         .variables = {.item = &f->item, .cite = cite ? &f->cite : NULL, .generated = &f->generated}};
     if (bibliography) f->request.section = ce_csl_style_bibliography(f->style);
+}
+static void fixture(Fixture *f, const char *macros, const char *section, const char *item, const char *cite) {
+    fixture_options(f, NULL, macros, section, item, cite);
 }
 static void fixture_free(Fixture *f) {
     ce_csl_evaluation_free(f->result); ce_csl_locale_free(f->locale); ce_csl_style_free(f->style);
@@ -267,6 +271,10 @@ static void test_providers_and_limits(void) {
     const char *text = ce_csl_variable_text(&ce_csl_eval_node_variable(leaf, 0)->value, &size);
     assert(size == 12 && !memcmp(text, "Abbreviation", size));
     assert(!strcmp(ce_csl_evaluation_item_language(f.result), "tr"));
+    p.text[0] = 0; preview_is(&f, "");
+    const CeCslVariableValue *empty_value = &ce_csl_eval_node_variable(child(ce_csl_evaluation_root(f.result), 0), 0)->value;
+    assert(empty_value->borrowed_text && empty_value->borrowed_text != p.text);
+    p.text[0] = 'X'; assert(!*empty_value->borrowed_text);
     CeCslEvaluation *old = f.result; p.fail = true;
     assert(!ce_csl_evaluate(&f.request, NULL, &f.result, error, sizeof(error)) && f.result == old && strstr(error, "provider"));
     p.fail = false; p.suppress = true; preview_is(&f, "");
@@ -326,6 +334,40 @@ static void test_providers_and_limits(void) {
     fixture(&f, macros, section, "{}", NULL); free(macros);
     assert(!ce_csl_evaluate(&f.request, NULL, &f.result, error, sizeof(error)) && !f.result && strstr(error, "node limit"));
     fixture_free(&f);
+}
+static void test_pages(void) {
+    Fixture f;
+    const char *section = "<citation><layout><group delimiter='|'><text variable='page'/><number variable='page'/><text variable='locator'/></group></layout></citation>";
+    fixture_options(&f, "page-range-format='minimal'", NULL, section,
+        "{\"page\":\" 101 - 109,201-209 &301-309 \"}", "{\"locator\":\"321-328\",\"label\":\"page\"}");
+    preview_is(&f, " 101 – 9,201–9 &301–9 |101–9, 201–9 & 301–9|321–8");
+    assert(ce_csl_evaluation_summary(f.result)->missing_term);
+    const CeCslEvalNode *g = child(ce_csl_evaluation_root(f.result), 0);
+    const CeCslVariableValue *v = &ce_csl_eval_node_variable(child(g, 1), 0)->value;
+    size_t bytes = 0; const char *raw = ce_csl_variable_text(v, &bytes);
+    assert(bytes == strlen(" 101 - 109,201-209 &301-309 ") && !memcmp(raw, " 101 - 109,201-209 &301-309 ", bytes));
+    assert(ce_csl_eval_node_number(child(g, 1))->number_count == 6);
+    cJSON_ReplaceItemInObject(f.cite_json, "label", cJSON_CreateString("section"));
+    preview_is(&f, " 101 – 9,201–9 &301–9 |101–9, 201–9 & 301–9|321–328");
+    f.request.sorting = true;
+    preview_is(&f, " 101 - 109,201-209 &301-309 |101-109, 201-209 & 301-309|321-328");
+    fixture_free(&f);
+    fixture_options(&f, "page-range-format='expanded'",
+        "<locale xml:lang='en-US'><terms><term name='page-range-delimiter'>至</term></terms></locale>", section,
+        "{\"page\":\"甲199章-甲02章\"}", "{\"locator\":\"101-109\",\"label\":\"page\"}");
+    preview_is(&f, "甲199章至甲202章|甲199章至甲202章|101至109");
+    assert(!ce_csl_evaluation_summary(f.result)->missing_term);
+    CeCslEvaluation *old = f.result;
+    cJSON_ReplaceItemInObject(f.item_json, "page", cJSON_CreateString("<i>101-109</i>"));
+    assert(!ce_csl_evaluate(&f.request, NULL, &f.result, error, sizeof(error)) && f.result == old && strstr(error, "markup"));
+    cJSON_ReplaceItemInObject(f.item_json, "page", cJSON_CreateString("1-2-3"));
+    assert(!ce_csl_evaluate(&f.request, NULL, &f.result, error, sizeof(error)) && f.result == old && strstr(error, "chained"));
+    fixture_free(&f);
+    fixture_options(&f, "page-range-format='minimal'", NULL,
+        "<citation><layout><text variable='page'/></layout></citation>", "{\"page\":\"pre-publication\"}", NULL);
+    preview_is(&f, "pre-publication"); fixture_free(&f);
+    fixture(&f, NULL, section, "{\"page\":\"101-109\"}", "{\"locator\":\"101-109\"}");
+    preview_is(&f, "101-109|101-109|101–109"); fixture_free(&f);
 }
 static void test_sorting_numbers(void) {
     const char *values[] = {"0", "4000", "1844674407370955161600001"};
@@ -427,7 +469,7 @@ static void real_resources(int argc, char **argv) {
 int main(int argc, char **argv) {
     test_groups(); test_delimiters_and_conditions(); test_substitute();
     test_typed_and_inline(); test_occurrences(); test_atomic_and_oom(); test_providers_and_limits();
-    test_sorting_numbers();
+    test_sorting_numbers(); test_pages();
     if (argc > 1) real_resources(argc - 1, argv + 1);
     puts("CSL semantic evaluation: groups, transactions, typed leaves, inline, occurrences and OOM passed");
     return 0;

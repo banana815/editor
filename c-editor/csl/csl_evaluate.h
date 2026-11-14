@@ -118,7 +118,10 @@ typedef struct CeCslEvalSummary {
  * it; empty candidates roll back owned objects and consumed variables. A winner
  * commits canonical variable dependencies only. Inputs/callback state are never
  * mutated. Source style/locale/input remain borrowed until result free. Bound
- * generated/provider scalar bytes are copied. Custom allocator context must
+ * generated/provider scalar bytes are copied. Request/callback contexts and
+ * generated-slot/cite wrappers need survive only this call; node source JSON
+ * values (including any cited locator JSON) still follow the input lifetime.
+ * Custom allocator context must
  * outlive the result; NULL selects malloc/free. Initialize *out to NULL/live;
  * all errors, including OOM and limits, preserve *out and all source objects. */
 bool ce_csl_evaluate(const CeCslEvalRequest *request,

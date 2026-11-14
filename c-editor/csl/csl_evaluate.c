@@ -1,5 +1,6 @@
 #include "csl_evaluate.h"
 #include "csl_format.h"
+#include "csl_page_field.h"
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -280,6 +281,7 @@ static bool bind(CeCslEvaluation *e, CeCslEvalNode *n, size_t index, const char 
     n->info.metadata_present |= value->state == CE_CSL_VARIABLE_VALUE;
     size_t size = 0;
     const char *text = ce_csl_variable_text(value, &size);
+    if (text && !size && !value->text_is_inline) value->borrowed_text = "";
     if (text && size && !value->text_is_inline) {
         if (!payload(e, size)) return false;
         use->owned_text = allocate(e, size + 1);
@@ -325,33 +327,39 @@ static bool numeric_form(CeCslEvaluation *e, const char *value, CeCslNumberForm 
         if (eq(value, forms[i])) { *form = (CeCslNumberForm)i; return true; }
     return fail(e, "unsupported number form");
 }
-static bool replace_hyphens(CeCslEvaluation *e, const char *text, size_t size,
-    unsigned format, CeCslInline **out) {
-    CeCslOutput *body = ce_csl_output_new(&e->allocator, e->error, e->capacity);
-    if (!body) return false;
-    bool ok = true;
-    size_t first = 0;
-    for (size_t i = 0; i <= size; ++i) {
-        if (i != size && text[i] != '-') continue;
-        if (i > first) ok = ce_csl_output_append(body, text + first, i - first, format, NULL, e->error, e->capacity);
-        if (ok && i != size) ok = ce_csl_output_append(body, "–", 3, format, NULL, e->error, e->capacity);
-        if (!ok) break;
-        first = i + 1;
+static bool page_inline(CeCslEvaluation *e, CeCslEvalNode *n,
+    const char *text, size_t size, const char *variable) {
+    CeCslPageFieldOptions options = {CE_CSL_PAGE_FIELD_PAGE, false, CE_CSL_PAGE_EXPANDED};
+    const char *style_format = attr(ce_csl_style_root(e->request.style), "page-range-format");
+    if (style_format) {
+        const char *formats[] = {"expanded", "minimal", "minimal-two", "chicago", "chicago-15", "chicago-16"};
+        bool found = false;
+        for (size_t i = 0; i < sizeof(formats)/sizeof(*formats); ++i)
+            if (eq(style_format, formats[i])) { options.format = (CeCslPageRangeFormat)i; found = true; break; }
+        if (!found) return fail(e, "unsupported page-range-format");
+        options.has_format = true;
     }
-    ok = ok && ce_csl_inline_from_output(body, false, &e->allocator, out, e->error, e->capacity);
-    ce_csl_output_free(body);
+    if (eq(variable, "locator")) {
+        const cJSON *label = e->request.variables.cite ?
+            cJSON_GetObjectItemCaseSensitive(e->request.variables.cite->data, "label") : NULL;
+        if (label && !cJSON_IsString(label)) return fail(e, "invalid locator label");
+        options.policy = !label || eq(label->valuestring, "page") ?
+            CE_CSL_PAGE_FIELD_PAGE_LOCATOR : CE_CSL_PAGE_FIELD_OTHER_LOCATOR;
+    }
+    /* Sorting consumes retained typed numeric sources, not display abbreviations. */
+    if (e->request.sorting) { options.policy = CE_CSL_PAGE_FIELD_PAGE; options.has_format = false; }
+    CeCslOutputString rendered = {0}; CeCslPageFieldInfo info = {0};
+    bool ok = ce_csl_page_field_render(text, size, &options, e->request.locale, &e->allocator,
+        &rendered, &info, e->error, e->capacity);
+    if (ok) ok = inline_plain(e, rendered.data, rendered.length, n->info.decoration.effective_format, false, &n->preview);
+    if (ok) n->info.missing_term |= info.missing_term;
+    ce_csl_output_string_free(&rendered);
     return ok;
 }
-/* Until a full mixed page-range tokenizer is shared, never silently ignore a
- * requested range-shortening policy. Plain non-range pages need no shortening. */
 static bool scalar_inline(CeCslEvaluation *e, CeCslEvalNode *n, const char *text, size_t size,
     const char *variable, bool markup) {
     unsigned format = n->info.decoration.effective_format;
-    if (eq(variable, "locator")) return replace_hyphens(e, text, size, format, &n->preview);
-    if (eq(variable, "page") && attr(ce_csl_style_root(e->request.style), "page-range-format")) {
-        if (memchr(text, '-', size) || strstr(text, "–"))
-            return fail(e, "unsupported mixed page-range shortening in evaluator");
-    }
+    if (eq(variable, "page") || eq(variable, "locator")) return page_inline(e, n, text, size, variable);
     if (markup) return ce_csl_inline_parse(text, size, format, &e->allocator, &n->preview,
         &n->info.inline_diagnostic, e->error, e->capacity);
     return inline_plain(e, text, size, format, false, &n->preview);
@@ -403,7 +411,7 @@ static bool number_leaf(CeCslEvaluation *e, CeCslEvalNode *n) {
         ce_csl_locale_noun_gender(e->request.locale, v->canonical_name), &e->allocator,
         &rendered, &missing, e->error, e->capacity);
     if (ok) ok = scalar_inline(e, n, rendered.data, rendered.length, v->canonical_name, false);
-    n->info.missing_term = missing;
+    n->info.missing_term |= missing;
     ce_csl_output_string_free(&rendered);
     return ok;
 }
@@ -765,6 +773,12 @@ bool ce_csl_evaluate(const CeCslEvalRequest *request, const CeCslOutputAllocator
     }
     if (!walk(e, entry, request->base_format, "", NULL, 1, &e->root)) goto failed;
     e->summary.nonempty = e->root->info.nonempty;
+    /* Construction callbacks, generated slots and the current cite may be
+     * caller stack objects. Retain only the immutable environment used by
+     * post-evaluation getters; typed node sources have their own contract. */
+    e->request = (CeCslEvalRequest){.style = request->style,
+        .locale = request->locale, .section = request->section};
+    e->variables = (CeCslVariableContext){0};
     e->error = NULL; e->capacity = 0;
     ce_csl_evaluation_free(*out);
     *out = e;

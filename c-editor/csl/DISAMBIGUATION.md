@@ -5,7 +5,9 @@ and year suffixes. It is not a citation renderer. Its provider must supply exact
 collision keys after the real evaluator and finalizer, plus typed name metadata.
 `CeCslEvaluation` previews must not be used as finalized keys. The independent
 mock-provider tests validate the driver algorithm, not APA output or full CSL
-conformance; there is no production provider connected yet.
+conformance. The separate [evaluator-backed provider](DISAMBIGUATION_RENDER.md)
+now supplies real finalized keys and has its own pinned-APA integration tests.
+The library is not yet connected to the editor application.
 
 The registry determines eligibility and final bibliography order. Explicitly
 included uncited entries receive invisible citation probes and participate in
@@ -73,5 +75,9 @@ The behavior was designed against the
 [CSL 1.0.2 disambiguation specification](https://docs.citationstyles.org/en/stable/specification.html#disambiguation)
 and primary processor fixtures inspected at
 [test-suite commit 6eefc5b](https://github.com/citation-style-language/test-suite/tree/6eefc5b07c6969ab8999e48542acbcc131cba864).
-Fixture source was not copied into these tests. Remaining rules and production
-integration require their own implementation and end-to-end verification.
+Fixture source was not copied into these tests. The evaluator-backed provider
+also verifies full-context initial keys, explicit year suffixes, bibliography
+propagation and reversible deletion rebuilds using real C rendering. Its limits
+and unsupported behavior are recorded in [DISAMBIGUATION_RENDER.md](DISAMBIGUATION_RENDER.md).
+Remaining given-name rules, implicit suffix insertion, full document processing
+and editor integration require their own implementation and end-to-end verification.

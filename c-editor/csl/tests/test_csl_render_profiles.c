@@ -10,8 +10,8 @@
  * included. The oracle bibliography adapter's terminal newline is removed.
  * Our test-only plain adapter represents second-field-align as one field space;
  * the production entry finalizer deliberately retains raw text and source spans.
- * One explicit normative literal-name expectation differs from citeproc's
- * extension applying family name-part case to a non-personal name.
+ * Explicit normative expectations differ from citeproc for literal-name case
+ * and unchanged PAGE hyphens when page-range-format is absent.
  * These representative outputs and broad typed-tree checks are not a claim of
  * complete CSL/profile conformance. The product remains entirely C. */
 typedef struct Golden {
@@ -36,7 +36,16 @@ static const Golden goldens[] = {
         {"张伟. (2024). 科研文献整理方法. 示例出版社.", "[1] 张伟, 科研文献整理方法. 北京: 示例出版社, 2024.", "[1] 张伟. 科研文献整理方法[M]. 北京: 示例出版社, 2024."}},
     {"anonymous", "{\"id\":\"anonymous\",\"type\":\"report\",\"title\":\"An anonymous report\",\"issued\":{\"date-parts\":[[2021]]},\"publisher\":\"Example Institute\",\"number\":\"17\"}", "{}",
         {"(An Anonymous Report, 2021)", "[1]", "[1]"},
-        {"An anonymous report (No. 17). (2021). Example Institute.", "[1] “An anonymous report,” Example Institute, 17, 2021.", "[1] An anonymous report: 17[R]. Example Institute, 2021."}}
+        {"An anonymous report (No. 17). (2021). Example Institute.", "[1] “An anonymous report,” Example Institute, 17, 2021.", "[1] An anonymous report: 17[R]. Example Institute, 2021."}},
+    {"book-range", "{\"id\":\"book-range\",\"type\":\"book\",\"title\":\"an example of reproducible research\",\"author\":[{\"family\":\"Doe\",\"given\":\"Jane\"},{\"family\":\"Roe\",\"given\":\"John\"}],\"issued\":{\"date-parts\":[[2024]]},\"publisher\":\"Example Press\",\"publisher-place\":\"Oxford\",\"edition\":\"2\"}", "{\"locator\":\"101-109\",\"label\":\"page\"}",
+        {"(Doe & Roe, 2024, pp. 101–109)", "[1, pp. 101–109]", "[1]"},
+        {"Doe, J., & Roe, J. (2024). an example of reproducible research (2nd ed.). Example Press.", "[1] J. Doe and J. Roe, an example of reproducible research, 2nd ed. Oxford: Example Press, 2024.", "[1] DOE J, ROE J. an example of reproducible research[M]. 2 版. Oxford: Example Press, 2024."}},
+    {"journal-range", "{\"id\":\"journal-range\",\"type\":\"article-journal\",\"title\":\"Context-aware testing\",\"author\":[{\"family\":\"Doe\",\"given\":\"Jane\"}],\"issued\":{\"date-parts\":[[2025,3,14]]},\"container-title\":\"Journal of Testing\",\"volume\":\"12\",\"issue\":\"2\",\"page\":\"101-109\",\"DOI\":\"10.1234/example\"}", "{}",
+        {"(Doe, 2025)", "[1]", "[1]"},
+        {"Doe, J. (2025). Context-aware testing. Journal of Testing, 12(2), 101–109. https://doi.org/10.1234/example", "[1] J. Doe, “Context-aware testing,” Journal of Testing, vol. 12, no. 2, pp. 101–109, Mar. 2025, doi: 10.1234/example.", "[1] DOE J. Context-aware testing[J/OL]. Journal of Testing, 2025, 12(2): 101-109. DOI:10.1234/example."}},
+    {"chapter-range", "{\"id\":\"chapter-range\",\"type\":\"chapter\",\"title\":\"Shared testing\",\"author\":[{\"family\":\"Moran\",\"given\":\"Alice\"}],\"editor\":[{\"family\":\"Lee\",\"given\":\"Sam\"}],\"issued\":{\"date-parts\":[[2022]]},\"container-title\":\"Methods in Systems\",\"publisher\":\"Example Press\",\"publisher-place\":\"New York\",\"page\":\"55-59\"}", "{}",
+        {"(Moran, 2022)", "[1]", "[1]"},
+        {"Moran, A. (2022). Shared testing. In S. Lee (Ed.), Methods in Systems (pp. 55–59). Example Press.", "[1] A. Moran, “Shared testing,” in Methods in Systems, S. Lee, Ed., New York: Example Press, 2022, pp. 55–59.", "[1] MORAN A. Shared testing[M]//LEE S. Methods in Systems. New York: Example Press, 2022: 55-59."}}
 };
 static char error[512];
 static const char *gb_literal_normative = "[1] Example Research Group. An online dataset[EB/OL]. (2023-05-06)[2026-01-02]. https://example.invalid/data.";
@@ -140,6 +149,16 @@ int main(int argc, char **argv) {
                      * uppercase does not apply to an institution's literal. */
                     assert(strcmp(expected,gb_literal_normative));
                     expected=gb_literal_normative; ++normative_divergences;
+                } else if (profile==1 && section && (!strcmp(g->id,"journal-range") || !strcmp(g->id,"chapter-range"))) {
+                    /* This pinned IEEE style does not set page-range-format.
+                     * CSL 1.0.2 requires unchanged PAGE hyphens in this case;
+                     * citeproc still changes them to en-dashes. LOCATOR has a
+                     * distinct always-en-dash rule and matches the oracle. */
+                    assert(!ce_csl_xml_attribute(ce_csl_style_root(style),"page-range-format"));
+                    expected=!strcmp(g->id,"journal-range") ?
+                        "[1] J. Doe, “Context-aware testing,” Journal of Testing, vol. 12, no. 2, pp. 101-109, Mar. 2025, doi: 10.1234/example." :
+                        "[1] A. Moran, “Shared testing,” in Methods in Systems, S. Lee, Ed., New York: Example Press, 2022, pp. 55-59.";
+                    assert(strcmp(expected,g->bibliography[profile])); ++normative_divergences;
                 }
                 bool ok=render(style,locale,g->id,item,cite,section!=0,&actual,&nodes);
                 ++checks;
@@ -154,6 +173,7 @@ int main(int argc, char **argv) {
         }
         cJSON *item=cJSON_Parse(goldens[1].item), *cite=cJSON_Parse("{\"locator\":\"20-22\",\"label\":\"page\"}");
         assert(item && cite);
+        cJSON_ReplaceItemInObject(item,"page",cJSON_CreateString("101-109"));
         cJSON_AddStringToObject(item,"publisher","Example Press");
         cJSON_AddStringToObject(item,"publisher-place","Example City");
         cJSON_AddItemToObject(item,"editor",cJSON_Parse("[{\"family\":\"Smith\",\"given\":\"Alex\"}]"));

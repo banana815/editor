@@ -69,7 +69,7 @@ static void expect_order(CeCslSortEvaluated *keys, size_t rows, size_t columns, 
     ce_csl_sort_order_free(&order);
 }
 static void test_scalars(void) {
-    Fixture f; CeCslSortEvaluated keys[5] = {{0}};
+    Fixture f; CeCslSortEvaluated keys[5] = {0};
     fixture(&f, "", "<key variable='volume' sort='descending'/>", "{\"volume\":\"184467440737095516160\"}");
     evaluate(&f, &keys[0]);
     item(&f, "{\"volume\":\"-0007\"}"); evaluate(&f, &keys[1]);
@@ -95,7 +95,7 @@ static void test_scalars(void) {
     fixture_free(&f);
 }
 static void test_names(void) {
-    Fixture f; CeCslSortEvaluated keys[5] = {{0}};
+    Fixture f; CeCslSortEvaluated keys[5] = {0};
     fixture(&f, "", "<key variable='author' names-min='1' names-use-first='1'/>",
         "{\"author\":[{\"family\":\"Doe\",\"given\":\"A\"},{\"family\":\"Zed\"}]}");
     evaluate(&f, &keys[0]);
@@ -119,7 +119,7 @@ static void test_names(void) {
     fixture_free(&f);
 }
 static void test_dates_and_macros(void) {
-    Fixture f; CeCslSortEvaluated keys[6] = {{0}};
+    Fixture f; CeCslSortEvaluated keys[6] = {0};
     fixture(&f, "", "<key variable='issued'/>", "{\"issued\":{\"date-parts\":[[-100]]}}");
     evaluate(&f, &keys[0]); item(&f, "{\"issued\":{\"date-parts\":[[-50]]}}"); evaluate(&f, &keys[1]);
     item(&f, "{\"issued\":{\"date-parts\":[[2000]]}}"); evaluate(&f, &keys[2]);
@@ -147,7 +147,7 @@ static void test_dates_and_macros(void) {
     assert(!ce_csl_sort_evaluate(&f.request, f.key, 0, NULL, &keys[0], error, sizeof(error)) && strstr(error, "Unsupported")); fixture_free(&f);
 }
 static void test_selected_parts_and_counts(void) {
-    Fixture f; CeCslSortEvaluated keys[4] = {{0}};
+    Fixture f; CeCslSortEvaluated keys[4] = {0};
     fixture(&f, "<macro name='date'><date variable='issued'><date-part name='month' form='numeric'/><date-part name='day'/></date></macro>",
         "<key macro='date'/>", "{\"issued\":{\"date-parts\":[[2024,1,2]]}}");
     evaluate(&f, &keys[0]); item(&f, "{\"issued\":{\"date-parts\":[[1900,2,1]]}}"); evaluate(&f, &keys[1]);
@@ -236,7 +236,7 @@ static size_t test_oom(void) {
     }
     m.fail = 0; ce_csl_sort_evaluated_free(&out); assert(!m.live); fixture_free(&f);
     fixture(&f, "", "<key variable='volume'/>", "{\"volume\":\"2\"}");
-    CeCslSortEvaluated keys[2] = {{0}}; evaluate(&f, &keys[0]); evaluate(&f, &keys[1]);
+    CeCslSortEvaluated keys[2] = {0}; evaluate(&f, &keys[0]); evaluate(&f, &keys[1]);
     CeCslSortOrder order = {0}; m.calls = 0;
     assert(ce_csl_sort_evaluated_order(keys, 2, 1, &a, &order, error, sizeof(error)));
     size_t order_total = m.calls; size_t *old_order = order.indices;
@@ -283,7 +283,7 @@ static void real_profiles(char **argv) {
             const CeCslXmlNode *sort = ce_csl_xml_child(f.request.section, "sort");
             size_t columns = 0; for (const CeCslXmlNode *k = sort ? sort->children : NULL; k; k = k->next) ++columns;
             if (!columns) continue;
-            CeCslSortEvaluated keys[5 * 64] = {{0}};
+            CeCslSortEvaluated keys[5 * 64] = {0};
             for (size_t row = 0; row < 5; ++row) {
                 item(&f, data[row]); f.generated.citation_number.value = 5 - row;
                 size_t col = 0;

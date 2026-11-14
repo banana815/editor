@@ -21,6 +21,10 @@ The current modules provide:
   preserved typed metadata, resolved references and atomic input replacement.
 - Locale-based scalar number forms, numeric-field extraction and exact decimal
   page-range pairs, including distinct Chicago 15/16 shortening rules.
+  Page-field rendering retains multiple ranges, literal affixes and whitespace;
+  page locators apply the active range format, while other locators only replace
+  hyphens with the localized range separator. Unsupported rich range transforms
+  and chained three-endpoint ranges fail explicitly.
 - Inherited formatting, distinct light/oblique runs, nonempty-only affixes and
   condition/branch evaluation with explicit cite-position context.
 - CSL plain-text case conversion with pinned stop words and source maps, and
@@ -42,13 +46,15 @@ The current modules provide:
 - Semantic style evaluation with transactional substitution, typed leaf values,
   macro-call occurrences, group suppression and retained name/date identities.
 - Entry finalization with nested locale quotation marks, generated punctuation
-  boundaries and mapped name/display ranges. [FINALIZE.md](FINALIZE.md) documents
-  the supported cleanup rules and the remaining document-level work.
+  boundaries and mapped name/display ranges, names projection and owned grouping
+  snapshots. Planned citation pieces can be joined with one layout envelope and
+  one punctuation pass. [FINALIZE.md](FINALIZE.md) documents the supported rules.
 - A bounded document-wide disambiguation driver with typed rendering callbacks,
   primary-name initials, added names, conditional branches and ordered year
   suffixes. [DISAMBIGUATION.md](DISAMBIGUATION.md) describes the initial supported
-  rule and the required real-renderer integration; mock-provider checks do not
-  establish citation-format conformance.
+  rule. Its real rendering provider uses whole-context evaluations and typed
+  person spans, with actual APA initials, added names and suffix checks. This
+  provider remains separate from editor document transactions.
 - Typed stylesheet sort-key evaluation and stable matrix ordering, including
   the pinned profiles' keys, structured name components and selected date parts.
   [SORT_EVALUATE.md](SORT_EVALUATE.md) lists unsupported mixed-key cases and
@@ -99,12 +105,13 @@ documented hooks, not every transitive library allocation. The input model's
 numeric identity checks use original decimal tokens before conversion to double;
 ordinary metadata numbers remain cJSON doubles and are not lossless JSON text.
 
-The profile integration suite checks 36 representative citation/bibliography
+The profile integration suite checks 54 representative citation/bibliography
 texts and 540 typed evaluation/finalization combinations against the pinned
 styles. Its test adapter wraps a single citation layout and represents aligned
 bibliography fields with a space; the application document adapter is still
-pending. One recorded processor difference is intentional: a family name-part
-case rule does not uppercase a non-personal literal name. Multi-citation sorting,
+pending. Three recorded processor differences are intentional: a family name-part
+case rule does not uppercase a non-personal literal name, and two IEEE page fields
+retain their source hyphens when no range format is requested. Multi-citation sorting,
 disambiguation and collapse are not established by these single-entry examples.
 
 The dedicated `C citation processor` workflow runs this independent module on

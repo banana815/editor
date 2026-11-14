@@ -16,6 +16,11 @@ typedef union Block {
 struct CeCslFinalized {
     CeCslOutputAllocator user, allocator;
     const CeCslEvaluation *evaluation;
+    const CeCslEvalNode *omit_names;
+    const CeCslEvalNode *first_names;
+    CeCslInline *names_key;
+    size_t source_cite_index;
+    bool joined;
     CeCslInline *text;
     CeCslOutput *output;
     CeCslFinalSpan *spans;
@@ -78,7 +83,7 @@ static bool span(CeCslFinalized *r, const CeCslEvalNode *node, CeCslFinalSpanKin
         if (r->count) memcpy(next, r->spans, r->count * sizeof(*next));
         budget_free(r, r->spans); r->spans = next; r->capacity = capacity;
     }
-    r->spans[r->count++] = (CeCslFinalSpan){node, kind, offset, length, person, display};
+    r->spans[r->count++] = (CeCslFinalSpan){node, kind, offset, length, person, display, r->source_cite_index};
     return true;
 }
 static bool boundary(CeCslFinalized *r, const CeCslEvalNode *node, size_t offset) {
@@ -112,19 +117,21 @@ static bool transform(CeCslFinalized *r, CeCslInline **body, size_t begin,
     ce_csl_inline_map_free(&map); return ok;
 }
 static bool materialize(CeCslFinalized *r, const CeCslEvalNode *node, size_t depth,
-    size_t quote_depth, CeCslInline **out) {
+    size_t quote_depth, CeCslInline **out, bool *rendered_variable) {
+    *rendered_variable = false;
     if (depth > CE_CSL_EVALUATE_MAX_DEPTH) return fail(r, "tree depth limit exceeded");
     const CeCslEvalNodeInfo *info = ce_csl_eval_node_info(node);
     if (!info) return fail(r, "missing evaluation node");
     const CeCslEvalDecoration *d = &info->decoration;
     size_t begin = r->count;
     CeCslInline *body = NULL, *wrapped = NULL;
-    if (!info->nonempty) return plain(r, "", 0, out);
+    if (!info->nonempty || node == r->omit_names) return plain(r, "", 0, out);
     const CeCslInline *content = ce_csl_eval_node_content(node);
     bool ok = content ? ce_csl_inline_clone(content, &r->allocator, &body, r->error, r->error_capacity) :
         plain(r, "", 0, &body);
     if (!ok) goto done;
     if (content) {
+        *rendered_variable = info->rendered_variable_present;
         const CeCslNamesResult *names = ce_csl_eval_node_names(node);
         for (size_t i = 0; i < ce_csl_names_result_person_count(names); ++i) {
             const CeCslNameRendered *person = ce_csl_names_result_person(names, i);
@@ -141,8 +148,11 @@ static bool materialize(CeCslFinalized *r, const CeCslEvalNode *node, size_t dep
         for (const CeCslEvalNode *child = info->first_child; child; child = ce_csl_eval_node_info(child)->next) {
             size_t child_begin = r->count;
             CeCslInline *part = NULL;
-            ok = materialize(r, child, depth + 1, quote_depth + (d->quotes ? 1 : 0), &part);
+            bool child_rendered = false;
+            ok = materialize(r, child, depth + 1, quote_depth + (d->quotes ? 1 : 0), &part, &child_rendered);
             if (ok && text_size(part)) {
+                CeCslEvalKind kind = ce_csl_eval_node_info(child)->kind;
+                *rendered_variable |= child_rendered || kind == CE_CSL_EVAL_GROUP || kind == CE_CSL_EVAL_MACRO;
                 size_t child_end = r->count;
                 if (prior) {
                     ok = boundary(r, node, text_size(body)) &&
@@ -160,9 +170,14 @@ static bool materialize(CeCslFinalized *r, const CeCslEvalNode *node, size_t dep
             if (!ok) goto done;
         }
     }
+    if (info->kind == CE_CSL_EVAL_GROUP && info->variable_called && !*rendered_variable) {
+        r->count = begin;
+        ok = plain(r, "", 0, &body);
+        if (!ok) goto done;
+    }
     if (d->strip_periods && !transform(r, &body, begin, true, CE_CSL_CASE_NONE)) { ok = false; goto done; }
     if (d->text_case != CE_CSL_CASE_NONE && !transform(r, &body, begin, false, d->text_case)) { ok = false; goto done; }
-    if (!text_size(body)) { r->count = begin; *out = body; body = NULL; goto done; }
+    if (!text_size(body)) { *rendered_variable = false; r->count = begin; *out = body; body = NULL; goto done; }
     if (!plain(r, "", 0, &wrapped)) { ok = false; goto done; }
     unsigned affix_format = info->kind == CE_CSL_EVAL_LAYOUT ? d->effective_format : d->inherited_format;
     size_t child_end = r->count;
@@ -331,10 +346,43 @@ static bool punctuation(CeCslFinalized *r) {
     }
     budget_free(r, generated); budget_free(r, edits); return ok;
 }
+static bool capture_names(CeCslFinalized *r) {
+    const CeCslFinalSpan *first = NULL;
+    size_t first_index = SIZE_MAX;
+    for (size_t i = 0; i < r->count; ++i) {
+        const CeCslFinalSpan *s = &r->spans[i];
+        if (s->kind != CE_CSL_FINAL_NODE || !s->length) continue;
+        const CeCslEvalNodeInfo *info = ce_csl_eval_node_info(s->node);
+        if (info->kind == CE_CSL_EVAL_NAMES && info->index < first_index) {
+            first = s; first_index = info->index;
+        }
+    }
+    if (!first) return true;
+    r->first_names = first->node;
+    return ce_csl_inline_slice(r->text, first->offset, first->length, &r->allocator,
+        &r->names_key, r->error, r->error_capacity);
+}
 bool ce_csl_finalize(const CeCslEvaluation *evaluation, const CeCslOutputAllocator *allocator,
     CeCslFinalized **out, char *error, size_t capacity) {
+    return ce_csl_finalize_with_options(evaluation, NULL, allocator, out, error, capacity);
+}
+static bool contains_names(const CeCslEvaluation *evaluation, const CeCslEvalNode *target) {
+    const CeCslEvalNode *node = ce_csl_evaluation_root(evaluation);
+    while (node) {
+        const CeCslEvalNodeInfo *info = ce_csl_eval_node_info(node);
+        if (node == target) return info->kind == CE_CSL_EVAL_NAMES;
+        if (info->first_child) { node = info->first_child; continue; }
+        while (node && !ce_csl_eval_node_info(node)->next) node = ce_csl_eval_node_info(node)->parent;
+        if (node) node = ce_csl_eval_node_info(node)->next;
+    }
+    return false;
+}
+bool ce_csl_finalize_with_options(const CeCslEvaluation *evaluation,
+    const CeCslFinalizeOptions *options, const CeCslOutputAllocator *allocator,
+    CeCslFinalized **out, char *error, size_t capacity) {
     if (error && capacity) *error = 0;
-    if (!evaluation || !out || (allocator && (!allocator->allocate || !allocator->deallocate))) {
+    if (!evaluation || !out || (allocator && (!allocator->allocate || !allocator->deallocate)) ||
+        (options && options->omit_names && !contains_names(evaluation, options->omit_names))) {
         if (error && capacity) snprintf(error, capacity, "CSL finalization: invalid arguments");
         return false;
     }
@@ -342,11 +390,107 @@ bool ce_csl_finalize(const CeCslEvaluation *evaluation, const CeCslOutputAllocat
     CeCslFinalized *r = user.allocate(user.context, sizeof(*r));
     if (!r) { if (error && capacity) snprintf(error, capacity, "CSL finalization: out of memory"); return false; }
     memset(r, 0, sizeof(*r)); r->user = user; r->evaluation = evaluation;
+    r->source_cite_index = SIZE_MAX;
+    r->omit_names = options ? options->omit_names : NULL;
     r->live = sizeof(*r);
     r->allocator = (CeCslOutputAllocator){r, budget_alloc, budget_free};
     r->error = error; r->error_capacity = capacity;
     r->missing_term = ce_csl_evaluation_summary(evaluation)->missing_term;
-    bool ok = materialize(r, ce_csl_evaluation_root(evaluation), 0, 0, &r->text) && punctuation(r);
+    bool rendered_variable = false;
+    bool ok = materialize(r, ce_csl_evaluation_root(evaluation), 0, 0, &r->text, &rendered_variable) &&
+        capture_names(r) && punctuation(r);
+    if (ok) {
+        size_t keep = 0;
+        for (size_t i = 0; i < r->count; ++i)
+            if (r->spans[i].kind != BOUNDARY && r->spans[i].kind != GENERATED) r->spans[keep++] = r->spans[i];
+        r->count = keep;
+        r->output = ce_csl_output_new(&r->allocator, error, capacity);
+        ok = r->output && ce_csl_inline_to_output(r->text, r->output, error, capacity);
+    }
+    if (!ok) {
+        if (r->limit) fail(r, "workspace limit exceeded");
+        ce_csl_finalized_free(r); return false;
+    }
+    r->error = NULL; r->error_capacity = 0;
+    CeCslFinalized *old = *out; *out = r; ce_csl_finalized_free(old); return true;
+}
+bool ce_csl_finalize_join(const CeCslFinalizeJoinEntry *entries, size_t count,
+    const CeCslOutputAllocator *allocator, CeCslFinalized **out, char *error, size_t capacity) {
+    if (error && capacity) *error = 0;
+    if (!entries || !count || count > CE_CSL_INPUT_MAX_CITES || !out ||
+        (allocator && (!allocator->allocate || !allocator->deallocate))) {
+        if (error && capacity) snprintf(error, capacity, "CSL finalization: invalid join arguments");
+        return false;
+    }
+    const CeCslEvalNodeInfo *layout = NULL;
+    const CeCslLocale *locale = NULL;
+    size_t nodes = 0;
+    for (size_t i = 0; i < count; ++i) {
+        const CeCslEvaluation *e = entries[i].evaluation;
+        const CeCslEvalNodeInfo *info = ce_csl_eval_node_info(ce_csl_evaluation_root(e));
+        const CeCslEvalSummary *summary = ce_csl_evaluation_summary(e);
+        if (summary && summary->node_count > CE_CSL_FINALIZE_MAX_JOIN_NODES - nodes) {
+            if (error && capacity) snprintf(error, capacity, "CSL finalization: joined node work limit exceeded");
+            return false;
+        }
+        if (summary) nodes += summary->node_count;
+        if (!e || !info || info->kind != CE_CSL_EVAL_LAYOUT || !info->decoration.cluster_envelope ||
+            entries[i].source_cite_index == SIZE_MAX ||
+            (entries[i].omit_names && !contains_names(e, entries[i].omit_names)) ||
+            (layout && (layout->occurrence.source != info->occurrence.source ||
+                        layout->decoration.effective_format != info->decoration.effective_format ||
+                        locale != ce_csl_evaluation_locale(e)))) {
+            if (error && capacity) snprintf(error, capacity, "CSL finalization: mismatched citation join context");
+            return false;
+        }
+        if (!layout) { layout = info; locale = ce_csl_evaluation_locale(e); }
+    }
+    CeCslOutputAllocator user = allocator ? *allocator : (CeCslOutputAllocator){NULL, normal_alloc, normal_free};
+    CeCslFinalized *r = user.allocate(user.context, sizeof(*r));
+    if (!r) { if (error && capacity) snprintf(error, capacity, "CSL finalization: out of memory"); return false; }
+    memset(r, 0, sizeof(*r)); r->user = user; r->allocator = (CeCslOutputAllocator){r, budget_alloc, budget_free};
+    r->live = sizeof(*r); r->error = error; r->error_capacity = capacity; r->joined = true;
+    r->source_cite_index = SIZE_MAX;
+    r->evaluation = entries[0].evaluation;
+    bool ok = plain(r, "", 0, &r->text), prior = false;
+    unsigned format = layout->decoration.effective_format;
+    const CeCslEvalNode *envelope = ce_csl_evaluation_root(entries[0].evaluation);
+    for (size_t i = 0; i < count && ok; ++i) {
+        const CeCslFinalizeJoinEntry *entry = &entries[i];
+        r->evaluation = entry->evaluation; r->omit_names = entry->omit_names;
+        r->source_cite_index = entry->source_cite_index;
+        r->missing_term |= ce_csl_evaluation_summary(entry->evaluation)->missing_term;
+        size_t begin = r->count;
+        CeCslInline *part = NULL; bool rendered = false;
+        ok = materialize(r, ce_csl_evaluation_root(entry->evaluation), 0, 0, &part, &rendered);
+        size_t end = r->count;
+        if (ok && text_size(part)) {
+            r->source_cite_index = SIZE_MAX;
+            if (!prior) {
+                ok = append_generated(r, envelope, r->text, layout->decoration.prefix, format);
+                if (ok && text_size(r->text)) ok = boundary(r, envelope, text_size(r->text));
+            } else {
+                ok = boundary(r, envelope, text_size(r->text)) &&
+                    append_generated(r, envelope, r->text, entry->before_delimiter, format) &&
+                    boundary(r, envelope, text_size(r->text));
+            }
+            r->source_cite_index = entry->source_cite_index;
+            if (ok && entry->prefix && *entry->prefix) ok = append_plain(r, r->text, entry->prefix, format) &&
+                boundary(r, ce_csl_evaluation_root(entry->evaluation), text_size(r->text));
+            if (ok) {
+                shift(r, begin, end, text_size(r->text));
+                ok = ce_csl_inline_concat(r->text, part, error, capacity);
+            }
+            if (ok && entry->suffix && *entry->suffix) ok = boundary(r, ce_csl_evaluation_root(entry->evaluation), text_size(r->text)) &&
+                append_plain(r, r->text, entry->suffix, format);
+            prior = true;
+        }
+        ce_csl_inline_free(part);
+    }
+    r->source_cite_index = SIZE_MAX;
+    if (ok && prior) ok = boundary(r, envelope, text_size(r->text)) &&
+        append_generated(r, envelope, r->text, layout->decoration.suffix, format);
+    if (ok) ok = punctuation(r);
     if (ok) {
         size_t keep = 0;
         for (size_t i = 0; i < r->count; ++i)
@@ -364,11 +508,15 @@ bool ce_csl_finalize(const CeCslEvaluation *evaluation, const CeCslOutputAllocat
 }
 void ce_csl_finalized_free(CeCslFinalized *r) {
     if (!r) return;
-    ce_csl_inline_free(r->text); ce_csl_output_free(r->output); budget_free(r, r->spans);
+    ce_csl_inline_free(r->text); ce_csl_inline_free(r->names_key);
+    ce_csl_output_free(r->output); budget_free(r, r->spans);
     r->user.deallocate(r->user.context, r);
 }
 const CeCslInline *ce_csl_finalized_inline(const CeCslFinalized *r) { return r ? r->text : NULL; }
 const CeCslOutput *ce_csl_finalized_output(const CeCslFinalized *r) { return r ? r->output : NULL; }
+const CeCslEvaluation *ce_csl_finalized_evaluation(const CeCslFinalized *r) { return r && !r->joined ? r->evaluation : NULL; }
+const CeCslEvalNode *ce_csl_finalized_first_names(const CeCslFinalized *r) { return r ? r->first_names : NULL; }
+const CeCslInline *ce_csl_finalized_first_names_inline(const CeCslFinalized *r) { return r ? r->names_key : NULL; }
 bool ce_csl_finalized_missing_term(const CeCslFinalized *r) { return r && r->missing_term; }
 size_t ce_csl_finalized_span_count(const CeCslFinalized *r) { return r ? r->count : 0; }
 const CeCslFinalSpan *ce_csl_finalized_span(const CeCslFinalized *r, size_t index) { return r && index < r->count ? &r->spans[index] : NULL; }
