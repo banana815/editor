@@ -76,7 +76,10 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         working-directory: test-app
         shell: bash
-        run: npm run tauri -- build ${{ matrix.platform == 'linux-x64' && '--bundles deb' || '' }}
+        # Manual builds do not receive the release signing secrets.
+        run: >-
+          npm run tauri -- build ${{ matrix.platform == 'linux-x64' && '--bundles deb' || '' }}
+          --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
       - name: Upload manual build artifacts
         if: github.event_name == 'workflow_dispatch'
