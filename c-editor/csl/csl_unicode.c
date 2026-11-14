@@ -6,6 +6,7 @@
 #include <utf8proc.h>
 
 typedef struct CodepointRange { uint32_t first, last; } CodepointRange;
+typedef struct ScriptRange { uint32_t first, last; unsigned short script; } ScriptRange;
 typedef struct SpecialCase {
     uint32_t codepoint, lower[3], title[3], upper[3];
     unsigned char lower_count, title_count, upper_count, language, context;
@@ -120,6 +121,17 @@ bool ce_csl_unicode_is_number(uint32_t cp) {
 bool ce_csl_unicode_is_word_codepoint(uint32_t cp) {
     return ce_csl_unicode_is_letter(cp) || ce_csl_unicode_is_mark(cp) ||
         ce_csl_unicode_is_number(cp) || category(cp) == UTF8PROC_CATEGORY_PC;
+}
+const char *ce_csl_unicode_script(uint32_t cp) {
+    size_t low=0,high=COUNT(script_ranges);
+    if(!ce_csl_unicode_is_scalar(cp))return "Unknown";
+    while(low<high) {
+        size_t mid=low+(high-low)/2;
+        if(cp<script_ranges[mid].first)high=mid;
+        else if(cp>script_ranges[mid].last)low=mid+1;
+        else return script_names[script_ranges[mid].script];
+    }
+    return "Unknown";
 }
 
 static unsigned char ascii_lower(unsigned char c) {
@@ -283,7 +295,7 @@ static void canonical_order(utf8proc_int32_t *buffer, utf8proc_int32_t *scratch,
     }
 }
 
-static CeCslUnicodeStatus normalize(const char *input, size_t size,
+static CeCslUnicodeStatus normalize(const char *input, size_t size, bool compose,
                                     const Settings *settings, CeCslUnicodeText *out) {
     utf8proc_int32_t *buffer, part[4];
     utf8proc_ssize_t normalized;
@@ -294,7 +306,7 @@ static CeCslUnicodeStatus normalize(const char *input, size_t size,
         utf8proc_ssize_t n;
         (void)ce_csl_unicode_next(input, size, &offset, &cp);
         n = utf8proc_decompose_char((utf8proc_int32_t)cp, part, 4,
-                                    UTF8PROC_COMPOSE | UTF8PROC_STABLE, NULL);
+                                    UTF8PROC_DECOMPOSE | UTF8PROC_STABLE, NULL);
         if (n < 0 || n > 4 || (size_t)n > SIZE_MAX - count) return CE_CSL_UNICODE_LIMIT;
         count += (size_t)n;
     }
@@ -308,13 +320,13 @@ static CeCslUnicodeStatus normalize(const char *input, size_t size,
         utf8proc_ssize_t n;
         (void)ce_csl_unicode_next(input, size, &offset, &cp);
         n = utf8proc_decompose_char((utf8proc_int32_t)cp, part, 4,
-                                    UTF8PROC_COMPOSE | UTF8PROC_STABLE, NULL);
+                                    UTF8PROC_DECOMPOSE | UTF8PROC_STABLE, NULL);
         memcpy(buffer + written, part, (size_t)n * sizeof(*buffer));
         written += (size_t)n;
     }
     canonical_order(buffer, buffer + count, count);
-    normalized = utf8proc_normalize_utf32(buffer, (utf8proc_ssize_t)count,
-                                        UTF8PROC_COMPOSE | UTF8PROC_STABLE);
+    normalized = compose ? utf8proc_normalize_utf32(buffer, (utf8proc_ssize_t)count,
+                                        UTF8PROC_COMPOSE | UTF8PROC_STABLE) : (utf8proc_ssize_t)count;
     result = normalized < 0 ? CE_CSL_UNICODE_LIMIT :
         encode_result(buffer, (size_t)normalized, settings, out);
     settings->deallocate(settings->context, buffer);
@@ -402,13 +414,14 @@ CeCslUnicodeStatus ce_csl_unicode_transform(const char *input, size_t size,
     Settings settings;
     CeCslUnicodeStatus status;
     if ((!input && size) || !out || out->data || operation < CE_CSL_UNICODE_NFC ||
-        operation > CE_CSL_UNICODE_TITLE_MAPPING) return CE_CSL_UNICODE_INVALID_ARGUMENT;
+        operation > CE_CSL_UNICODE_NFD) return CE_CSL_UNICODE_INVALID_ARGUMENT;
     status = get_settings(options, &settings);
     if (status != CE_CSL_UNICODE_OK) return status;
     if (size > settings.input_limit) return CE_CSL_UNICODE_LIMIT;
     status = ce_csl_unicode_validate(input, size, NULL);
     if (status != CE_CSL_UNICODE_OK) return status;
-    return operation == CE_CSL_UNICODE_NFC ? normalize(input, size, &settings, out) :
+    return operation == CE_CSL_UNICODE_NFC || operation == CE_CSL_UNICODE_NFD ?
+        normalize(input, size, operation == CE_CSL_UNICODE_NFC, &settings, out) :
         change_case(input, size, operation, language_id(language), &settings, out, NULL, NULL);
 }
 

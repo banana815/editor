@@ -19,6 +19,17 @@ typedef struct CeCslNumberFieldInfo {
 bool ce_csl_number_field_scan(const char *text,size_t size,CeCslNumberFieldInfo *info,
     char *error,size_t capacity);
 
+typedef struct CeCslNumberFieldFirst {
+    bool numeric; /* The entire field, not merely a numeric prefix. */
+    size_t offset, length; /* Borrowed original first component, including affixes. */
+} CeCslNumberFieldFirst;
+/* Shared page-first extraction. Validates the whole field with scan's grammar.
+ * Numeric fields return the first component without surrounding whitespace;
+ * spelling/letter affixes/leading zeros are unchanged. Ordinary text succeeds
+ * with numeric=false and offset=length=0; invalid input preserves result. */
+bool ce_csl_number_field_first(const char *text,size_t size,
+    CeCslNumberFieldFirst *result,char *error,size_t capacity);
+
 /* Render numeric content, normalizing separator whitespace as required by CSL.
  * A bare decimal is converted individually; affixed numbers are never
  * ordinalized/Romanized. Non-numeric content is copied byte-for-byte. Unicode

@@ -2,6 +2,7 @@
 #include "csl_case.h"
 #include "csl_format.h"
 #include "csl_number.h"
+#include "csl_unicode.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -264,6 +265,14 @@ static bool parse_value(const cJSON *value, DateValue *date, Render *r) {
         }
     }
     if (literal && *literal->valuestring) {
+        size_t length = 0, i;
+        while (length <= CE_CSL_OUTPUT_MAX_BYTES && literal->valuestring[length]) ++length;
+        if (length > CE_CSL_OUTPUT_MAX_BYTES) return fail(r->error,r->capacity,"date literal size limit exceeded");
+        if (ce_csl_unicode_validate(literal->valuestring,length,NULL) != CE_CSL_UNICODE_OK)
+            return fail(r->error,r->capacity,"invalid UTF-8 in date literal");
+        for (i = 0; i < length; ++i) if ((unsigned char)literal->valuestring[i] < 32 &&
+            literal->valuestring[i] != '\t' && literal->valuestring[i] != '\r' && literal->valuestring[i] != '\n')
+            return fail(r->error,r->capacity,"unsupported control in date literal");
         if (date->count || season) return fail(r->error,r->capacity,"literal conflicts with structured date parts");
         date->literal = literal->valuestring;
     } else if (!date->count && raw && *raw->valuestring) {
@@ -289,6 +298,21 @@ static bool parse_value(const cJSON *value, DateValue *date, Render *r) {
         for (i = MONTH; i <= DAY; ++i) if (!!date->end[0].part[i] != !!date->end[1].part[i])
             return fail(r->error,r->capacity,"mixed-precision date intervals are not yet supported");
     }
+    return true;
+}
+
+bool ce_csl_date_inspect(const cJSON *value, CeCslDateInfo *info, char *error, size_t capacity) {
+    const CeCslDateOptions options = {0};
+    Render r = {NULL,&options,{0},error,capacity};
+    DateValue date = {0};
+    CeCslDateInfo next = {0};
+    if (error && capacity) *error = 0;
+    if (!info) return fail(error,capacity,"date facts output is required");
+    if (!parse_value(value,&date,&r)) return false;
+    next.circa = date.circa;
+    next.present = date.literal && *date.literal;
+    for (unsigned i = 0; i < date.count; ++i) next.present |= date.end[i].part[YEAR] != 0;
+    *info = next;
     return true;
 }
 

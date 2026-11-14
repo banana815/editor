@@ -18,6 +18,18 @@ typedef struct CeCslDateResult {
     bool missing_term;
     bool circa; /* Data flag for is-uncertain-date; never an automatic prefix. */
 } CeCslDateResult;
+typedef struct CeCslDateInfo {
+    bool present;
+    bool circa;
+} CeCslDateInfo;
+
+/* Read-only facts through the same parser used by rendering. Presence means
+ * a nonempty literal or at least one nonzero endpoint year, independent of any
+ * style's selected date-parts. circa retains the data flag, even when no date
+ * content is present. No allocation; failure preserves *info. The supported
+ * input syntax and explicit limits are the same as ce_csl_date_render below. */
+bool ce_csl_date_inspect(const cJSON *value, CeCslDateInfo *info,
+    char *error, size_t capacity);
 
 /* Independent CSL 1.0.2 date renderer, not a citation evaluator. value is one
  * borrowed CSL-JSON date object from the strict input layer (NUL-free strings),

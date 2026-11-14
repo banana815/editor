@@ -1,0 +1,100 @@
+{
+  "library": "Mojibake",
+  "version": "0.7.0",
+  "commit": "e397201f7f342e20ec0bc7cb45efee0a7cef34ec",
+  "archive_url": "https://codeload.github.com/zaerl/mojibake/tar.gz/e397201f7f342e20ec0bc7cb45efee0a7cef34ec",
+  "archive_sha256": "7a90d0811c7cec45b514ad0085a6538d0a4526b6753dfd7ecc5cb5992be7ea34",
+  "license": "MIT",
+  "license_file": "../licenses/Mojibake.txt",
+  "unicode_version": "18.0.0",
+  "unicode_license_file": "UNICODE-LICENSE.txt",
+  "sources": [
+    {
+      "path": "src/buffer.c",
+      "sha256": "d4c03cc27cf1648e91d58b0489dc2418713f80a5dd10cb0ff5926301417eb6e2",
+      "git_blob_sha1": "84c798a8938e03aebe591ccb7db70a3f7934ef52"
+    },
+    {
+      "path": "src/cjk.c",
+      "sha256": "58bf14d8e611262ce9001a1cd970a5b15518d860b31fa3f92b88e8cf82ef8656",
+      "git_blob_sha1": "705195970c00b32027884eee068a3c386783ddf5"
+    },
+    {
+      "path": "src/codepoint.c",
+      "sha256": "0472e3cc1373c90cfc6a8fbf0bcb11a82c6407f0d8126853a27a6a5750e8bb8f",
+      "git_blob_sha1": "ecd9629d1926890a544203cf1b5b12e7eba2ed03"
+    },
+    {
+      "path": "src/collation.c",
+      "sha256": "8b9c96e147eb85d533adfac8a801a5a78129b97ca8bec1483af84743cb795b54",
+      "git_blob_sha1": "f22b3e1dfff9e2874ca60a8644e99d661d81ba8c"
+    },
+    {
+      "path": "src/encoding.c",
+      "sha256": "681e664c4c4cc4e2187683ef378a643a474c78fc6934453a11ed01267072c48e",
+      "git_blob_sha1": "14e03cdbb1fc9f1211a59116b2000e00cf15b1c2"
+    },
+    {
+      "path": "src/hangul.c",
+      "sha256": "9bfb8fa5e686b26df7539c0507bb596e1dfd649d7c7a91ee2fab6220c51c070b",
+      "git_blob_sha1": "f80d979c0deff15d749204d3ff14b808a3b4a8e0"
+    },
+    {
+      "path": "src/mojibake.c",
+      "sha256": "6856f3e96d44f6cdbb22d4a026590978fc8570b83ec35eadb9ca6acbd30030a7",
+      "git_blob_sha1": "889bd4f3e0c9bb6e2aa20ebc9cd0115485e572fb"
+    },
+    {
+      "path": "src/normalization.c",
+      "sha256": "e7202c732be48f8812a80b648f33a2112be73911e19d07bf1096a52e4d94365b",
+      "git_blob_sha1": "38bb4ec97557c61222a5f8709f6850c0768a839c"
+    },
+    {
+      "path": "src/properties.c",
+      "sha256": "e5faed70276e30c803b3eff87eb5826e4c20273ebff364a7a25a0a036dfa5c26",
+      "git_blob_sha1": "5050149d393140b947705eea0f5632b02a133cfb"
+    },
+    {
+      "path": "src/quick-check.c",
+      "sha256": "d3743fae5f98f990ba4257848c01d22a7fc37a71937935f4443b167336508e80",
+      "git_blob_sha1": "b5ca348536cfea93971068eb1a78745276975321"
+    },
+    {
+      "path": "src/string.c",
+      "sha256": "dd71b43f3923fbfeb0186b65a15dcc0c417b98db582297728e6fca6b8a00df85",
+      "git_blob_sha1": "fc251182ffe8e6a4d7f0c0e375ceab410bc371ba"
+    },
+    {
+      "path": "src/unicode-tables.c",
+      "sha256": "e62c81dcc4a458cd5c982d21792016f0ede54b20150dbea3e312e8bd0c27e4c7",
+      "git_blob_sha1": "756daeee8be80c67ad716e1f6064518555ac11f9"
+    }
+  ],
+  "build_definitions": {
+    "MJB_FEATURE_CHARACTER_NAMES": 0,
+    "MJB_FEATURE_COLLATION": 1,
+    "MJB_FEATURE_IDNA": 0,
+    "MJB_FEATURE_SECURITY": 0
+  },
+  "excluded_api": "src/next.c is an unused public for-each callback API with Emscripten-only JavaScript callbacks. No collation function references it.",
+  "data_sources": [
+    {
+      "file": "CollationTest.zip",
+      "url": "https://www.unicode.org/Public/18.0.0/uca/CollationTest.zip",
+      "sha256": "02af87f32b787fef873eaa9a279420f41c6ea58caa15ed95821e911fc91bf662",
+      "bytes": 4842672
+    },
+    {
+      "file": "allkeys.txt",
+      "url": "https://www.unicode.org/Public/18.0.0/uca/allkeys.txt",
+      "sha256": "9b7539f54715e9b9f6686eee87fd846185e689eef7f182ac23fd5eae1eca5814",
+      "bytes": 2350263
+    },
+    {
+      "file": "UNICODE-LICENSE.txt",
+      "url": "https://www.unicode.org/license.txt",
+      "sha256": "e7a93b009565cfce55919a381437ac4db883e9da2126fa28b91d12732bc53d96",
+      "bytes": 1995
+    }
+  ]
+}

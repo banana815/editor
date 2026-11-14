@@ -80,6 +80,18 @@ def properties(filename, wanted):
 
 properties('DerivedCoreProperties.txt', ['Cased', 'Case_Ignorable'])
 properties('PropList.txt', ['Soft_Dotted', 'White_Space'])
+scripts = sorted({r[1] for r in rows('Scripts.txt')} | {'Unknown'})
+script_ranges = []
+for row in rows('Scripts.txt'):
+    bounds = row[0].split('..')
+    script_ranges.append((int(bounds[0], 16), int(bounds[-1], 16), scripts.index(row[1])))
+script_ranges.sort()
+assert all(script_ranges[i-1][1] < script_ranges[i][0] for i in range(1, len(script_ranges)))
+out.append('static const char *const script_names[] = {\n')
+out.extend(' "%s",\n' % s for s in scripts)
+out.append('};\nstatic const ScriptRange script_ranges[] = {\n')
+out.extend(' {0x%Xu,0x%Xu,%d},\n' % r for r in script_ranges)
+out.append('};\n')
 folds, turkic = {}, {}
 for row in rows('CaseFolding.txt'):
     cp, status, mapping = int(row[0], 16), row[1], seq(row[2])
@@ -102,6 +114,9 @@ for row in rows('UnicodeData.txt'):
     elif row[12]: title[cp] = seq(row[12])
 for cp, (lo, ti, up) in unconditional.items(): lower[cp], title[cp], upper[cp] = lo, ti, up
 test = [banner]
+test.append('static const ScriptFixture script_fixtures[] = {\n')
+test.extend(' {0x%Xu,0x%Xu,"%s"},\n' % (lo, hi, scripts[index]) for lo, hi, index in script_ranges)
+test.append('};\n')
 for name, values in [('upper', upper), ('lower', lower), ('title', title), ('fold', folds), ('turkic', turkic)]:
     test.append('static const MappingFixture %s_fixtures[] = {\n' % name)
     for cp, mapping in sorted(values.items()):

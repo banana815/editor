@@ -24,7 +24,9 @@ typedef enum CeCslUnicodeOperation {
     CE_CSL_UNICODE_LOWER,
     CE_CSL_UNICODE_CASEFOLD,
     /* Full title mapping of each scalar; this does NOT segment/case words. */
-    CE_CSL_UNICODE_TITLE_MAPPING
+    CE_CSL_UNICODE_TITLE_MAPPING,
+    /* Canonical decomposition, including stable ordering of all non-starters. */
+    CE_CSL_UNICODE_NFD
 } CeCslUnicodeOperation;
 
 typedef struct CeCslUnicodeOptions {
@@ -62,13 +64,16 @@ typedef struct CeCslUnicodeMappedText {
  * recognized case-insensitively, with '-' and '_' equivalent. Other languages
  * use Unicode default casing. Casefold uses C+F and optional tr/az T mappings;
  * it is not lowercase and does not promise NFC. Normalize explicitly if needed.
+ * NFC/NFD perform canonical normalization, never compatibility normalization.
+ * Their canonical ordering uses bounded, linear stable counting sort, with no
+ * fixed-length combining-sequence buffer or stream-safe character insertion.
  * This module implements neither locale collation nor CSL title/sentence case. */
 CeCslUnicodeStatus ce_csl_unicode_transform(const char *input, size_t size,
     CeCslUnicodeOperation operation, const char *language,
     const CeCslUnicodeOptions *options, CeCslUnicodeText *out);
 void ce_csl_unicode_text_free(CeCslUnicodeText *text);
 /* Casing-only scalar map, one record per input scalar including zero-length
- * deletions. This API rejects NFC: normalization can reorder and merge source
+ * deletions. This API rejects NFC/NFD: normalization can reorder and merge source
  * scalars and needs a different mapping contract. out must be empty; failure
  * preserves it. Both the codepoint workspace and returned span array count
  * toward max_workspace_bytes. The allocator context outlives text and spans. */
@@ -98,5 +103,9 @@ bool ce_csl_unicode_is_case_ignorable(uint32_t codepoint);
 /* Category helper: Letter/Mark/Number/Connector_Punctuation. This is not UAX29
  * word segmentation; apostrophe/hyphen policy belongs to the caller. */
 bool ce_csl_unicode_is_word_codepoint(uint32_t codepoint);
+/* Exact Unicode Script property (not Script_Extensions). Static English
+ * property value from the pinned UCD; unassigned/invalid scalars => Unknown.
+ * Script alone does not identify a person's language or preferred name order. */
+const char *ce_csl_unicode_script(uint32_t codepoint);
 
 #endif

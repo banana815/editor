@@ -66,6 +66,20 @@ bool ce_csl_number_field_scan(const char *text,size_t size,CeCslNumberFieldInfo 
     }
     *info=result; return true;
 }
+bool ce_csl_number_field_first(const char *text,size_t size,
+    CeCslNumberFieldFirst *result,char *error,size_t capacity) {
+    if(error && capacity) *error=0;
+    if(!result) return fail(error,capacity,"Missing numeric-field first-component result");
+    CeCslNumberFieldInfo info;
+    if(!ce_csl_number_field_scan(text,size,&info,error,capacity)) return false;
+    CeCslNumberFieldFirst first={0};
+    if(info.numeric) {
+        size_t at=0; Part token;
+        if(!part(text,size,&at,&token)) return fail(error,capacity,"Invalid numeric-field component");
+        first.numeric=true; first.offset=token.start; first.length=token.end-token.start;
+    }
+    *result=first; return true;
+}
 bool ce_csl_number_field_render(const char *text,size_t size,CeCslNumberForm form,
     const CeCslLocale *locale,CeCslLocaleGender gender,const CeCslOutputAllocator *allocator,
     CeCslOutputString *output,bool *missing_term,char *error,size_t capacity) {

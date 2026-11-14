@@ -38,3 +38,32 @@ FetchContent_Declare(editor_utf8proc
   TIMEOUT 180 INACTIVITY_TIMEOUT 30 TLS_VERIFY ON)
 FetchContent_MakeAvailable(editor_utf8proc)
 set(BUILD_SHARED_LIBS "${_csl_previous_shared}")
+
+# Compile the verified C-only collation dependency closure. The upstream demo
+# and unused next.c iterator callback route through JavaScript on Emscripten;
+# neither is needed by collation. See csl/COLLATION.md and its source manifest.
+FetchContent_Declare(editor_mojibake
+  URL https://codeload.github.com/zaerl/mojibake/tar.gz/e397201f7f342e20ec0bc7cb45efee0a7cef34ec
+  URL_HASH SHA256=7a90d0811c7cec45b514ad0085a6538d0a4526b6753dfd7ecc5cb5992be7ea34
+  SOURCE_SUBDIR notelab-download-only DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+  TIMEOUT 180 INACTIVITY_TIMEOUT 30 TLS_VERIFY ON)
+FetchContent_MakeAvailable(editor_mojibake)
+set(_csl_mojibake_sources)
+foreach(unit buffer cjk codepoint collation encoding hangul mojibake normalization
+             properties quick-check string unicode-tables)
+  list(APPEND _csl_mojibake_sources "${editor_mojibake_SOURCE_DIR}/src/${unit}.c")
+endforeach()
+add_library(notelab_mojibake STATIC ${_csl_mojibake_sources})
+set_target_properties(notelab_mojibake PROPERTIES
+  C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF POSITION_INDEPENDENT_CODE ON)
+target_include_directories(notelab_mojibake PUBLIC "${editor_mojibake_SOURCE_DIR}/src")
+target_compile_definitions(notelab_mojibake PRIVATE
+  MJB_FEATURE_COLLATION=1 MJB_FEATURE_CHARACTER_NAMES=0
+  MJB_FEATURE_IDNA=0 MJB_FEATURE_SECURITY=0)
+if(MSVC)
+  target_compile_options(notelab_mojibake PRIVATE /utf-8)
+elseif(CSL_SANITIZERS)
+  target_compile_options(notelab_mojibake PRIVATE
+    -fsanitize=address,undefined -fno-omit-frame-pointer)
+  target_link_options(notelab_mojibake PUBLIC -fsanitize=address,undefined)
+endif()

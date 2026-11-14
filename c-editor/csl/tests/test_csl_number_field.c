@@ -23,6 +23,18 @@ static void *allocate(void *context,size_t bytes) {
 }
 static void release(void *context,void *memory) { (void)context; if(memory) { assert(live); --live; free(memory); } }
 int main(void) {
+    const char *pages[]={"\t S0002d – S30", ("\xe3\x80\x80" "第2章, 第3章"), "2 & 4", "2 and 4", "ii–iv", "2–", ""};
+    const char *firsts[]={"S0002d","第2章","2",NULL,NULL,NULL,NULL};
+    for(size_t i=0;i<sizeof pages/sizeof *pages;i++) {
+        CeCslNumberFieldFirst first={0};
+        assert(ce_csl_number_field_first(pages[i],strlen(pages[i]),&first,error,sizeof error));
+        assert(first.numeric==(firsts[i]!=NULL));
+        if(firsts[i]) assert(first.length==strlen(firsts[i]) && !memcmp(pages[i]+first.offset,firsts[i],first.length));
+        else assert(!first.offset && !first.length);
+    }
+    CeCslNumberFieldFirst first={true,1,2};
+    assert(!ce_csl_number_field_first("1\0x",3,&first,error,sizeof error));
+    assert(first.numeric && first.offset==1 && first.length==2);
     scan("",false,0,false); scan("\t  \n",false,0,false);
     scan("0",true,1,false); scan("0001",true,1,false); scan("0002",true,1,true);
     scan("90071992547409910000000000001",true,1,true);

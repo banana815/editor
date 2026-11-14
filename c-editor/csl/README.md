@@ -13,7 +13,7 @@ The current modules provide:
   and cycles in unused branches. This is not a complete schema validator.
 - Locale fallback, explicit empty terms, plural/gender forms, ordinal sets,
   localized date templates and independently inherited locale options.
-- Unicode 18 NFC and full upper/lower/casefold mappings, including contextual
+- Unicode 18 NFC/NFD and full upper/lower/casefold mappings, including contextual
   Turkish/Azeri/Lithuanian and Greek sigma behavior, plus full scalar title
   mappings and source-to-output maps for expanding/deleting case conversions.
 - Owned formatted text runs, bounded output and escaped plain/HTML exports.
@@ -25,11 +25,25 @@ The current modules provide:
   condition/branch evaluation with explicit cite-position context.
 - CSL plain-text case conversion with pinned stop words and source maps, and
   date rendering with locale templates, ranges, seasons and preserved formatting.
+- Structured personal/institutional names, initials, particles, name-list
+  truncation, role labels and retained source identities for later disambiguation.
+  Pinned Unicode Script data supplies CJK name-order classification.
+- Shared typed variable lookup, explicit empty/suppressed values, long/short
+  fallback, generated-number slots and structured editor/translator equality.
+- Stable precomputed-key sorting, exact signed integer and chronological date
+  keys, and bounded full-casefold/NFD Unicode DUCET collation in C.
+- Document-derived first/subsequent/ibid and near-note positions, with explicit
+  note-number reset policy and source-index queries after citation reordering.
+- Bibliography eligibility and citation numbering: cited items by default, plus
+  explicitly included items, with stable initial order and an external sort
+  permutation. Importing a library alone never includes every item in a document.
 
-These components still need a style evaluator, names, sorting, disambiguation,
-rich metadata handling and document integration. Date parsing currently rejects
+These components still need a style evaluator, style-driven sort-key generation,
+disambiguation, rich metadata handling and document integration. Date parsing currently rejects
 mixed-precision intervals and unsupported raw date syntax; Roman numerals are
-limited to 1–3999. Accepting an APA stylesheet
+limited to 1–3999. Automatic name-particle parsing is not implemented; explicit
+`parse-names=true` is rejected. The default collation does not provide Chinese
+pinyin or other CLDR language tailoring. Accepting an APA stylesheet
 does not establish that its citation or bibliography output is implemented.
 
 ```sh
@@ -40,13 +54,18 @@ ctest --test-dir c-editor/build-csl --output-on-failure
 
 Dependencies are pinned in `../cmake/CSLDependencies.cmake`: Expat 2.10.0 for
 XML parsing and utf8proc 2.12.0 for Unicode primitives. Both are C libraries.
+Mojibake 0.7.0 supplies Unicode collation through a verified C-only source subset;
+[COLLATION.md](COLLATION.md) documents the normalization workaround, limits,
+allocator boundary and exact profile. Its MIT notice and pinned source manifest
+are included under `licenses/` and `data/`.
 The input model reuses the editor's pinned cJSON 1.7.19 from
 `../cmake/Dependencies.cmake`. Expat/utf8proc licenses are in `licenses/`,
 cJSON's notice is in `../licenses/cJSON.txt`, and generated Unicode data records
 its upstream hashes and license under `data/`. The CSL schema's stop-word list
 has its own source manifest and MIT notice in `licenses/CSL-Schema.txt`.
-Unicode normalization and casing
-do not provide locale-aware collation; that remains a separate requirement.
+Unicode normalization/casing and default DUCET collation do not implement
+locale-specific collation tailoring. [POSITION.md](POSITION.md) records the
+separate in-text/note histories and the supported position policy.
 
 Processing must operate on the whole document's ordered citation clusters,
 not merely format each bibliography item independently. The planned result

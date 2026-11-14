@@ -10,6 +10,7 @@ typedef struct MappingFixture {
     uint32_t codepoint, expected[3];
     unsigned count;
 } MappingFixture;
+typedef struct ScriptFixture { uint32_t first,last; const char *script; } ScriptFixture;
 #include "../data/unicode-test-vectors.inc"
 
 static void expect_bytes(const char *input, size_t size, CeCslUnicodeOperation operation,
@@ -63,6 +64,7 @@ static void test_utf8(void) {
         assert(ce_csl_unicode_next(text, invalid[i].size, &offset, &cp) == CE_CSL_UNICODE_INVALID_UTF8);
         assert(offset == bad && cp == 0x1234);
         assert(ce_csl_unicode_transform(text, invalid[i].size, CE_CSL_UNICODE_UPPER, NULL, NULL, &out) == CE_CSL_UNICODE_INVALID_UTF8);
+        assert(ce_csl_unicode_transform(text, invalid[i].size, CE_CSL_UNICODE_NFD, NULL, NULL, &out) == CE_CSL_UNICODE_INVALID_UTF8);
         assert(!out.data);
     }
     assert(ce_csl_unicode_validate(NULL, 0, &bad) == CE_CSL_UNICODE_OK && bad == 0);
@@ -84,6 +86,7 @@ static void test_utf8(void) {
     }
     expect_bytes("A\0B", 3, CE_CSL_UNICODE_LOWER, NULL, "a\0b", 3);
     expect_bytes("A\0B", 3, CE_CSL_UNICODE_NFC, NULL, "A\0B", 3);
+    expect_bytes("A\0B", 3, CE_CSL_UNICODE_NFD, NULL, "A\0B", 3);
 }
 
 static void mappings(const MappingFixture *fixtures, size_t count,
@@ -146,6 +149,9 @@ static void normalization_columns(const char *const column[5], const size_t leng
         size_t expected = i < 3 ? 1 : 3;
         expect_bytes(column[i], lengths[i], CE_CSL_UNICODE_NFC, NULL,
                      column[expected], lengths[expected]);
+        expected = i < 3 ? 2 : 4;
+        expect_bytes(column[i], lengths[i], CE_CSL_UNICODE_NFD, NULL,
+                     column[expected], lengths[expected]);
     }
 }
 static void test_normalization(void) {
@@ -160,6 +166,14 @@ static void test_normalization(void) {
     expect("ﬃ ①", CE_CSL_UNICODE_NFC, NULL, "ﬃ ①"); /* NFC is not NFKC. */
     expect("a\u0315\u0300", CE_CSL_UNICODE_NFC, NULL, "à\u0315");
     expect("\u0301\u0323", CE_CSL_UNICODE_NFC, NULL, "\u0323\u0301");
+    expect("é", CE_CSL_UNICODE_NFD, NULL, "e\u0301");
+    expect("각", CE_CSL_UNICODE_NFD, NULL, "\u1100\u1161\u11a8");
+    expect("ﬃ ①", CE_CSL_UNICODE_NFD, NULL, "ﬃ ①"); /* NFD is not NFKD. */
+    expect("a\u0315\u0300", CE_CSL_UNICODE_NFD, NULL, "a\u0300\u0315");
+    expect("\u0301\u0323", CE_CSL_UNICODE_NFD, NULL, "\u0323\u0301");
+    /* Equal combining classes remain stable; a CCC=0 mark is a boundary. */
+    expect("a\u0315\u0301\u0300\u034f\u0315\u0323", CE_CSL_UNICODE_NFD,
+        NULL, "a\u0301\u0300\u0315\u034f\u0323\u0315");
     /* A long reversed non-starter run catches accidental quadratic sorting. */
     {
         const size_t n = 20000;
@@ -175,6 +189,27 @@ static void test_normalization(void) {
         }
         expect_bytes(input, 1 + n * 4, CE_CSL_UNICODE_NFC, NULL, expected, n * 4);
         free(input); free(expected);
+    }
+    /* A late low-CCC mark must move across the entire run, not just the last
+     * fixed-size chunk. Include both sides of the former candidate's 32 limit. */
+    {
+        const size_t lengths[] = {31, 32, 33, 65, 20000};
+        for (j = 0; j < COUNT(lengths); ++j) {
+            size_t n = lengths[j], bytes = 1 + n * 2 + 4;
+            char *input = malloc(bytes), *expected = malloc(bytes);
+            assert(input && expected);
+            input[0] = expected[0] = 'a';
+            for (i = 0; i < n; ++i) {
+                memcpy(input + 1 + i * 2, "\u0315", 2);
+                memcpy(expected + 5 + i * 2, "\u0315", 2);
+            }
+            memcpy(input + 1 + n * 2, "\u0301\u0300", 4);
+            memcpy(expected + 1, "\u0301\u0300", 4);
+            expect_bytes(input, bytes, CE_CSL_UNICODE_NFD, NULL, expected, bytes);
+            /* Leading combining sequences have the same ordering obligation. */
+            expect_bytes(input + 1, bytes - 1, CE_CSL_UNICODE_NFD, NULL, expected + 1, bytes - 1);
+            free(input); free(expected);
+        }
     }
 }
 
@@ -239,7 +274,16 @@ static void test_failures(void) {
         assert(ce_csl_unicode_transform("\xff", 1, CE_CSL_UNICODE_UPPER, NULL, &options, &out) == CE_CSL_UNICODE_INVALID_UTF8);
         assert(!a.calls && !a.live);
     }
-    for (i = 0; i <= CE_CSL_UNICODE_TITLE_MAPPING; ++i) {
+    memset(&options, 0, sizeof(options));
+    options.max_output_bytes = 2;
+    assert(ce_csl_unicode_transform("é", 2, CE_CSL_UNICODE_NFD, NULL, &options, &out) == CE_CSL_UNICODE_LIMIT);
+    options.max_output_bytes = 3; options.max_workspace_bytes = 15;
+    assert(ce_csl_unicode_transform("é", 2, CE_CSL_UNICODE_NFD, NULL, &options, &out) == CE_CSL_UNICODE_LIMIT);
+    options.max_workspace_bytes = 16;
+    assert(ce_csl_unicode_transform("é", 2, CE_CSL_UNICODE_NFD, NULL, &options, &out) == CE_CSL_UNICODE_OK);
+    assert(out.size == 3 && !memcmp(out.data, "e\u0301", 3));
+    ce_csl_unicode_text_free(&out);
+    for (i = 0; i <= CE_CSL_UNICODE_NFD; ++i) {
         size_t fail;
         for (fail = 0; fail < 5; ++fail) {
             AllocatorState a = {0, fail, 0, 0};
@@ -263,6 +307,7 @@ static void test_failures(void) {
         assert(fail < 5);
     }
     expect_bytes(NULL, 0, CE_CSL_UNICODE_NFC, NULL, "", 0);
+    expect_bytes(NULL, 0, CE_CSL_UNICODE_NFD, NULL, "", 0);
     expect_bytes(NULL, 0, CE_CSL_UNICODE_LOWER, "lt", "", 0);
     assert(ce_csl_unicode_transform("x", SIZE_MAX, CE_CSL_UNICODE_NFC, NULL, NULL, &out) == CE_CSL_UNICODE_LIMIT);
 }
@@ -291,6 +336,9 @@ static void test_casing_maps(void) {
     assert(out.spans[2].source_offset == 3 && out.spans[2].output_offset == 1);
     ce_csl_unicode_mapped_free(&out);
     assert(ce_csl_unicode_transform_mapped("x", 1, CE_CSL_UNICODE_NFC, NULL, NULL, &out) == CE_CSL_UNICODE_INVALID_ARGUMENT);
+    out.text.size = 777;
+    assert(ce_csl_unicode_transform_mapped("é", 2, CE_CSL_UNICODE_NFD, NULL, NULL, &out) == CE_CSL_UNICODE_INVALID_ARGUMENT);
+    assert(!out.text.data && out.text.size == 777 && !out.spans && !out.span_count);
     CeCslUnicodeOptions options = {0};
     options.max_workspace_bytes = sizeof(uint32_t) + sizeof(CeCslUnicodeSpan) - 1;
     assert(ce_csl_unicode_transform_mapped("x", 1, CE_CSL_UNICODE_LOWER, NULL, &options, &out) == CE_CSL_UNICODE_LIMIT);
@@ -328,6 +376,16 @@ static void test_properties(void) {
     assert(ce_csl_unicode_is_cased('A') && !ce_csl_unicode_is_cased(0x4e2d));
     assert(ce_csl_unicode_is_case_ignorable('\'') && ce_csl_unicode_is_case_ignorable(0x200d));
     assert(!ce_csl_unicode_is_letter(UINT32_MAX) && !ce_csl_unicode_is_mark(0x110000));
+    size_t range=0;
+    for(uint32_t cp=0;cp<=0x10ffff;++cp) {
+        while(range<COUNT(script_fixtures)&&cp>script_fixtures[range].last)++range;
+        const char *expected=range<COUNT(script_fixtures)&&cp>=script_fixtures[range].first ? script_fixtures[range].script : "Unknown";
+        assert(!strcmp(ce_csl_unicode_script(cp),expected));
+    }
+    assert(!strcmp(ce_csl_unicode_script(UINT32_MAX),"Unknown"));
+    assert(!strcmp(ce_csl_unicode_script(0x20000),"Han"));
+    assert(!strcmp(ce_csl_unicode_script(0x30fc),"Common"));
+    assert(!strcmp(ce_csl_unicode_script(0x301),"Inherited"));
 }
 
 /* Optional exhaustive official corpus run, without embedding its 2.8 MB text
@@ -363,7 +421,7 @@ static void normalization_file(const char *path) {
     assert(!ferror(file));
     fclose(file);
     assert(cases > 19000);
-    printf("Official NormalizationTest.txt: %zu rows / %zu NFC checks passed\n", cases, cases * 5);
+    printf("Official NormalizationTest.txt: %zu rows / %zu NFC + %zu NFD checks passed\n", cases, cases * 5, cases * 5);
 }
 
 int main(int argc, char **argv) {
@@ -375,7 +433,7 @@ int main(int argc, char **argv) {
     test_casing_maps();
     test_properties();
     if (argc > 1) normalization_file(argv[1]);
-    printf("Unicode 18: strict UTF-8, %zu upper/%zu lower/%zu title/%zu fold mappings, contextual tr/az/lt/sigma, %zu NFC vectors, scalar maps, limits and OOM passed\n",
+    printf("Unicode 18: strict UTF-8, %zu upper/%zu lower/%zu title/%zu fold mappings, contextual tr/az/lt/sigma, %zu NFC/NFD vectors, scalar maps, limits and OOM passed\n",
         COUNT(upper_fixtures), COUNT(lower_fixtures), COUNT(title_fixtures), COUNT(fold_fixtures), COUNT(normalization_fixtures));
     return 0;
 }
