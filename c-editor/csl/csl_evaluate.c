@@ -7,7 +7,11 @@
 
 typedef union Allocation {
     struct { size_t bytes; } header;
-    max_align_t alignment;
+    /* MSVC's C headers do not consistently provide max_align_t. Preserve
+     * malloc alignment for the scalar/pointer types used by all child modules. */
+    long double alignment;
+    void *pointer;
+    unsigned char padding[32];
 } Allocation;
 typedef struct Use {
     CeCslEvalVariableUse public;
