@@ -49,9 +49,13 @@ The current modules provide:
   suffixes. [DISAMBIGUATION.md](DISAMBIGUATION.md) describes the initial supported
   rule and the required real-renderer integration; mock-provider checks do not
   establish citation-format conformance.
+- Typed stylesheet sort-key evaluation and stable matrix ordering, including
+  the pinned profiles' keys, structured name components and selected date parts.
+  [SORT_EVALUATE.md](SORT_EVALUATE.md) lists unsupported mixed-key cases and
+  encoding checks; keys are not recovered by parsing formatted names or dates.
 
-These components still need style-driven sort-key generation, document-wide
-disambiguation integration, citation collapse and document integration. Date parsing currently rejects
+These components still need document-wide disambiguation integration, citation
+collapse and document integration. Date parsing currently rejects
 mixed-precision intervals and unsupported raw date syntax; Roman numerals are
 limited to 1–3999. Automatic name-particle parsing is not implemented; explicit
 `parse-names=true` is rejected. The default collation does not provide Chinese

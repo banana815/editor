@@ -125,7 +125,7 @@ static Fixture fixture(Model *model,const size_t *include,size_t include_count,
     cJSON *items=cJSON_AddArrayToObject(root,"items"), *citations=cJSON_AddArrayToObject(root,"citations");
     assert(items && citations);
     for(size_t i=0;i<model->count;++i) {
-        char id[24]; snprintf(id,sizeof(id),"item-%zu",i);
+        char id[64]; snprintf(id,sizeof(id),"item-%zu",i);
         cJSON *item=cJSON_CreateObject(); assert(item && cJSON_AddItemToArray(items,item));
         assert(cJSON_AddStringToObject(item,"id",id));
         assert(cJSON_AddStringToObject(item,"year-suffix","stale"));
