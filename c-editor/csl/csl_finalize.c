@@ -117,15 +117,20 @@ static bool transform(CeCslFinalized *r, CeCslInline **body, size_t begin,
     ce_csl_inline_map_free(&map); return ok;
 }
 static bool materialize(CeCslFinalized *r, const CeCslEvalNode *node, size_t depth,
-    size_t quote_depth, CeCslInline **out, bool *rendered_variable) {
+    size_t quote_depth, CeCslInline **out, bool *rendered_variable, bool *suffix_success) {
     *rendered_variable = false;
+    *suffix_success = false;
     if (depth > CE_CSL_EVALUATE_MAX_DEPTH) return fail(r, "tree depth limit exceeded");
     const CeCslEvalNodeInfo *info = ce_csl_eval_node_info(node);
     if (!info) return fail(r, "missing evaluation node");
     const CeCslEvalDecoration *d = &info->decoration;
     size_t begin = r->count;
     CeCslInline *body = NULL, *wrapped = NULL;
-    if (!info->nonempty || node == r->omit_names) return plain(r, "", 0, out);
+    if (node == r->omit_names) return plain(r, "", 0, out);
+    *suffix_success = info->year_suffix_call_succeeded;
+    /* A chosen branch is transparent even when its only executed output is an
+     * empty year-suffix. Empty group/macro/name boundaries remain opaque. */
+    if (!info->nonempty && info->kind != CE_CSL_EVAL_CHOOSE) return plain(r, "", 0, out);
     const CeCslInline *content = ce_csl_eval_node_content(node);
     bool ok = content ? ce_csl_inline_clone(content, &r->allocator, &body, r->error, r->error_capacity) :
         plain(r, "", 0, &body);
@@ -148,8 +153,10 @@ static bool materialize(CeCslFinalized *r, const CeCslEvalNode *node, size_t dep
         for (const CeCslEvalNode *child = info->first_child; child; child = ce_csl_eval_node_info(child)->next) {
             size_t child_begin = r->count;
             CeCslInline *part = NULL;
-            bool child_rendered = false;
-            ok = materialize(r, child, depth + 1, quote_depth + (d->quotes ? 1 : 0), &part, &child_rendered);
+            bool child_rendered = false, child_suffix = false;
+            ok = materialize(r, child, depth + 1, quote_depth + (d->quotes ? 1 : 0), &part,
+                &child_rendered, &child_suffix);
+            if (ok) *suffix_success |= child_suffix;
             if (ok && text_size(part)) {
                 CeCslEvalKind kind = ce_csl_eval_node_info(child)->kind;
                 *rendered_variable |= child_rendered || kind == CE_CSL_EVAL_GROUP || kind == CE_CSL_EVAL_MACRO;
@@ -170,14 +177,19 @@ static bool materialize(CeCslFinalized *r, const CeCslEvalNode *node, size_t dep
             if (!ok) goto done;
         }
     }
-    if (info->kind == CE_CSL_EVAL_GROUP && info->variable_called && !*rendered_variable) {
+    if (info->kind == CE_CSL_EVAL_GROUP && info->variable_called && !*rendered_variable && !*suffix_success) {
         r->count = begin;
         ok = plain(r, "", 0, &body);
         if (!ok) goto done;
     }
     if (d->strip_periods && !transform(r, &body, begin, true, CE_CSL_CASE_NONE)) { ok = false; goto done; }
     if (d->text_case != CE_CSL_CASE_NONE && !transform(r, &body, begin, false, d->text_case)) { ok = false; goto done; }
-    if (!text_size(body)) { *rendered_variable = false; r->count = begin; *out = body; body = NULL; goto done; }
+    if (!text_size(body)) {
+        *rendered_variable = false;
+        if (info->kind == CE_CSL_EVAL_GROUP || info->kind == CE_CSL_EVAL_MACRO || info->kind == CE_CSL_EVAL_NAMES)
+            *suffix_success = false;
+        r->count = begin; *out = body; body = NULL; goto done;
+    }
     if (!plain(r, "", 0, &wrapped)) { ok = false; goto done; }
     unsigned affix_format = info->kind == CE_CSL_EVAL_LAYOUT ? d->effective_format : d->inherited_format;
     size_t child_end = r->count;
@@ -397,7 +409,9 @@ bool ce_csl_finalize_with_options(const CeCslEvaluation *evaluation,
     r->error = error; r->error_capacity = capacity;
     r->missing_term = ce_csl_evaluation_summary(evaluation)->missing_term;
     bool rendered_variable = false;
-    bool ok = materialize(r, ce_csl_evaluation_root(evaluation), 0, 0, &r->text, &rendered_variable) &&
+    bool suffix_success = false;
+    bool ok = materialize(r, ce_csl_evaluation_root(evaluation), 0, 0, &r->text,
+        &rendered_variable, &suffix_success) &&
         capture_names(r) && punctuation(r);
     if (ok) {
         size_t keep = 0;
@@ -461,8 +475,8 @@ bool ce_csl_finalize_join(const CeCslFinalizeJoinEntry *entries, size_t count,
         r->source_cite_index = entry->source_cite_index;
         r->missing_term |= ce_csl_evaluation_summary(entry->evaluation)->missing_term;
         size_t begin = r->count;
-        CeCslInline *part = NULL; bool rendered = false;
-        ok = materialize(r, ce_csl_evaluation_root(entry->evaluation), 0, 0, &part, &rendered);
+        CeCslInline *part = NULL; bool rendered = false, suffix_success = false;
+        ok = materialize(r, ce_csl_evaluation_root(entry->evaluation), 0, 0, &part, &rendered, &suffix_success);
         size_t end = r->count;
         if (ok && text_size(part)) {
             r->source_cite_index = SIZE_MAX;

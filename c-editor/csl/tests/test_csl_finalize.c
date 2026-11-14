@@ -27,6 +27,7 @@ static void fixture(Fixture *f, const char *macros, const char *section, const c
         "<term name='edition' gender='feminine'>edition</term>"
         "<term name='ordinal'>th</term><term name='ordinal-01' match='last-digit'>st</term>"
         "<term name='et-al'>et al.</term><term name='and'>and</term><term name='month-01'>January</term>"
+        "<term name='no date' form='short'>n.d.</term>"
         "</terms></locale>";
     bool bibliography = !strncmp(section, "<bibliography", 13);
     const char *citation = bibliography ? "<citation><layout><text value='unused'/></layout></citation>" : "";
@@ -205,9 +206,10 @@ static void test_generated_spaces(void) {
         ce_csl_finalized_free(out); fixture_free(&f);
     }
 }
-typedef struct Allocation { size_t calls, fail_at, live; } Allocation;
+typedef struct Allocation { size_t calls, fail_at, live; bool sticky; } Allocation;
 static void *allocate(void *context, size_t bytes) {
-    Allocation *a = context; if (++a->calls == a->fail_at) return NULL;
+    Allocation *a = context; ++a->calls;
+    if (a->fail_at && (a->sticky ? a->calls >= a->fail_at : a->calls == a->fail_at)) return NULL;
     void *p = malloc(bytes); if (p) ++a->live; return p;
 }
 static void release(void *context, void *p) { Allocation *a = context; if (p) { assert(a->live); --a->live; free(p); } }
@@ -218,6 +220,47 @@ static const CeCslEvalNode *first_names(const CeCslEvalNode *node) {
         const CeCslEvalNode *found = first_names(child); if (found) return found;
     }
     return NULL;
+}
+static void test_year_suffix_groups(void) {
+    Fixture f; CeCslFinalized *out = NULL;
+    fixture(&f, "<macro name='empty'><text variable='year-suffix'/></macro>",
+        "<citation><layout><group delimiter='-'><text term='no date' form='short'/><choose>"
+        "<if variable='title'><text variable='year-suffix'/></if></choose></group>"
+        "<group><text value='drop'/><text variable='URL'/><text macro='empty'/></group>"
+        "<group><text variable='URL'/><group><text value='|nested'/><text variable='year-suffix'/></group></group>"
+        "<group><text value='drop'/><text variable='URL'/><group><text variable='year-suffix'/></group></group>"
+        "</layout></citation>", "{\"title\":\"Present\"}", NULL);
+    finalize(&f, &out, "n.d.|nested");
+    Allocation a = {.sticky = true}; CeCslOutputAllocator hooks = {&a, allocate, release};
+    CeCslFinalized *probe = NULL, *old = out;
+    assert(ce_csl_finalize(f.result, &hooks, &probe, error, sizeof error));
+    size_t calls = a.calls; ce_csl_finalized_free(probe); assert(!a.live);
+    for (size_t i = 1; i <= calls; ++i) {
+        a = (Allocation){.fail_at = i, .sticky = true};
+        assert(!ce_csl_finalize(f.result, &hooks, &out, error, sizeof error));
+        assert(out == old && !a.live && *error);
+        text_is(ce_csl_finalized_inline(out), "n.d.|nested");
+    }
+    printf("No-date finalizer: %zu sticky allocation failures retained old result\n", calls);
+    ce_csl_finalized_free(out); out = NULL; fixture_free(&f);
+
+    fixture(&f, NULL, "<citation><layout prefix='[' suffix=']' delimiter='; '><group delimiter=' '><text value='by'/>"
+        "<names variable='author'><name/><substitute><group><text term='no date' form='short'/>"
+        "<text variable='year-suffix'/></group></substitute></names></group></layout></citation>", "{}", NULL);
+    finalize(&f, &out, "by n.d.");
+    const CeCslEvalNode *names = first_names(ce_csl_evaluation_root(f.result)); assert(names);
+    CeCslFinalizeOptions options = {.omit_names = names};
+    assert(ce_csl_finalize_with_options(f.result, &options, NULL, &out, error, sizeof error));
+    text_is(ce_csl_finalized_inline(out), "");
+    /* A joined/omitted cite must recompute the same execution facts; old
+     * aggregate success from its substituted names must not keep "by". */
+    CeCslFinalizeJoinEntry entries[] = {
+        {.evaluation = f.result, .source_cite_index = 0},
+        {.evaluation = f.result, .omit_names = names, .before_delimiter = "; ", .source_cite_index = 1}
+    };
+    assert(ce_csl_finalize_join(entries, 2, NULL, &out, error, sizeof error));
+    text_is(ce_csl_finalized_inline(out), "[by n.d.]");
+    ce_csl_finalized_free(out); fixture_free(&f);
 }
 static void test_names_projection(void) {
     Fixture f; CeCslFinalized *out = NULL;
@@ -462,6 +505,6 @@ static void test_independent_unicode_spans(void) {
 }
 
 int main(void) {
-    test_structure(); test_case_and_persons(); test_quotes(); test_boundaries(); test_generated_spaces(); test_limits_and_empty(); test_independent_unicode_spans(); test_names_projection(); test_join(); test_oom();
+    test_structure(); test_case_and_persons(); test_quotes(); test_boundaries(); test_generated_spaces(); test_limits_and_empty(); test_independent_unicode_spans(); test_year_suffix_groups(); test_names_projection(); test_join(); test_oom();
     puts("CSL finalization: semantic spans, case, rich fields, quotation boundaries and atomic OOM passed"); return 0;
 }

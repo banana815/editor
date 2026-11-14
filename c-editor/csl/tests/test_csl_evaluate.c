@@ -27,6 +27,7 @@ static void fixture_options(Fixture *f, const char *style_options, const char *m
         "<term name='edition' gender='feminine'>edition</term>"
         "<term name='ordinal'>th</term><term name='ordinal-01' match='last-digit'>st</term>"
         "<term name='et-al'>et al.</term><term name='and'>and</term><term name='month-01'>January</term>"
+        "<term name='no date' form='short'>n.d.</term>"
         "</terms></locale>";
     bool bibliography = !strncmp(section, "<bibliography", 13);
     const char *citation = bibliography ? "<citation><layout><text value='unused'/></layout></citation>" : "";
@@ -101,6 +102,75 @@ static void test_groups(void) {
     assert(ce_csl_eval_node_date_value(date)->endpoint_count == 1);
     assert(ce_csl_eval_node_date_value(date)->endpoints[0].year == 0);
     assert(!ce_csl_eval_node_date_value(date)->present);
+    fixture_free(&f);
+}
+static bool suppress_suffix(void *context, const char *name, bool *value, char *message, size_t capacity) {
+    (void)context; (void)message; (void)capacity;
+    *value = !strcmp(name, "year-suffix");
+    return true;
+}
+static void test_year_suffix_groups(void) {
+    /* Own regression, informed by official test-suite 6eefc5b fixture
+     * date_YearSuffixImplicitWithNoDateOneOnly and isolated citeproc 2.4.63
+     * probes. A suffix success is not a claim that any letters rendered. */
+    Fixture f;
+    const char *section = "<citation><layout><group delimiter='-'><choose><if variable='issued'>"
+        "<date variable='issued'><date-part name='year'/></date><text variable='year-suffix'/></if>"
+        "<else><text term='no date' form='short'/><text variable='year-suffix'/></else>"
+        "</choose></group></layout></citation>";
+    fixture(&f, NULL, section, "{}", NULL);
+    preview_is(&f, "n.d.");
+    const CeCslEvalNode *group = child(ce_csl_evaluation_root(f.result), 0);
+    const CeCslEvalNodeInfo *info = ce_csl_eval_node_info(group);
+    assert(info->variable_called && !info->metadata_present && !info->rendered_variable_present);
+    assert(info->nonempty && info->suppression == CE_CSL_EVAL_NOT_SUPPRESSED);
+    const CeCslEvalNode *suffix = child(child(group, 0), 1);
+    assert(ce_csl_eval_node_variable(suffix, 0)->value.state == CE_CSL_VARIABLE_EMPTY);
+    assert(!ce_csl_eval_node_variable(suffix, 0)->rendered);
+    f.generated.year_suffix = (CeCslGeneratedText){true, "a", 1};
+    preview_is(&f, "n.d.-a");
+    info = ce_csl_eval_node_info(child(ce_csl_evaluation_root(f.result), 0));
+    assert(info->metadata_present && info->rendered_variable_present);
+    f.generated.year_suffix = (CeCslGeneratedText){true, "", 0};
+    f.request.variables.suppressed = suppress_suffix;
+    preview_is(&f, "");
+    f.request.variables.suppressed = NULL;
+    preview_is(&f, "n.d.");
+    fixture_free(&f);
+
+    fixture(&f, NULL, "<citation><layout><group><text value='kept'/><text variable='URL'/>"
+        "<text variable='year-suffix'/></group><group><text value='drop'/><text variable='URL'/></group>"
+        "</layout></citation>", "{}", NULL);
+    preview_is(&f, "kept");
+    assert(ce_csl_eval_node_info(child(ce_csl_evaluation_root(f.result), 1))->suppression ==
+           CE_CSL_EVAL_ALL_GROUP_VARIABLES_EMPTY);
+    fixture_free(&f);
+
+    fixture(&f, NULL, "<citation><layout><group><text variable='URL'/><group>"
+        "<text term='no date' form='short'/><text variable='year-suffix'/></group></group>"
+        "</layout></citation>", "{}", NULL);
+    preview_is(&f, "n.d."); fixture_free(&f);
+
+    /* No success leaks from unchosen branches, empty container boundaries,
+     * or an empty substitute candidate whose transaction was discarded. */
+    fixture(&f, "<macro name='empty'><text variable='year-suffix'/></macro>",
+        "<citation><layout><group><text value='drop1'/><text variable='URL'/><choose>"
+        "<if variable='title'><text variable='year-suffix'/></if></choose></group>"
+        "<group><text value='drop2'/><text variable='URL'/><text macro='empty'/></group>"
+        "<group><text value='drop3'/><text variable='URL'/><group><text variable='year-suffix'/></group></group>"
+        "<group><names variable='author'><name/><substitute><text variable='year-suffix'/></substitute>"
+        "</names><text value='drop4'/></group></layout></citation>", "{}", NULL);
+    preview_is(&f, ""); fixture_free(&f);
+
+    /* A genuinely rendered substitute consumes the suffix: a later call is
+     * suppressed and must not rescue its surrounding constant text. */
+    fixture(&f, NULL, "<citation><layout><names variable='author'><name/><substitute>"
+        "<text variable='year-suffix'/></substitute></names><group><text value='drop'/>"
+        "<text variable='year-suffix'/></group></layout></citation>", "{}", NULL);
+    f.generated.year_suffix = (CeCslGeneratedText){true, "b", 1};
+    preview_is(&f, "b");
+    suffix = child(child(ce_csl_evaluation_root(f.result), 1), 1);
+    assert(ce_csl_eval_node_variable(suffix, 0)->value.state == CE_CSL_VARIABLE_SUPPRESSED);
     fixture_free(&f);
 }
 static void test_delimiters_and_conditions(void) {
@@ -207,10 +277,11 @@ static void test_occurrences(void) {
     assert(ce_csl_eval_node_info(names)->occurrence.macro_calls[0] == a.calls[0]);
     fixture_free(&f);
 }
-typedef struct Allocator { size_t calls, fail_at, live; } Allocator;
+typedef struct Allocator { size_t calls, fail_at, live; bool sticky; } Allocator;
 static void *test_allocate(void *context, size_t bytes) {
     Allocator *a = context;
-    if (++a->calls == a->fail_at) return NULL;
+    ++a->calls;
+    if (a->fail_at && (a->sticky ? a->calls >= a->fail_at : a->calls == a->fail_at)) return NULL;
     void *p = malloc(bytes); if (p) ++a->live; return p;
 }
 static void test_free(void *context, void *memory) {
@@ -241,6 +312,22 @@ static void test_atomic_and_oom(void) {
     cJSON *editor = cJSON_GetObjectItemCaseSensitive(f.item_json, "editor");
     cJSON_ReplaceItemInObject(cJSON_GetArrayItem(editor, 0), "given", cJSON_CreateString("<i>Jane</i>"));
     assert(!ce_csl_evaluate(&f.request, NULL, &f.result, error, sizeof(error)) && f.result == old && strstr(error, "markup"));
+    fixture_free(&f);
+
+    fixture(&f, NULL, "<citation><layout><group delimiter='-'><text term='no date' form='short'/>"
+        "<choose><if variable='title'><text variable='year-suffix'/></if></choose>"
+        "</group></layout></citation>", "{\"title\":\"Present\"}", NULL);
+    preview_is(&f, "n.d."); old = f.result;
+    a = (Allocator){.sticky = true}; probe = NULL;
+    assert(ce_csl_evaluate(&f.request, &hooks, &probe, error, sizeof error));
+    calls = a.calls; ce_csl_evaluation_free(probe); assert(!a.live);
+    for (size_t i = 1; i <= calls; ++i) {
+        a = (Allocator){.fail_at = i, .sticky = true};
+        assert(!ce_csl_evaluate(&f.request, &hooks, &f.result, error, sizeof error));
+        assert(f.result == old && !a.live && *error);
+        text_is(ce_csl_eval_node_preview(ce_csl_evaluation_root(f.result)), "n.d.");
+    }
+    printf("No-date evaluator: %zu sticky allocation failures retained old result\n", calls);
     fixture_free(&f);
 }
 typedef struct Provider { char text[32]; bool fail, suppress; } Provider;
@@ -467,7 +554,7 @@ static void real_resources(int argc, char **argv) {
     printf("Pinned styles: %zu typed semantic evaluations / %zu nodes passed (not final-format conformance)\n", checks, node_count);
 }
 int main(int argc, char **argv) {
-    test_groups(); test_delimiters_and_conditions(); test_substitute();
+    test_groups(); test_year_suffix_groups(); test_delimiters_and_conditions(); test_substitute();
     test_typed_and_inline(); test_occurrences(); test_atomic_and_oom(); test_providers_and_limits();
     test_sorting_numbers(); test_pages();
     if (argc > 1) real_resources(argc - 1, argv + 1);

@@ -31,6 +31,7 @@ struct CeCslEvalNode {
     CeCslDateValueView date_value;
     unsigned date_parts;
     CeCslNumberFieldInfo number;
+    bool year_suffix_group_success;
 };
 struct CeCslEvaluation {
     CeCslOutputAllocator owner, allocator;
@@ -593,6 +594,7 @@ done:
     return ok;
 }
 static void aggregate(CeCslEvalNode *n, const CeCslEvalNode *child) {
+    n->year_suffix_group_success |= child->year_suffix_group_success;
     n->info.metadata_present |= child->info.metadata_present;
     n->info.variable_called |= child->info.variable_called;
     n->info.rendered_variable_present |= child->info.rendered_variable_present;
@@ -662,7 +664,8 @@ static bool walk(CeCslEvaluation *e, const CeCslXmlNode *source, unsigned inheri
         leaf = false; n->info.kind = CE_CSL_EVAL_GROUP;
         n->info.decoration.delimiter_boundary = true;
         ok = sequence(e, n, source->children, empty(attr(source, "delimiter")), parent, depth);
-        if (ok && n->info.variable_called && !n->info.rendered_variable_present) {
+        if (ok && n->info.variable_called && !n->info.rendered_variable_present &&
+            !n->year_suffix_group_success) {
             n->info.suppression = CE_CSL_EVAL_ALL_GROUP_VARIABLES_EMPTY;
             ok = inline_plain(e, "", 0, 0, false, &n->preview);
             rollback(e, state, false);
@@ -683,6 +686,16 @@ static bool walk(CeCslEvaluation *e, const CeCslXmlNode *source, unsigned inheri
         }
     } else if (ce_csl_xml_is(source, "text")) {
         n->info.kind = CE_CSL_EVAL_TEXT; ok = text_leaf(e, n);
+        /* A resolved year-suffix counts as success for group suppression even
+         * before disambiguation assigns letters. Official test-suite fixture
+         * date_YearSuffixImplicitWithNoDateOneOnly (6eefc5b) requires this so
+         * an otherwise constant no-date term survives. Keep this fact separate
+         * from actual rendered-variable presence and substitution consumption. */
+        if (ok && n->use_count && eq(n->uses[0].public.value.canonical_name, "year-suffix") &&
+            n->uses[0].public.value.state != CE_CSL_VARIABLE_SUPPRESSED) {
+            n->info.year_suffix_call_succeeded = true;
+            n->year_suffix_group_success = true;
+        }
     } else if (ce_csl_xml_is(source, "names")) {
         n->info.kind = CE_CSL_EVAL_NAMES;
         n->info.decoration.delimiter_boundary = true;
@@ -707,6 +720,11 @@ static bool walk(CeCslEvaluation *e, const CeCslXmlNode *source, unsigned inheri
     }
     if (!n->info.nonempty) {
         n->info.rendered_variable_present = false;
+        /* Empty container boundaries and discarded substitute candidates do
+         * not transmit a successful suffix call into unrelated outer groups. */
+        if (n->info.kind == CE_CSL_EVAL_GROUP || n->info.kind == CE_CSL_EVAL_MACRO ||
+            n->info.kind == CE_CSL_EVAL_NAMES)
+            n->year_suffix_group_success = false;
         for (size_t i = 0; i < n->use_count; ++i) n->uses[i].public.rendered = false;
         rollback(e, state, false);
         if (n->info.variable_called && n->info.suppression == CE_CSL_EVAL_NOT_SUPPRESSED)

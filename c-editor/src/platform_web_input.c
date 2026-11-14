@@ -13,6 +13,22 @@ static PlatformWebClipboardCut clipboard_cut;
 static PlatformWebClipboardError clipboard_error;
 static SDL_AppResult (*clipboard_handler)(void *, SDL_Event *);
 static void *clipboard_state;
+static PlatformWebClipboardPrepare rich_prepare;
+static PlatformWebClipboardFinish rich_finish;
+static PlatformWebClipboardPaste rich_paste;
+static void *rich_state;
+static PlatformWebClipboardData rich_data;
+static bool rich_prepared;
+static bool focus_requested;
+typedef struct ClipboardRequest {
+    unsigned id;
+    PlatformWebClipboardCompletion completion;
+    void *userdata;
+    struct ClipboardRequest *next;
+} ClipboardRequest;
+static ClipboardRequest *clipboard_requests;
+static unsigned clipboard_next_id=1;
+static bool clipboard_closing;
 
 static void flush_input_before_clipboard(void) {
     /* Clipboard events require a synchronous answer. Process earlier clicks,
@@ -30,7 +46,7 @@ static void flush_input_before_clipboard(void) {
         }
     }
 }
-EMSCRIPTEN_KEEPALIVE char *platform_web_clipboard_read(void) {
+EMSCRIPTEN_KEEPALIVE char *platform_web_clipboard_selection_text(void) {
     flush_input_before_clipboard();
     return clipboard_read ? clipboard_read(clipboard_state) : NULL;
 }
@@ -41,6 +57,48 @@ EMSCRIPTEN_KEEPALIVE void platform_web_clipboard_free(void *text) { free(text); 
 EMSCRIPTEN_KEEPALIVE void platform_web_clipboard_failed(void) {
     if (clipboard_error) clipboard_error(clipboard_state);
 }
+void platform_web_input_request_focus(void) { focus_requested=true; }
+EMSCRIPTEN_KEEPALIVE void platform_web_input_pointer_begin(void) { focus_requested=false; }
+EMSCRIPTEN_KEEPALIVE int platform_web_input_pointer_finish(void) {
+    flush_input_before_clipboard();
+    bool result=focus_requested; focus_requested=false; return result;
+}
+EMSCRIPTEN_KEEPALIVE void platform_web_clipboard_complete(unsigned id,int success,
+    char *plain,char *html,char *typed,char *error) {
+    ClipboardRequest **link=&clipboard_requests;
+    while(*link && (*link)->id!=id) link=&(*link)->next;
+    if(*link) {
+        ClipboardRequest *request=*link; *link=request->next;
+        request->completion(success!=0,plain,html,typed,error,request->userdata);
+        free(request);
+    }
+    free(plain); free(html); free(typed); free(error);
+}
+
+EMSCRIPTEN_KEEPALIVE int platform_web_clipboard_prepare(int cut) {
+    flush_input_before_clipboard();
+    if (!rich_prepare) return -1;
+    if (rich_prepared) return 0;
+    rich_data=(PlatformWebClipboardData){0};
+    rich_prepared=rich_prepare(cut!=0,&rich_data,rich_state);
+    return rich_prepared ? 1 : 0;
+}
+EMSCRIPTEN_KEEPALIVE const char *platform_web_clipboard_format(int format) {
+    if (!rich_prepared) return NULL;
+    return format==0 ? rich_data.plain : format==1 ? rich_data.html : format==2 ? rich_data.typed_json : NULL;
+}
+EMSCRIPTEN_KEEPALIVE void platform_web_clipboard_finish(int accepted) {
+    if (!rich_prepared) return;
+    rich_prepared=false; rich_data=(PlatformWebClipboardData){0};
+    if (rich_finish) rich_finish(accepted!=0,rich_state);
+}
+EMSCRIPTEN_KEEPALIVE int platform_web_clipboard_paste_data(char *plain,char *html,char *typed) {
+    flush_input_before_clipboard();
+    PlatformWebClipboardData data={plain,html,typed};
+    int result=rich_paste ? (rich_paste(&data,rich_state) ? 1 : 0) : -1;
+    free(plain); free(html); free(typed); return result;
+}
+EMSCRIPTEN_KEEPALIVE int platform_web_clipboard_rich_paste_available(void) { return rich_paste!=NULL; }
 
 EM_JS(void, pending_js, (int pending), { Module.editorInputPending = !!pending; })
 static void update_pending(void) {
@@ -66,6 +124,84 @@ EM_JS(void, init_js, (void), {
     if (!input) return;
     var composing = false, target = 0, suppress = null, enabled = false;
     var canvas = Module.canvas;
+    var clipboardJobs = new Map();
+    var clipboardLimit = 16 * 1024 * 1024;
+    var customClipboardType = 'web application/x-notelab-document-slice+json';
+    Module.editorClipboardCancel = function() { clipboardJobs.clear(); };
+    function clipboardFinish(id, success, plain, html, typed, error) {
+        if (!clipboardJobs.has(id)) return;
+        clipboardJobs.delete(id);
+        var pointers=[];
+        try {
+            for (var text of [plain,html,typed,error]) {
+                if (text == null) { pointers.push(0); continue; }
+                if (text.length>clipboardLimit) throw new Error('Clipboard payload exceeds 16 MiB');
+                var bytes=new TextEncoder().encode(text);
+                if (bytes.length>clipboardLimit || bytes.includes(0)) throw new Error('Clipboard payload is too large or contains NUL');
+                var ptr=_platform_web_input_alloc(bytes.length+1);
+                if (!ptr) throw new Error('Out of memory reading clipboard');
+                HEAPU8.set(bytes,ptr); HEAPU8[ptr+bytes.length]=0; pointers.push(ptr);
+            }
+        } catch (e) {
+            for (var pointer of pointers) if(pointer) _platform_web_clipboard_free(pointer);
+            pointers=[0,0,0,0]; success=false;
+        }
+        _platform_web_clipboard_complete(id,success?1:0,pointers[0],pointers[1],pointers[2],pointers[3]);
+    }
+    Module.editorClipboardStart = function(id, writing, plain, html, typed) {
+        var api=navigator.clipboard;
+        if (!api || (writing ? !api.write && !api.writeText : !api.read && !api.readText)) return 0;
+        // Rich copying must retain its HTML fallback; plain-only prompts can
+        // still use older writeText implementations.
+        if (writing && (html != null || typed != null) &&
+            (!api.write || typeof ClipboardItem === 'undefined')) return 0;
+        clipboardJobs.set(id,true);
+        try {
+            var operation;
+            if (writing) {
+                if (api.write && typeof ClipboardItem !== 'undefined') {
+                    var data={'text/plain':new Blob([plain||""],{type:'text/plain'})};
+                    if (html != null) data['text/html']=new Blob([html],{type:'text/html'});
+                    var customSupported=false;
+                    try { customSupported=typed != null && typeof ClipboardItem.supports==='function' && ClipboardItem.supports(customClipboardType)===true; }
+                    catch (e) { /* Optional custom formats cannot prevent standard text copying. */ }
+                    if (customSupported) data[customClipboardType]=new Blob([typed],{type:'application/x-notelab-document-slice+json'});
+                    var item;
+                    try { item=new ClipboardItem(data); }
+                    catch (e) { delete data[customClipboardType]; item=new ClipboardItem(data); }
+                    function writeStandard(error) {
+                        if (!clipboardJobs.has(id) || !(customClipboardType in data) || !error || error.name!=='NotSupportedError') throw error;
+                        delete data[customClipboardType];
+                        return api.write([new ClipboardItem(data)]);
+                    }
+                    try { operation=api.write([item]); }
+                    catch (error) { operation=writeStandard(error); }
+                    operation=Promise.resolve(operation).catch(writeStandard);
+                } else operation=api.writeText(plain||"");
+                Promise.resolve(operation).then(function(){clipboardFinish(id,true,null,null,null,null);},
+                    function(error){clipboardFinish(id,false,null,null,null,String(error));});
+            } else if (api.read) {
+                operation=api.read();
+                Promise.resolve(operation).then(async function(items) {
+                    var values=[null,null,null],types=['text/plain','text/html',customClipboardType];
+                    if (items.length) for (var i=0;i<types.length;i++) {
+                        if (!items[0].types.includes(types[i])) continue;
+                        var blob=await items[0].getType(types[i]);
+                        if (blob.size>clipboardLimit) throw new Error('Clipboard payload exceeds 16 MiB');
+                        values[i]=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(await blob.arrayBuffer());
+                    }
+                    if (values.every(function(value){return value===null;})) throw new Error('Clipboard has no supported text format');
+                    clipboardFinish(id,true,values[0],values[1],values[2],null);
+                }).catch(function(error){clipboardFinish(id,false,null,null,null,String(error));});
+            } else Promise.resolve(api.readText()).then(function(text){clipboardFinish(id,true,text,null,null,null);},
+                function(error){clipboardFinish(id,false,null,null,null,String(error));});
+        } catch (error) {
+            /* Keep true-started requests asynchronous even for immediate API
+             * exceptions so the controller can establish its guard ownership. */
+            Promise.resolve().then(function(){clipboardFinish(id,false,null,null,null,String(error));});
+        }
+        return 1;
+    };
     function send(kind, text) {
         if (!enabled) return;
         var bytes = new TextEncoder().encode(text || "");
@@ -85,7 +221,7 @@ EM_JS(void, init_js, (void), {
         if ((e.ctrlKey || e.metaKey) && !e.altKey && ['c','x','v'].includes(e.key.toLowerCase())) {
             input.focus({preventScroll:true}); e.stopPropagation();
             if (e.key.toLowerCase() !== 'v') {
-                var ptr = _platform_web_clipboard_read();
+                var ptr = _platform_web_clipboard_selection_text();
                 if (!ptr) { e.preventDefault(); return; }
                 try { input.value = UTF8ToString(ptr); input.select(); }
                 finally { _platform_web_clipboard_free(ptr); }
@@ -107,7 +243,31 @@ EM_JS(void, init_js, (void), {
     function copyOrCut(e, cut) {
         if (!ownsFocus() || composing) return;
         e.preventDefault(); e.stopPropagation();
-        var ptr = _platform_web_clipboard_read();
+        var prepared=_platform_web_clipboard_prepare(cut?1:0);
+        if (prepared>=0) {
+            if (!prepared) return;
+            var accepted=false;
+            try {
+                if (!e.clipboardData) throw new Error('Clipboard unavailable');
+                if (!_platform_web_clipboard_format(0)) throw new Error('Clipboard has no plain text representation');
+                var types=['text/plain','text/html','application/x-notelab-document-slice+json'];
+                for (var i=0;i<types.length;i++) {
+                    var value=_platform_web_clipboard_format(i);
+                    if (!value) continue;
+                    var text=UTF8ToString(value);
+                    if (i===2) {
+                        try { e.clipboardData.setData(types[i],text); } catch (optional) {}
+                    } else {
+                        e.clipboardData.setData(types[i],text);
+                        if (e.clipboardData.getData(types[i])!==text) throw new Error('Clipboard write rejected');
+                    }
+                }
+                accepted=true;
+            } catch (error) { _platform_web_clipboard_failed(); }
+            finally { _platform_web_clipboard_finish(accepted?1:0); input.value=""; }
+            return;
+        }
+        var ptr = _platform_web_clipboard_selection_text();
         if (!ptr) return;
         try {
             if (!e.clipboardData) throw new Error("Clipboard unavailable");
@@ -127,7 +287,25 @@ EM_JS(void, init_js, (void), {
         e.preventDefault(); e.stopPropagation();
         try {
             if (!e.clipboardData) throw new Error("Clipboard unavailable");
-            send(0, e.clipboardData.getData('text/plain'));
+            if (_platform_web_clipboard_rich_paste_available()) {
+                var pointers=[],types=['text/plain','text/html','application/x-notelab-document-slice+json'];
+                try {
+                    for (var type of types) {
+                        if (!Array.from(e.clipboardData.types).includes(type)) { pointers.push(0); continue; }
+                        var text=e.clipboardData.getData(type);
+                        if (text.length>clipboardLimit) throw new Error('Clipboard payload exceeds 16 MiB');
+                        var bytes=new TextEncoder().encode(text);
+                        if (bytes.length>clipboardLimit || bytes.includes(0)) throw new Error('Invalid clipboard payload');
+                        var ptr=_platform_web_input_alloc(bytes.length+1);
+                        if (!ptr) throw new Error('Out of memory reading clipboard');
+                        pointers.push(ptr); HEAPU8.set(bytes,ptr); HEAPU8[ptr+bytes.length]=0;
+                    }
+                } catch (error) {
+                    for (var ptr of pointers) if(ptr) _platform_web_clipboard_free(ptr);
+                    throw error;
+                }
+                _platform_web_clipboard_paste_data(pointers[0],pointers[1],pointers[2]);
+            } else send(0, e.clipboardData.getData('text/plain'));
         } catch (error) { _platform_web_clipboard_failed(); }
         finally { input.value = ""; }
     }, true);
@@ -161,9 +339,18 @@ EM_JS(void, init_js, (void), {
         input.value = "";
     });
     input.addEventListener('blur', function() { if (composing) send(1, ""); clear(); });
-    // Focus inside a trusted gesture so mobile browsers can show the keyboard.
+    canvas.addEventListener('pointerdown', function(e) {
+        if (e.pointerType==='touch') _platform_web_input_pointer_begin();
+    },true);
+    // SDL registered its pointer listener before this bridge. Drain the queued
+    // events now, while the browser still recognizes the trusted gesture.
     canvas.addEventListener('pointerup', function(e) {
+        var requested=_platform_web_input_pointer_finish();
         if (!enabled) return;
+        if (e.pointerType==='touch') {
+            if (requested) input.focus({preventScroll:true});
+            return;
+        }
         var rect = canvas.getBoundingClientRect(), area = Module.editorInputArea;
         var x = (e.clientX - rect.left) * canvas.width / rect.width;
         var y = (e.clientY - rect.top) * canvas.height / rect.height;
@@ -196,11 +383,42 @@ EM_JS(void, update_js, (int target, float x, float y, float w, float h), {
     if (Module.editorInputUpdate) Module.editorInputUpdate(target, x, y, w, h);
 })
 EM_JS(void, cancel_js, (void), { if (Module.editorInputCancel) Module.editorInputCancel(); })
-void platform_web_input_init(void) { input_event = SDL_RegisterEvents(1); init_js(); }
+EM_JS(int, clipboard_start_js, (unsigned id,int writing,const char *plain,const char *html,const char *typed), {
+    return Module.editorClipboardStart ? Module.editorClipboardStart(id,!!writing,
+        plain?UTF8ToString(plain):null,html?UTF8ToString(html):null,typed?UTF8ToString(typed):null):0;
+})
+EM_JS(void, clipboard_cancel_js, (void), { if(Module.editorClipboardCancel) Module.editorClipboardCancel(); })
+static bool clipboard_start(bool writing,const char *plain,const char *html,const char *typed,
+    PlatformWebClipboardCompletion completion,void *userdata) {
+    if(!completion || clipboard_closing || !clipboard_next_id) return false;
+    const char *values[]={plain,html,typed};
+    for(size_t i=0;i<3;i++) if(values[i] && strlen(values[i])>16u*1024u*1024u) return false;
+    size_t count=0; for(ClipboardRequest *r=clipboard_requests;r;r=r->next) if(++count>=8) return false;
+    ClipboardRequest *request=malloc(sizeof *request); if(!request) return false;
+    *request=(ClipboardRequest){clipboard_next_id++,completion,userdata,clipboard_requests};
+    clipboard_requests=request;
+    if(!clipboard_start_js(request->id,writing,plain,html,typed)) {
+        clipboard_requests=request->next; free(request); return false;
+    }
+    return true;
+}
+bool platform_web_clipboard_write(const char *plain,const char *html,const char *typed,
+    PlatformWebClipboardCompletion completion,void *userdata) {
+    return plain && clipboard_start(true,plain,html,typed,completion,userdata);
+}
+bool platform_web_clipboard_read(PlatformWebClipboardCompletion completion,void *userdata) {
+    return clipboard_start(false,NULL,NULL,NULL,completion,userdata);
+}
+void platform_web_input_init(void) { clipboard_closing=false; focus_requested=false; input_event = SDL_RegisterEvents(1); init_js(); }
 void platform_web_input_clipboard(PlatformWebClipboardRead read, PlatformWebClipboardCut cut,
     PlatformWebClipboardError error, SDL_AppResult (*handler)(void *, SDL_Event *), void *state) {
     clipboard_read = read; clipboard_cut = cut; clipboard_error = error;
     clipboard_handler = handler; clipboard_state = state;
+}
+void platform_web_input_clipboard_rich(PlatformWebClipboardPrepare prepare,
+    PlatformWebClipboardFinish finish,PlatformWebClipboardPaste paste,void *state) {
+    platform_web_clipboard_finish(0);
+    rich_prepare=prepare;rich_finish=finish;rich_paste=paste;rich_state=state;
 }
 void platform_web_input_update(int target, SDL_Window *window, const SDL_FRect *area) {
     window_id = SDL_GetWindowID(window);
@@ -243,6 +461,13 @@ bool platform_web_input_handle_event(SDL_Event *event,
     return true;
 }
 void platform_web_input_destroy(void) {
+    clipboard_closing=true; clipboard_cancel_js();
+    platform_web_clipboard_finish(0);
+    rich_prepare=NULL;rich_finish=NULL;rich_paste=NULL;rich_state=NULL;
+    while(clipboard_requests) {
+        ClipboardRequest *request=clipboard_requests; clipboard_requests=request->next;
+        request->completion(false,NULL,NULL,NULL,"Clipboard request canceled",request->userdata); free(request);
+    }
     platform_web_input_cancel();
     if (input_event) SDL_FlushEvent(input_event);
     while (head) { WebInput *old = head; head = head->next; free(old->text); free(old); }
@@ -257,8 +482,20 @@ void platform_web_input_clipboard(PlatformWebClipboardRead read, PlatformWebClip
     PlatformWebClipboardError error, SDL_AppResult (*handler)(void *, SDL_Event *), void *state) {
     (void)read; (void)cut; (void)error; (void)handler; (void)state;
 }
+void platform_web_input_clipboard_rich(PlatformWebClipboardPrepare prepare,
+    PlatformWebClipboardFinish finish,PlatformWebClipboardPaste paste,void *state) {
+    (void)prepare;(void)finish;(void)paste;(void)state;
+}
 void platform_web_input_update(int target, SDL_Window *window, const SDL_FRect *area) { (void)target; (void)window; (void)area; }
 void platform_web_input_cancel(void) {}
+void platform_web_input_request_focus(void) {}
+bool platform_web_clipboard_write(const char *plain,const char *html,const char *typed,
+    PlatformWebClipboardCompletion completion,void *userdata) {
+    (void)plain;(void)html;(void)typed;(void)completion;(void)userdata;return false;
+}
+bool platform_web_clipboard_read(PlatformWebClipboardCompletion completion,void *userdata) {
+    (void)completion;(void)userdata;return false;
+}
 bool platform_web_input_handle_event(SDL_Event *event, SDL_AppResult (*handler)(void *, SDL_Event *), void *state) { (void)event; (void)handler; (void)state; return false; }
 void platform_web_input_destroy(void) {}
 #endif

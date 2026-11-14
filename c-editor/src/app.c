@@ -14,6 +14,9 @@
 #include "platform_persistence.h"
 #include "platform_export.h"
 #include "platform_web_input.h"
+#include "touch_gesture.h"
+#include "editor_clipboard.h"
+#include "document_slice.h"
 #include "editbox.h"
 #include <limits.h>
 #include <stdio.h>
@@ -35,6 +38,7 @@ typedef enum { ACT_SIDEBAR, ACT_NEW, ACT_SAVE, ACT_UNDO, ACT_REDO, ACT_BOLD,
     ACT_RIGHT, ACT_JUSTIFY, ACT_FIND_PREVIOUS, ACT_FIND_NEXT, ACT_MOVE_UP,
     ACT_MOVE_DOWN, ACT_MORE } Action;
 typedef struct { const char *label; Action action; SDL_FRect box; } Button;
+typedef struct EditorClipboardRequest EditorClipboardRequest;
 typedef struct {
     SDL_Window *window;
     SDL_Renderer *renderer;
@@ -74,10 +78,23 @@ typedef struct {
     bool saving, persistence_error;
     char status[512];
     Prompt prompt_mode;
+    uint64_t prompt_generation;
     size_t selection_start, selection_end;
+    EditorClipboardRequest *clipboard_event;
+    unsigned typing_mask, typing_enabled;
+    size_t typing_anchor;
+    uint64_t typing_revision;
+    char *typing_color, *typing_highlight, *typing_link;
     SDL_FRect editor_area, sidebar_area, note_import_button, prompt_area, prompt_input_area, prompt_accept, prompt_cancel;
     int width, height;
     float scroll, sidebar_scroll, sidebar_width, prompt_scroll;
+    CeTouchGesture touch;
+    uint64_t touch_revision, touch_last_tick;
+    int touch_select_anchor, touch_menu_pressed;
+    bool touch_ui_active, touch_menu_visible;
+    SDL_TouchID touch_ui_device;
+    SDL_FingerID touch_ui_finger;
+    SDL_FRect touch_menu_buttons[4];
     int toolbar_page;
     bool resizing_sidebar;
     bool dark, sidebar, sidebar_manual, typewriter, smoke;
@@ -88,6 +105,8 @@ typedef struct {
 } App;
 
 static void reveal_cursor(App *a);
+static void editor_clipboard_action(App *a, CeEditorClipboardAction action);
+static bool typing_set(App *a,size_t offset,CeMark mark,const char *value,bool enabled);
 static void library_show(App *a);
 static void library_close(App *a);
 static void library_layout(App *a);
@@ -143,7 +162,25 @@ static bool edit_commit(App *a,CeDocument *candidate,bool changed,
 }
 static bool edit_replace(App *a,size_t start,size_t end,const char *text) {
     CeDocument *candidate=edit_candidate(a);
-    return edit_commit(a,candidate,candidate && ce_document_replace(candidate,start,end,text),NULL,false);
+    bool pending=a->typing_mask && a->typing_revision==a->citation_revision &&
+        start==end && start==a->typing_anchor && *text;
+    bool changed=candidate && ce_document_replace(candidate,start,end,text);
+    if(changed && pending) {
+        const char *before=ce_document_text(a->doc),*after=ce_document_text(candidate);
+        size_t old_size=strlen(before),new_size=strlen(after),prefix=0,suffix=0;
+        while(prefix<start && prefix<new_size && before[prefix]==after[prefix]) ++prefix;
+        while(suffix<old_size-end && suffix<new_size-prefix &&
+            before[old_size-suffix-1]==after[new_size-suffix-1]) ++suffix;
+        for(unsigned mark=CE_MARK_BOLD;changed && mark<=CE_MARK_LINK;mark<<=1) {
+            if(!(a->typing_mask&mark)) continue;
+            const char *value=mark==CE_MARK_COLOR?a->typing_color:mark==CE_MARK_HIGHLIGHT?a->typing_highlight:
+                mark==CE_MARK_LINK?a->typing_link:NULL;
+            changed=ce_document_style(candidate,prefix,new_size-suffix,(CeMark)mark,value,(a->typing_enabled&mark)!=0);
+        }
+    }
+    bool ok=edit_commit(a,candidate,changed,NULL,false);
+    if(ok && pending) { a->typing_revision=a->citation_revision; a->typing_anchor=start+strlen(text); }
+    return ok;
 }
 static bool edit_style(App *a,size_t start,size_t end,CeMark mark,const char *value,bool enabled) {
     CeDocument *candidate=edit_candidate(a);
@@ -364,6 +401,7 @@ static void get_selection(App *a, size_t *start, size_t *end) {
     } else { *start = *end = (size_t)a->edit->cursor; }
 }
 static void show_prompt(App *a, Prompt kind) {
+    ++a->prompt_generation;
     if (kind < PROMPT_LIBRARY_SEARCH) get_selection(a, &a->selection_start, &a->selection_end);
     a->prompt_mode = kind;
     a->prompt_scroll=0;
@@ -378,6 +416,7 @@ static void show_prompt(App *a, Prompt kind) {
     EditBox_SetFocus(a->prompt, kind != PROMPT_DELETE);
 }
 static void close_prompt(App *a) {
+    ++a->prompt_generation;
     EditBox_SetFocus(a->prompt, false);
     SDL_ClearComposition(a->window);
     a->prompt_mode = PROMPT_NONE;
@@ -413,9 +452,12 @@ static void accept_prompt(App *a) {
             message(a, "已选中匹配文本");
         } else message(a, "没有找到匹配文本");
     } else if (a->prompt_mode == PROMPT_LINK) {
-        if (!edit_style(a, a->selection_start, a->selection_end, CE_MARK_LINK, value, *value != '\0'))
+        bool ok=a->selection_start==a->selection_end?
+            typing_set(a,a->selection_start,CE_MARK_LINK,value,*value!='\0'):
+            edit_style(a,a->selection_start,a->selection_end,CE_MARK_LINK,value,*value!='\0');
+        if (!ok)
             message(a, a->edit_error);
-        else mark_changed(a);
+        else if(a->selection_start!=a->selection_end) mark_changed(a);
     } else if (a->prompt_mode == PROMPT_DELETE && a->active) {
         if (note_store_delete(&a->store, a->active) != NOTE_OK) { message(a, a->store.error); return; }
         free(a->active); a->active = NULL;
@@ -432,7 +474,8 @@ static void accept_prompt(App *a) {
  * UTF-8 snapshot and delete only if the selection still matches that snapshot. */
 static EditBox *clipboard_edit(App *a) {
     EditBox *edit = a->prompt_mode != PROMPT_NONE ? a->prompt : a->edit;
-    if (!edit->has_focus || edit->composition_length || edit->composition_snapshot) return NULL;
+    bool touch_selection=edit==a->edit && a->touch_menu_visible && a->active;
+    if ((!edit->has_focus && !touch_selection) || edit->composition_length || edit->composition_snapshot) return NULL;
     return edit;
 }
 static char *browser_clipboard_read(void *state) {
@@ -462,9 +505,44 @@ static bool browser_clipboard_cut(const char *expected, void *state) {
 static void browser_clipboard_error(void *state) {
     message(state, "无法访问剪贴板，原文保持不变");
 }
+#include "app_clipboard.inc"
+static bool typing_current(App *a,size_t offset) {
+    return a->typing_mask && a->typing_revision==a->citation_revision && a->typing_anchor==offset;
+}
+static CeStyle typing_style(App *a,size_t offset) {
+    CeStyle style=ce_document_style_at(a->doc,offset);
+    /* Match the model's left-biased insertion inheritance at text boundaries. */
+    for(size_t i=0;i<ce_document_span_count(a->doc);++i) {
+        CeStyleSpan span;
+        if(ce_document_span(a->doc,i,&span) && offset>=span.start && offset<=span.end) { style=span.style; break; }
+    }
+    if(typing_current(a,offset)) {
+        style.marks=(style.marks&~a->typing_mask)|a->typing_enabled;
+        if(a->typing_mask&CE_MARK_COLOR) style.color=a->typing_color;
+        if(a->typing_mask&CE_MARK_HIGHLIGHT) style.highlight=a->typing_highlight;
+        if(a->typing_mask&CE_MARK_LINK) style.link=a->typing_link;
+    }
+    return style;
+}
+static bool typing_set(App *a,size_t offset,CeMark mark,const char *value,bool enabled) {
+    char **slot=mark==CE_MARK_COLOR?&a->typing_color:mark==CE_MARK_HIGHLIGHT?&a->typing_highlight:
+        mark==CE_MARK_LINK?&a->typing_link:NULL;
+    char *owned=slot && enabled && value?copy_string(value):NULL;
+    if(slot && enabled && value && !owned) { SDL_strlcpy(a->edit_error,"内存不足，输入格式保持不变",sizeof a->edit_error); return false; }
+    if(!typing_current(a,offset)) { a->typing_mask=a->typing_enabled=0; }
+    if(slot) { free(*slot); *slot=owned; }
+    a->typing_mask|=mark;
+    if(enabled) a->typing_enabled|=mark; else a->typing_enabled&=~(unsigned)mark;
+    a->typing_anchor=offset; a->typing_revision=a->citation_revision;
+    message(a,"已设置接下来输入文字的格式"); return true;
+}
 static void format_selection(App *a, CeMark mark, const char *value) {
     size_t start, end; get_selection(a, &start, &end);
-    if (start == end) { message(a, "请先选择要设置格式的文字"); return; }
+    if (start == end) {
+        CeStyle pending=typing_style(a,start);
+        if(!typing_set(a,start,mark,value,!(pending.marks&mark))) message(a,a->edit_error);
+        return;
+    }
     CeStyle style = ce_document_style_at(a->doc, start);
     if (!edit_style(a, start, end, mark, value, !(style.marks & mark)))
         message(a, a->edit_error);
@@ -501,7 +579,11 @@ static void action(App *a, Action which) {
         }
         case ACT_CLEAR: {
             size_t start, end; get_selection(a, &start, &end);
-            if (start == end) { message(a, "请先选择要清除格式的文字"); break; }
+            if (start == end) {
+                a->typing_mask=CE_MARK_BOLD|CE_MARK_ITALIC|CE_MARK_UNDERLINE|CE_MARK_COLOR|CE_MARK_HIGHLIGHT|CE_MARK_LINK;
+                a->typing_enabled=0; a->typing_anchor=start; a->typing_revision=a->citation_revision;
+                message(a,"接下来输入的文字不带格式"); break;
+            }
             if (edit_clear(a, start, end)) mark_changed(a);
             else message(a, a->edit_error);
             break;
@@ -559,7 +641,7 @@ static void action(App *a, Action which) {
 
 /* Reconcile one committed input event as one undoable replacement. Never copy
  * IME preedit into the persistent model; the EditBox owns that temporary text. */
-static void reconcile_input(App *a) {
+static void reconcile_input(App *a,size_t prior_start,size_t prior_end,bool deleting) {
     if (a->edit->composition_length) return;
     const char *old = ce_document_text(a->doc);
     const char *next = a->edit->text->text ? a->edit->text->text : "";
@@ -571,6 +653,21 @@ static void reconcile_input(App *a) {
     size_t old_end = old_len, new_end = new_len;
     while (old_end > prefix && new_end > prefix && old[old_end-1] == next[new_end-1]) { --old_end; --new_end; }
     while (old_end < old_len && ((unsigned char)old[old_end] & 0xc0) == 0x80) { ++old_end; ++new_end; }
+    /* An insertion among identical characters has multiple equivalent text
+     * diffs. Prefer the actual old selection so its text marks stay attached to
+     * the user's caret instead of drifting to the last matching character. */
+    if(prior_start<=prior_end && prior_end<=old_len && prior_start<=new_len &&
+       old_len-prior_end<=new_len-prior_start && !memcmp(old,next,prior_start) &&
+       !memcmp(old+prior_end,next+new_len-(old_len-prior_end),old_len-prior_end)) {
+        prefix=prior_start; old_end=prior_end; new_end=new_len-(old_len-prior_end);
+    }
+    if(deleting && prior_start==prior_end && new_len<old_len) {
+        size_t caret=(size_t)SDL_max(0,a->edit->cursor),removed=old_len-new_len;
+        if(caret<=prior_start && caret<=new_len && removed<=old_len-caret &&
+           !memcmp(old,next,caret) && !memcmp(old+caret+removed,next+caret,new_len-caret)) {
+            prefix=new_end=caret; old_end=caret+removed;
+        }
+    }
     char *insert = malloc(new_end - prefix + 1);
     if (!insert) { message(a, "内存不足"); sync_view(a); return; }
     memcpy(insert, next + prefix, new_end - prefix); insert[new_end-prefix] = '\0';
@@ -600,6 +697,8 @@ static void reconcile_input(App *a) {
             a->edit->cursor = (int)cursor;
         }
         mark_changed(a);
+        if(a->typing_mask && a->typing_revision==a->citation_revision)
+            a->typing_anchor=(size_t)SDL_max(0,a->edit->cursor);
     }
 }
 /* The EditBox is the only owner of pending IME text. A preview document is
@@ -1203,6 +1302,10 @@ static void layout(App *a) {
     a->sidebar_area = (SDL_FRect){0,top,sidebar_width,SDL_max(40,a->height-top-32)};
     a->note_import_button=a->sidebar?(SDL_FRect){sidebar_width-98,top+4,88,36}:(SDL_FRect){0};
     a->editor_area = (SDL_FRect){left+24,top+30,SDL_max(20,a->width-left-48),SDL_max(40,a->height-top-76)};
+    float touch_button=SDL_min(90.0f,SDL_max(1.0f,(a->width-32.0f)/4));
+    for(size_t i=0;i<SDL_arraysize(a->touch_menu_buttons);i++)
+        a->touch_menu_buttons[i]=(SDL_FRect){(a->width-touch_button*4)/2+(float)i*touch_button,
+            SDL_max(top,a->height-78.0f),touch_button-3,40};
     a->edit->rect = a->editor_area;
     a->edit->rect.y -= a->scroll;
     a->edit->rect.h += a->scroll;
@@ -1250,6 +1353,138 @@ static void reveal_cursor(App *a) {
     a->edit->rect.y = a->editor_area.y-a->scroll;
     a->edit->rect.h = a->editor_area.h+a->scroll;
 }
+static void touch_cancel(App *a) {
+    ce_touch_cancel(&a->touch);
+    a->touch_ui_active=false; a->touch_menu_visible=false; a->touch_menu_pressed=-1;
+    a->library_dragging=false; a->resizing_sidebar=false;
+    if(a->edit) a->edit->highlighting=false;
+    if(a->prompt) a->prompt->highlighting=false;
+}
+static void touch_scroll(App *a,float delta) {
+    float height;
+    if(rich_prepare(a,a->edit)) height=ce_rich_layout_height(a->rich);
+    else { int w,h; if(!TTF_GetTextSize(a->edit->text,&w,&h)) return; height=(float)h; }
+    a->scroll=SDL_clamp(a->scroll+delta,0,SDL_max(0,height-a->editor_area.h+24));
+    a->edit->rect.y=a->editor_area.y-a->scroll;
+    a->edit->rect.h=a->editor_area.h+a->scroll;
+}
+static int touch_hit(App *a,float x,float y) {
+    if(!rich_prepare(a,a->edit)) return a->edit->cursor;
+    return rich_hit(a,x-a->edit->rect.x,y-a->edit->rect.y);
+}
+static void touch_selection_move(App *a,float x,float y) {
+    int end=touch_hit(a,x,y);
+    if(end==a->touch_select_anchor && rich_prepare(a,a->edit)) end=rich_step(a,end,1);
+    a->edit->highlight1=a->touch_select_anchor; a->edit->highlight2=end;
+    a->edit->cursor=end; a->edit->cursor_trailing=false;
+}
+static void touch_apply(App *a,CeTouchResult r) {
+    if(r.actions&CE_TOUCH_CANCEL) {
+        a->touch_ui_active=false; a->touch_menu_visible=false; a->touch_menu_pressed=-1;
+        a->library_dragging=false; a->resizing_sidebar=false;
+        a->edit->highlighting=false; a->prompt->highlighting=false;
+        return;
+    }
+    if(r.actions&CE_TOUCH_SCROLL) { a->touch_menu_visible=false; touch_scroll(a,r.scroll_dy); }
+    if(r.actions&CE_TOUCH_TAP) {
+        if(!EditBox_CancelComposition(a->edit)) return;
+        SDL_ClearComposition(a->window); a->rich_dirty=true;
+        SDL_Event click={0}; click.type=SDL_EVENT_MOUSE_BUTTON_DOWN;
+        click.button.windowID=SDL_GetWindowID(a->window); click.button.button=SDL_BUTTON_LEFT;
+        click.button.x=r.x; click.button.y=r.y;
+        EditBox_HandleEvent(a->edit,&click);
+        click.type=SDL_EVENT_MOUSE_BUTTON_UP; EditBox_HandleEvent(a->edit,&click);
+        /* Publish the C-confirmed target before the same trusted pointerup
+         * returns; a later frame is too late for mobile keyboard activation. */
+        layout(a); platform_web_input_request_focus(); a->touch_menu_visible=true;
+    }
+    if(r.actions&CE_TOUCH_SELECT_BEGIN) {
+        if(!EditBox_CancelComposition(a->edit)) { touch_cancel(a); return; }
+        SDL_ClearComposition(a->window); a->rich_dirty=true;
+        int start=touch_hit(a,r.anchor_x,r.anchor_y);
+        if(rich_prepare(a,a->edit) && (size_t)start>=ce_document_length(a->doc)) start=rich_step(a,start,-1);
+        a->touch_select_anchor=start;
+        touch_selection_move(a,r.x,r.y);
+    }
+    if(r.actions&(CE_TOUCH_SELECT_UPDATE|CE_TOUCH_SELECT_END)) touch_selection_move(a,r.x,r.y);
+    if(r.actions&CE_TOUCH_SELECT_END) a->touch_menu_visible=true;
+}
+/* Touch owns one route until release. Real mouse/pen events retain their
+ * existing path. Only converted logical coordinates enter this function. */
+static bool touch_route(App *a,SDL_Event *event) {
+    if(event->type!=SDL_EVENT_FINGER_DOWN && event->type!=SDL_EVENT_FINGER_MOTION &&
+       event->type!=SDL_EVENT_FINGER_UP && event->type!=SDL_EVENT_FINGER_CANCELED) return false;
+    SDL_TouchFingerEvent finger=event->tfinger;
+    if(finger.touchID==SDL_MOUSE_TOUCHID || finger.touchID==SDL_PEN_TOUCHID ||
+       finger.windowID!=SDL_GetWindowID(a->window)) return true;
+    if(a->touch.contact_count && a->touch_revision!=a->citation_revision) touch_cancel(a);
+    bool down=event->type==SDL_EVENT_FINGER_DOWN,up=event->type==SDL_EVENT_FINGER_UP;
+    bool eligible=a->active && !a->library_open && a->prompt_mode==PROMPT_NONE &&
+        contains(a->editor_area,finger.x,finger.y) &&
+        !(a->sidebar && contains(a->sidebar_area,finger.x,finger.y));
+    int menu=-1;
+    if(a->touch_menu_visible && !a->library_open && a->prompt_mode==PROMPT_NONE)
+        for(size_t i=0;i<SDL_arraysize(a->touch_menu_buttons);i++)
+            if(contains(a->touch_menu_buttons[i],finger.x,finger.y)) { menu=(int)i; eligible=false; break; }
+    if(down && !a->touch.contact_count) {
+        a->touch_revision=a->citation_revision;
+        if(eligible) a->typing_mask=0;
+    }
+    CeTouchEvent input={down?CE_TOUCH_DOWN:up?CE_TOUCH_UP:
+        event->type==SDL_EVENT_FINGER_CANCELED?CE_TOUCH_CANCELED:CE_TOUCH_MOVE,
+        finger.touchID,finger.fingerID,finger.timestamp?finger.timestamp/1000000:SDL_GetTicks(),
+        finger.x,finger.y,eligible};
+    CeTouchResult result=ce_touch_event(&a->touch,&input); touch_apply(a,result);
+    if(result.handled) return true;
+    if(down) {
+        a->touch_ui_active=true; a->touch_ui_device=finger.touchID; a->touch_ui_finger=finger.fingerID;
+        a->touch_menu_pressed=menu;
+        if(menu<0) a->touch_menu_visible=false;
+    }
+    if(!a->touch_ui_active || a->touch_ui_device!=finger.touchID || a->touch_ui_finger!=finger.fingerID) return true;
+    if(a->touch_menu_pressed!=-1) {
+        int pressed=a->touch_menu_pressed;
+        if(!up && (SDL_fabsf(finger.x-a->touch.down_x)>=CE_TOUCH_SLOP ||
+                   SDL_fabsf(finger.y-a->touch.down_y)>=CE_TOUCH_SLOP)) a->touch_menu_pressed=-2;
+        if(up) {
+            a->touch_ui_active=false; a->touch_menu_pressed=-1;
+            if(pressed>=0 && menu==pressed) editor_clipboard_action(a,(CeEditorClipboardAction)pressed);
+        }
+        return true;
+    }
+    if(up) {
+        a->touch_ui_active=false;
+        if(a->prompt_mode!=PROMPT_NONE && a->prompt->has_focus) {
+            layout(a); platform_web_input_request_focus();
+        }
+    }
+    SDL_zero(*event);
+    if(down || up) {
+        event->type=down?SDL_EVENT_MOUSE_BUTTON_DOWN:SDL_EVENT_MOUSE_BUTTON_UP;
+        event->button.windowID=finger.windowID; event->button.button=SDL_BUTTON_LEFT;
+        event->button.down=down; event->button.x=finger.x; event->button.y=finger.y;
+    } else {
+        event->type=SDL_EVENT_MOUSE_MOTION; event->motion.windowID=finger.windowID;
+        event->motion.state=SDL_BUTTON_LMASK; event->motion.x=finger.x; event->motion.y=finger.y;
+    }
+    return false;
+}
+static void touch_tick(App *a) {
+    uint64_t now=SDL_GetTicks(),elapsed=a->touch_last_tick?now-a->touch_last_tick:0;
+    a->touch_last_tick=now;
+    if((a->touch.contact_count || a->touch_menu_visible) &&
+        (a->touch_revision!=a->citation_revision ||
+         ((a->touch_menu_visible || a->touch.phase==CE_TOUCH_PENDING ||
+           a->touch.phase==CE_TOUCH_SCROLLING || a->touch.phase==CE_TOUCH_SELECTING) &&
+          (a->prompt_mode!=PROMPT_NONE || a->library_open)))) touch_cancel(a);
+    touch_apply(a,ce_touch_tick(&a->touch,now));
+    if(a->touch.phase==CE_TOUCH_SELECTING) {
+        float y=a->touch.last_y,delta=0;
+        if(y<a->editor_area.y+24) delta=-1;
+        else if(y>a->editor_area.y+a->editor_area.h-24) delta=1;
+        if(delta) { touch_scroll(a,delta*(float)SDL_min(elapsed,50)*.35f); touch_selection_move(a,a->touch.last_x,y); }
+    }
+}
 static void draw(App *a) {
     layout(a);
     SDL_Color text = ink(a), bg = paper(a);
@@ -1291,6 +1526,13 @@ static void draw(App *a) {
         SDL_SetRenderClipRect(a->renderer,NULL);
     }
     if(a->library_open) library_draw(a);
+    if(a->touch_menu_visible && a->active && !a->library_open && a->prompt_mode==PROMPT_NONE) {
+        const char *names[]={"复制","剪切","粘贴","全选"};
+        for(size_t i=0;i<SDL_arraysize(names);i++) {
+            fill(a,a->touch_menu_buttons[i],surface);
+            label(a,names[i],a->touch_menu_buttons[i].x+8,a->touch_menu_buttons[i].y+9,text);
+        }
+    }
     fill(a,(SDL_FRect){0,a->height-30.0f,(float)a->width,30},surface);
     label(a,a->status,12,a->height-26.0f,text);
     if(a->prompt_mode!=PROMPT_NONE) {
@@ -1340,6 +1582,8 @@ SDL_AppResult SDL_AppInit(void **state, int argc, char **argv) {
         else if(!strcmp(argv[i],"--screenshot") && i+1<argc) a->screenshot=argv[++i];
     }
     if(a->smoke && !notes) { SDL_Log("--smoke-test requires an explicit --notes test directory"); return SDL_APP_FAILURE; }
+    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS,"0");
+    SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS,"0");
     if(!SDL_Init(SDL_INIT_VIDEO) || !TTF_Init()) { SDL_Log("Initialization: %s",SDL_GetError()); return SDL_APP_FAILURE; }
     a->window=SDL_CreateWindow("Note Lab",1100,760,SDL_WINDOW_RESIZABLE|SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if(a->window) a->renderer=SDL_CreateRenderer(a->window,NULL);
@@ -1412,6 +1656,7 @@ SDL_AppResult SDL_AppInit(void **state, int argc, char **argv) {
     memcpy(a->buttons,buttons,sizeof(buttons)); a->sidebar=true; a->sidebar_width=240;
     platform_web_input_init();
     platform_web_input_clipboard(browser_clipboard_read, browser_clipboard_cut, browser_clipboard_error, SDL_AppEvent, a);
+    platform_web_input_clipboard_rich(browser_clipboard_prepare, browser_clipboard_finish, browser_clipboard_paste, a);
     refresh_files(a); layout(a);
     message(a,"就绪 · Ctrl/Cmd+N 新建 · Ctrl/Cmd+S 保存");
     library_cache_load(a,true);
@@ -1421,6 +1666,10 @@ SDL_AppResult SDL_AppInit(void **state, int argc, char **argv) {
 SDL_AppResult SDL_AppEvent(void *state, SDL_Event *event) {
     if (platform_web_input_handle_event(event, SDL_AppEvent, state)) return SDL_APP_CONTINUE;
     App *a=state;
+    if((event->type==SDL_EVENT_MOUSE_BUTTON_DOWN || event->type==SDL_EVENT_MOUSE_BUTTON_UP) && event->button.which==SDL_TOUCH_MOUSEID) return SDL_APP_CONTINUE;
+    if(event->type==SDL_EVENT_MOUSE_MOTION && event->motion.which==SDL_TOUCH_MOUSEID) return SDL_APP_CONTINUE;
+    if(event->type==SDL_EVENT_WINDOW_FOCUS_LOST || event->type==SDL_EVENT_WINDOW_RESIZED ||
+       event->type==SDL_EVENT_WILL_ENTER_BACKGROUND || event->type==SDL_EVENT_QUIT) touch_cancel(a);
     if(event->type==SDL_EVENT_QUIT) {
         if (a->export_job || a->import_job || a->pending_note_json) { message(a, "请先完成或取消文件导入导出"); return SDL_APP_CONTINUE; }
         if(a->library_unsaved && !library_cache_save(a)) return SDL_APP_CONTINUE;
@@ -1432,6 +1681,7 @@ SDL_AppResult SDL_AppEvent(void *state, SDL_Event *event) {
     }
     layout(a);
     SDL_ConvertEventToRenderCoordinates(a->renderer,event);
+    if(touch_route(a,event)) return SDL_APP_CONTINUE;
     if (a->resizing_sidebar) {
         if (event->type == SDL_EVENT_MOUSE_MOTION) a->sidebar_width = SDL_clamp(event->motion.x, 150, SDL_min(600, a->width * 0.72f));
         if (event->type == SDL_EVENT_MOUSE_BUTTON_UP || event->type == SDL_EVENT_WINDOW_FOCUS_LOST) {
@@ -1487,6 +1737,17 @@ SDL_AppResult SDL_AppEvent(void *state, SDL_Event *event) {
         return SDL_APP_CONTINUE;
     }
     if(event->type==SDL_EVENT_KEY_DOWN && (event->key.mod&(SDL_KMOD_CTRL|SDL_KMOD_GUI)) && !a->edit->composition_length) {
+        if(event->key.key==SDLK_A) {
+            editor_clipboard_action(a,CE_EDITOR_SELECT_ALL); return SDL_APP_CONTINUE;
+        }
+        if(event->key.key==SDLK_C || event->key.key==SDLK_X || event->key.key==SDLK_V) {
+#ifndef __EMSCRIPTEN__
+            editor_clipboard_action(a,event->key.key==SDLK_C?CE_EDITOR_COPY:
+                event->key.key==SDLK_X?CE_EDITOR_CUT:CE_EDITOR_PASTE);
+#endif
+            /* DOM clipboard events own the browser transaction synchronously. */
+            return SDL_APP_CONTINUE;
+        }
         Action cmd; bool handled=true;
         switch(event->key.key) {
             case SDLK_N:cmd=ACT_NEW;break; case SDLK_S:cmd=ACT_SAVE;break;
@@ -1500,8 +1761,15 @@ SDL_AppResult SDL_AppEvent(void *state, SDL_Event *event) {
         if(event->key.mod&SDL_KMOD_GUI) event->key.mod|=SDL_KMOD_CTRL;
     }
     if(a->active) {
+        size_t prior_start,prior_end; get_selection(a,&prior_start,&prior_end);
+        if(event->type==SDL_EVENT_TEXT_INPUT && a->edit->composition_snapshot) {
+            prior_start=(size_t)SDL_max(0,a->edit->composition_start);
+            prior_end=prior_start+(size_t)SDL_max(0,a->edit->composition_removed_length);
+        }
         int cursor=a->edit->cursor;
         bool navigation=event->type==SDL_EVENT_KEY_DOWN && (event->key.key==SDLK_LEFT || event->key.key==SDLK_RIGHT || event->key.key==SDLK_UP || event->key.key==SDLK_DOWN || event->key.key==SDLK_HOME || event->key.key==SDLK_END);
+        if(navigation || (event->type==SDL_EVENT_MOUSE_BUTTON_DOWN &&
+            contains(a->editor_area,event->button.x,event->button.y))) a->typing_mask=0;
         EditBox_HandleEvent(a->edit,event);
         if(navigation) {
             if(event->key.mod&SDL_KMOD_SHIFT) {
@@ -1509,13 +1777,17 @@ SDL_AppResult SDL_AppEvent(void *state, SDL_Event *event) {
                 a->edit->highlight2=a->edit->cursor;
             } else a->edit->highlight1=a->edit->highlight2=-1;
         }
-        if(event->type==SDL_EVENT_TEXT_INPUT || event->type==SDL_EVENT_KEY_DOWN) { reconcile_input(a); reveal_cursor(a); }
+        if(event->type==SDL_EVENT_TEXT_INPUT || event->type==SDL_EVENT_KEY_DOWN) {
+            bool deleting=event->type==SDL_EVENT_KEY_DOWN && (event->key.key==SDLK_BACKSPACE || event->key.key==SDLK_DELETE);
+            reconcile_input(a,prior_start,prior_end,deleting); reveal_cursor(a);
+        }
         else if(event->type==SDL_EVENT_TEXT_EDITING) reveal_cursor(a);
     }
     return SDL_APP_CONTINUE;
 }
 SDL_AppResult SDL_AppIterate(void *state) {
     App *a=state;
+    touch_tick(a);
     library_import_poll(a);
     document_import_finish(a);
     if (a->export_job) {
@@ -1534,12 +1806,14 @@ SDL_AppResult SDL_AppIterate(void *state) {
 void SDL_AppQuit(void *state, SDL_AppResult result) {
     (void)result; App *a=state; if(!a) return;
     platform_web_input_destroy();
+    clipboard_request_free(a->clipboard_event); a->clipboard_event=NULL;
     EditBox_Destroy(a->prompt); EditBox_Destroy(a->edit);
     ce_rich_layout_destroy(a->rich); free(a->rich_text);
     ce_citation_session_free(a->citation_session);
     ce_document_free(a->doc); note_store_list_free(&a->files); note_store_destroy(&a->store);
     note_store_destroy(&a->library_store); free(a->notes_root);
     free(a->active); free(a->search_keyword);
+    free(a->typing_color); free(a->typing_highlight); free(a->typing_link);
     free(a->saving_name); free(a->saving_snapshot);
     platform_export_free(a->export_job);
     platform_import_free(a->import_job);

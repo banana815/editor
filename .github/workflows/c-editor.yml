@@ -224,18 +224,18 @@ jobs:
       - name: Build WebAssembly application
         run: |
           source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
-          emcmake cmake -S c-editor -B c-editor/build-web -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
-          cmake --build c-editor/build-web --target notelab --parallel 4
+          emcmake cmake -S c-editor -B c-editor/build-web -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+          cmake --build c-editor/build-web --parallel 4
       - name: Browser input, persistence and export integration
         env:
           EDITOR_TEST_SYSTEM_CLIPBOARD: '1'
-        run: node c-editor/tests/test_browser.mjs c-editor/build-web "$(command -v google-chrome)"
+        run: |
+          node c-editor/tests/test_browser.mjs c-editor/build-web "$(command -v google-chrome)"
+          node c-editor/tests/test_browser_touch.mjs c-editor/build-web "$(command -v google-chrome)"
       - name: Run C core fixtures in WebAssembly
         run: |
           source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
-          emcmake cmake -S c-editor -B c-editor/build-wasm-tests -DEDITOR_BUILD_APP=OFF -DBUILD_TESTING=ON
-          cmake --build c-editor/build-wasm-tests --parallel 4
-          ctest --test-dir c-editor/build-wasm-tests --output-on-failure
+          ctest --test-dir c-editor/build-web --output-on-failure
       - name: Upload browser application and screenshots
         if: always()
         uses: actions/upload-artifact@v4

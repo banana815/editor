@@ -1,5 +1,6 @@
 #include "csl_sort_evaluate.h"
 #include "csl_finalize.h"
+#include "csl_number_field.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -121,29 +122,51 @@ static bool text_key(Work *w, const char *text, size_t size, CeCslSortEvaluated 
     bool ok = ce_csl_sort_key_sequence(parts, 4, &w->allocator, &out->key, w->error, w->capacity);
     ce_csl_sort_key_free(&component); return ok;
 }
+static bool number_key(Work *w, const char *text, size_t size, CeCslSortEvaluated *out) {
+    out->domain = CE_CSL_SORT_NUMBER;
+    if (!size) { out->missing = true; return true; }
+    size_t offset = 0, length = size;
+    size_t at = (text[0] == '+' || text[0] == '-') ? 1 : 0, start = at;
+    while (at < size && text[at] >= '0' && text[at] <= '9') ++at;
+    bool numeric = at > start && at == size;
+    if (!numeric) {
+        CeCslNumberFieldFirst first;
+        if (!ce_csl_number_field_first(text, size, &first, w->error, w->capacity)) return false;
+        numeric = first.numeric;
+        if (numeric) {
+            /* first() validated the whole field and preserves scalar byte
+             * boundaries. Its component has exactly one ASCII digit run. */
+            offset = first.offset;
+            size_t end = offset + first.length;
+            while (offset < end && !(text[offset] >= '0' && text[offset] <= '9')) ++offset;
+            at = offset;
+            while (at < end && text[at] >= '0' && text[at] <= '9') ++at;
+            length = at - offset;
+            if (!length) return fail(w->error, w->capacity, "Numeric sort component has no decimal digits");
+        }
+    }
+    CeCslSortKey component = {0};
+    bool ok = numeric ? ce_csl_sort_key_integer(text + offset, length, &w->allocator, &component,
+                                                w->error, w->capacity)
+                      : collation(w, text, size, &component);
+    unsigned char tag = numeric ? 0 : 1;
+    CeCslSortKeyView parts[] = {{&tag, 1, false}, {component.data, component.length, false}};
+    if (ok) ok = ce_csl_sort_key_sequence(parts, 2, &w->allocator, &out->key, w->error, w->capacity);
+    ce_csl_sort_key_free(&component); return ok;
+}
 static bool scalar_key(Work *w, const CeCslVariableValue *value, bool numeric, CeCslSortEvaluated *out) {
     size_t size = 0; const char *text = ce_csl_variable_text(value, &size);
     if (!text) return fail(w->error, w->capacity, "Sort scalar is not a scalar value");
     if (!size) { out->missing = true; return true; }
-    if (numeric) {
-        size_t i = (text[0] == '+' || text[0] == '-') ? 1 : 0, first = i;
-        while (i < size && text[i] >= '0' && text[i] <= '9') ++i;
-        if (i > first && i == size) {
-            out->domain = CE_CSL_SORT_INTEGER;
-            return ce_csl_sort_key_integer(text, size, &w->allocator, &out->key, w->error, w->capacity);
-        }
-        for (i = 0; i < size; ++i)
-            if (text[i] >= '0' && text[i] <= '9')
-                return unsupported(w, "numeric prefixes, ranges and noninteger values");
-    }
     CeCslInline *plain = NULL;
     if (!ce_csl_inline_parse(text, size, 0, &w->allocator, &plain, NULL, w->error, w->capacity)) return false;
     text = ce_csl_inline_text(plain, &size);
-    bool ok = text_key(w, text, size, out); ce_csl_inline_free(plain); return ok;
+    bool ok = numeric ? number_key(w, text, size, out) : text_key(w, text, size, out);
+    ce_csl_inline_free(plain); return ok;
 }
 static bool date_key(Work *w, const CeCslDateValueView *value, unsigned mask, CeCslSortEvaluated *out) {
     if (!value || !value->present || !mask) { out->missing = true; return true; }
-    if (value->literal_size) return unsupported(w, "literal dates have no chronological key");
+    if (value->literal_size) { out->missing = true; return true; }
     if (!value->endpoint_count || value->endpoint_count > 2)
         return fail(w->error, w->capacity, "Invalid sort date endpoints");
     CeCslSortDatePoint points[2] = {{0}};
@@ -201,8 +224,7 @@ static bool names_key(Work *w, const CeCslNamesResult *names, CeCslSortEvaluated
     size_t count = ce_csl_names_result_person_count(names);
     if (!count) { /* COUNT form has summary count but no rendered people. */
         char number[32]; int n = snprintf(number, sizeof(number), "%zu", summary->rendered_names);
-        out->domain = CE_CSL_SORT_INTEGER;
-        return ce_csl_sort_key_integer(number, (size_t)n, &w->allocator, &out->key, w->error, w->capacity);
+        return number_key(w, number, (size_t)n, out);
     }
     if (count > CE_CSL_SORT_MAX_KEY_PARTS / 4)
         return fail(w->error, w->capacity, "Sort name components exceed their limit");
@@ -374,7 +396,9 @@ bool ce_csl_sort_evaluated_order(const CeCslSortEvaluated *keys, size_t rows, si
                 v->descending != directions[c]) return fail(error, capacity, "Inconsistent sort column metadata");
             if (v->missing) continue;
             if (!first) first = v;
-            else if (v->domain != first->domain || (v->domain == CE_CSL_SORT_LEXICAL && v->language != first->language))
+            else if (v->domain != first->domain ||
+                     ((v->domain == CE_CSL_SORT_LEXICAL || v->domain == CE_CSL_SORT_NUMBER) &&
+                      v->language != first->language))
                 return fail(error, capacity, "Unsupported sort column: incompatible key domains or collation languages");
         }
     }

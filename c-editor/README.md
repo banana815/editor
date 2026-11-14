@@ -43,6 +43,26 @@ for compatibility with the old HTML-in-MD files. The input limit is 128 MiB.
 The original file is never overwritten. Existing names receive a numbered
 suffix, and the current note must save successfully before switching documents.
 
+Copy and paste carry a C-validated document slice: text marks, list ancestry,
+citation source snapshots and unknown attributes. Plain text uses readable
+citation labels; escaped HTML carries the private slice when a browser cannot
+transfer its custom clipboard type. Clipboard representations are bounded to
+16 MiB, 250,000 JSON values and 128 nested containers. These limits do not claim
+one shared allocation budget. Complex replacements across incompatible list
+ancestors fail explicitly. Pasted citations receive distinct identifiers and
+pass the same whole-document processing as other edits. A cut deletes only
+after clipboard acceptance and verification of its original note, revision and
+selection; failed or stale operations preserve the document. The touch menu
+requires multi-format `ClipboardItem`/`write` support for rich copying; otherwise
+it fails without cutting. Browser-native copy/cut events remain supported, and
+plain-only prompts can use `writeText`.
+
+Formatting at an empty caret sets the marks for subsequent typing without
+creating a document edit. Each committed text input remains one undo step,
+including IME input. On touch screens, dragging scrolls without moving the
+caret; tapping focuses input, and a long press selects text for the floating
+copy/cut/paste/select-all menu. Mouse and pen input retain their normal behavior.
+
 ## Desktop preview packages
 
 ```sh

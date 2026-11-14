@@ -96,11 +96,17 @@ typedef struct CeCslEvalNodeInfo {
     const CeCslEvalNode *parent, *first_child, *next;
     CeCslEvalDecoration decoration;
     /* Descriptive labels keep their source use/presence, but do not constitute
-     * variable calls for group suppression or consume a substitution variable. */
+     * variable calls for group suppression or consume a substitution variable.
+     * A resolved, unsuppressed year-suffix call separately permits its group
+     * to survive before letters are assigned; that compatibility fact does
+     * not make rendered_variable_present true for an empty suffix. */
     bool variable_called, metadata_present, rendered_variable_present;
     bool nonempty, used_substitute, missing_term;
     CeCslEvalSuppression suppression;
     CeCslInlineDiagnostic inline_diagnostic;
+    /* True only on an executed, unsuppressed cs:text year-suffix leaf.
+     * Finalizers propagate this fact independently while projecting the tree. */
+    bool year_suffix_call_succeeded;
 } CeCslEvalNodeInfo;
 typedef struct CeCslEvalSummary {
     size_t node_count, leaf_bytes;
