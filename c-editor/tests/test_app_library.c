@@ -80,6 +80,15 @@ int main(int argc,char **argv) {
     SDL_SetMainReady();
     char *args[]={"test_app_library","--notes",argv[1],"--font",argv[2]};
     void *state=NULL; assert(SDL_AppInit(&state,5,args)==SDL_APP_CONTINUE); App *a=state;
+    assert(a->sidebar && !a->sidebar_manual);
+    assert(SDL_SetWindowSize(a->window,320,640)); layout(a);
+    assert(!a->sidebar && !a->note_import_button.w && a->editor_area.x==24);
+    action(a,ACT_SIDEBAR); layout(a);
+    assert(a->sidebar && a->sidebar_manual && a->note_import_button.w>0);
+    action(a,ACT_SIDEBAR); layout(a); assert(!a->sidebar);
+    assert(SDL_SetWindowSize(a->window,1100,760)); layout(a);
+    assert(!a->sidebar); /* Explicit choices survive resizing and drawing. */
+    a->sidebar_manual=false; layout(a); assert(a->sidebar);
     const char *initial="{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"前后\"}]}]}";
     note_store_delete(&a->store,"Ui.json"); assert(note_store_create(&a->store,"Ui.json",initial,strlen(initial))==NOTE_OK);
     char error[256]; assert(ce_document_import(a->doc,initial,CE_FORMAT_JSON,error,sizeof error));
@@ -110,9 +119,12 @@ int main(int argc,char **argv) {
     fixture_json="not JSON"; press(a,LIB_IMPORT);library_import_poll(a);assert(a->library.library.item_count==2 && a->library.selected_item==1); unchanged(a,synced);
     press(a,LIB_SEARCH);input(a,"中文");key(a,SDLK_RETURN,0);assert(a->library.row_count==1 && a->library.selected_item==SIZE_MAX);
     SDL_SetWindowSize(a->window,390,400);layout(a);assert(a->width==390);press(a,LIB_VIEW);layout(a);
+    assert(!a->sidebar);
     assert(a->library_buttons[LIB_INSERT].y>=56 && a->library_buttons[LIB_SYNC].y+a->library_buttons[LIB_SYNC].h<=a->library_area.h);
     press(a,LIB_CLOSE); assert(a->edit->has_focus);
     assert(save_document(a));
+    action(a,ACT_SIDEBAR); layout(a); assert(a->sidebar);
+    open_note(a,"Ui.json"); layout(a); assert(!a->sidebar);
     /* A repaired duplicate ID after an old in-flow footer must still edit the
      * originally selected citation, not the earlier block sharing its ID. */
     const char *duplicates="{\"type\":\"doc\",\"content\":[{\"type\":\"zoteroCitationBlock\",\"attrs\":{\"citationId\":\"dup\",\"itemUri\":\"uri:first\",\"title\":\"First\"}},{\"type\":\"zoteroEndnoteSection\",\"attrs\":{\"entriesJson\":\"[]\"}},{\"type\":\"zoteroCitationBlock\",\"attrs\":{\"citationId\":\"dup\",\"itemUri\":\"uri:second\",\"title\":\"Second\"}}]}";

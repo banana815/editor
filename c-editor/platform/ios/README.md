@@ -85,9 +85,27 @@ only the UUID created by this run, including after failure.
 
 A passing run requires the C app's success message, a successful console launch
 exit, and a complete BMP screenshot. Preserve `app.log`, `unified.log`, `simulator.log`,
-`boot-*.log`, `selection.json`, `result.json`, and `smoke.bmp` from the output directory as CI
-artifacts. `unified.log` captures the C app's NSLog messages when they are not
-forwarded to the attached console. A screenshot may also be kept after failure
+`boot-*.log`, `selection.json`, `launch-state.json`, `result.json`, and `smoke.bmp`
+from the output directory as CI artifacts. `unified.log` captures the C app's
+NSLog messages when they are not forwarded to the attached console. When simctl
+has not returned a PID, the query stays on this run's UUID and selects the app
+process plus bundle-related messages from SpringBoard, RunningBoard and launch
+services. A missing PID can also mean buffered console output, so it is not
+treated as proof that no process started. A failed launch or missing PID also
+records `launchctl-after-launch.log` and, when available, the simulator compositor's
+`failure-screen.png`. That diagnostic PNG cannot replace the C renderer's BMP or
+make a timed-out launch pass. No application launch is retried.
+
+Run the command-isolation and result-gating tests without Xcode or a simulator:
+
+```sh
+python3 c-editor/platform/ios/test_smoke_simulator.py
+```
+
+These tests replace Apple tools with temporary mock executables and verify that
+only the newly created UUID is inspected/cleaned up, that only one launch occurs,
+and that timeout or missing success messages still fail even with diagnostic
+output. A screenshot may also be kept after failure
 for diagnosis; only `result.json` denotes a passing check. The script's success and failure cleanup paths have been checked with
 a simulated command runner; a real simulator run remains unverified locally due
 to the CoreSimulator mismatch described above. This startup check does not cover

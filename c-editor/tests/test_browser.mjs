@@ -210,7 +210,7 @@ try {
 
     await cdp('Emulation.setDeviceMetricsOverride', {width:390,height:844,deviceScaleFactor:1,mobile:true});
     await until(() => evaluate('canvas.width === 390 && canvas.height === 844'), 'responsive browser canvas');
-    await click(45,65); // Close the intentional sidebar overlay to inspect the narrow editor.
+    // A fresh narrow layout exposes the editor without closing an overlay.
     await writeFile(join(build,'browser-mobile-validation.png'), Buffer.from((await cdp('Page.captureScreenshot')).data,'base64'));
     console.log('PASS: browser canvas follows a narrow mobile viewport');
     await cdp('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:3,mobile:true});
@@ -323,7 +323,9 @@ try {
     await cdp('Input.insertText', {text:'Z'}); await key('ArrowDown','ArrowDown',40);
     await key('Home','Home',36,8); await cdp('Input.insertText', {text:'tail'});
     await until(() => evaluate("FS.readFile('/notes/Navigation.md',{encoding:'utf8'}) === '<p>aaaa</p><p>YbbbbZ</p><p>tail</p>' && !Module.editorUnsaved && !Module.editorPersistencePending"), 'visual line navigation and selection');
-    await click(25,180); await cdp('Input.insertText', {text:'S'});
+    const navigationPoint = await evaluate(`(()=>{const r=canvas.getBoundingClientRect(),a=Module.editorInputArea;
+        return {x:r.left+a.x*r.width/canvas.width,y:r.top+a.y*r.height/canvas.height};})()`);
+    await click(navigationPoint.x+1,navigationPoint.y+12); await cdp('Input.insertText', {text:'S'});
     await until(() => evaluate("FS.readFile('/notes/Navigation.md',{encoding:'utf8'}) === '<p>Saaaa</p><p>YbbbbZ</p><p>tail</p>' && !Module.editorUnsaved && !Module.editorPersistencePending"), 'canvas hit test');
     console.log('PASS: visual Up/Down, Home/End, Shift selection and canvas click editing');
 

@@ -12,7 +12,8 @@ device_uuid=
 log="$output/simulator.log"
 : > "$log"
 rm -f -- "$output/result.json" "$output/smoke.bmp" "$output/selection.json" "$output/app.log" "$output/unified.log" \
-  "$output/boot-1.log" "$output/boot-2.log" "$output/boot-3.log"
+  "$output/boot-1.log" "$output/boot-2.log" "$output/boot-3.log" \
+  "$output/launch-state.json" "$output/launchctl-after-launch.log" "$output/failure-screen.png"
 
 # macOS does not ship GNU timeout. Bound each child command and kill only that
 # command's process group on timeout; Simulator itself is cleaned up by UUID.
@@ -226,7 +227,9 @@ run_limited 90 xcrun simctl launch --console --terminate-running-process "$devic
 cat "$output/app.log"
 # SDL's UIKit logger uses NSLog, which may go only to the unified log instead
 # of the stdout/stderr streams attached by simctl --console. This simulator is
-# exclusive to the test; collect only the PID returned by this launch.
+# exclusive to the test. Prefer the PID returned by this launch, but simctl can
+# buffer its PID line until --console exits. A timeout without that line does
+# not establish whether the app was started.
 launch_pid=$(python3 - "$output/app.log" "$bundle_id" <<'PY'
 import pathlib, re, sys
 text = pathlib.Path(sys.argv[1]).read_text(errors='replace')
@@ -235,10 +238,32 @@ print(matches[-1] if matches else '')
 PY
 )
 if [ -n "$launch_pid" ]; then
-  run_limited 60 xcrun simctl spawn "$device_uuid" log show --style compact --last 5m --info --debug \
-      --predicate "processIdentifier == $launch_pid" > "$output/unified.log" 2>> "$log" || true
+  log_predicate="processIdentifier == $launch_pid"
 else
-  printf 'simctl did not return a launch PID; no process logs collected\n' > "$output/unified.log"
+  log_predicate=$(python3 - "$executable" "$bundle_id" <<'PY'
+import json, sys
+process, bundle = map(json.dumps, sys.argv[1:])
+services = '{"SpringBoard", "runningboardd", "frontboardd", "launchd", "CoreSimulatorBridge"}'
+print(f'(process == {process}) OR ((process IN {services}) AND (eventMessage CONTAINS {bundle}))')
+PY
+)
+fi
+python3 - "$output/launch-state.json" "$device_uuid" "$launch_status" "$launch_pid" "$log_predicate" <<'PY'
+import json, pathlib, sys
+pathlib.Path(sys.argv[1]).write_text(json.dumps(dict(
+    device_uuid=sys.argv[2], console_exit=int(sys.argv[3]),
+    launch_pid=int(sys.argv[4]) if sys.argv[4] else None,
+    log_predicate=sys.argv[5]), indent=2) + '\n')
+PY
+run_limited 60 xcrun simctl spawn "$device_uuid" log show --style compact --last 5m --info --debug \
+    --predicate "$log_predicate" > "$output/unified.log" 2>> "$log" || true
+if [ -z "$launch_pid" ] || [ "$launch_status" -ne 0 ]; then
+  # Only inspect the disposable device owned by this script. Do not retry the
+  # app or turn missing diagnostics into success. The compositor screenshot is
+  # separate from the C renderer's BMP and cannot satisfy its success check.
+  run_limited 30 xcrun simctl spawn "$device_uuid" launchctl list \
+      > "$output/launchctl-after-launch.log" 2>> "$log" || true
+  run_limited 30 xcrun simctl io "$device_uuid" screenshot "$output/failure-screen.png" >> "$log" 2>&1 || true
 fi
 if [ -f "$screenshot" ]; then cp "$screenshot" "$output/smoke.bmp"; fi
 if [ "$launch_status" -ne 0 ]; then

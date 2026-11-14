@@ -1,0 +1,3 @@
+# Notices are verified against upstream byte hashes. Preserve their original
+# line endings when Windows checks out the repository with core.autocrlf.
+licenses/** -text

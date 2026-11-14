@@ -75,7 +75,7 @@ typedef struct {
     float scroll, sidebar_scroll, sidebar_width, prompt_scroll;
     int toolbar_page;
     bool resizing_sidebar;
-    bool dark, sidebar, typewriter, smoke;
+    bool dark, sidebar, sidebar_manual, typewriter, smoke;
     Uint64 edited_at;
     unsigned frames;
     const char *screenshot;
@@ -326,7 +326,7 @@ static void format_selection(App *a, CeMark mark, const char *value) {
 }
 static void action(App *a, Action which) {
     if (which == ACT_MORE) { ++a->toolbar_page; return; }
-    if (which == ACT_SIDEBAR) { a->sidebar = !a->sidebar; return; }
+    if (which == ACT_SIDEBAR) { a->sidebar = !a->sidebar; a->sidebar_manual = true; return; }
     if (which == ACT_NEW) { show_prompt(a, PROMPT_NEW); return; }
     if (which == ACT_REFRESH) { if (refresh_files(a)) message(a, "笔记列表已刷新"); return; }
     if (which == ACT_THEME) { a->dark = !a->dark; return; }
@@ -1018,6 +1018,9 @@ static void layout(App *a) {
      * origin, keeping the notch/status bar and home indicator outside controls. */
     SDL_SetRenderViewport(a->renderer,&safe);
     a->width=safe.w; a->height=safe.h;
+    /* Fresh narrow windows should expose the editor. Once the user chooses
+     * the sidebar state, keep that choice through subsequent layout passes. */
+    if (!a->sidebar_manual) a->sidebar = a->width >= 700;
     library_layout(a);
     int columns = SDL_max(1, (a->width - 26) / 78);
     int per_page = SDL_max(1, columns * 2 - 1);
@@ -1105,8 +1108,8 @@ static void draw(App *a) {
         TTF_SetTextColor(a->edit->text,text.r,text.g,text.b,255);
         EditBox_Draw(a->edit);
     } else {
-        label(a,"在侧边栏打开笔记，或点击“新建”。",a->editor_area.x,a->editor_area.y+30,text);
-        label(a,"支持中文输入、自动保存和撤销。",a->editor_area.x,a->editor_area.y+68,text);
+        label(a,"点击“新建”开始写作。",a->editor_area.x,a->editor_area.y+30,text);
+        label(a,"点击“侧栏”打开或导入笔记。",a->editor_area.x,a->editor_area.y+68,text);
     }
     SDL_SetRenderClipRect(a->renderer,NULL);
     if (a->sidebar) {

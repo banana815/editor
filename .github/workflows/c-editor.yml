@@ -152,6 +152,9 @@ jobs:
         target: [simulator, device]
     steps:
       - uses: actions/checkout@v4
+      - name: Test simulator launch diagnostics and result validation
+        if: matrix.target == 'simulator'
+        run: python3 c-editor/platform/ios/test_smoke_simulator.py
       - name: Compile unsigned iOS bundle
         run: sh c-editor/platform/ios/build.sh '${{ matrix.target }}'
       - name: Verify app and bundled font
