@@ -173,6 +173,7 @@ int main(int argc, char **argv) {
     assert(note_store_save(&store, "中文笔记.md", "short", 5) == NOTE_OK);
     check_content(&store, "中文笔记.md", "short", 5);
 #ifndef _WIN32
+#ifndef __EMSCRIPTEN__
     {
         /* Force a real partial-write failure, not just input validation, and
          * verify that atomic save leaves the previous note intact. */
@@ -191,6 +192,8 @@ int main(int argc, char **argv) {
         assert(signal(SIGXFSZ, previous_handler) != SIG_ERR);
         check_content(&store, "中文笔记.md", "short", 5);
     }
+#endif /* WebAssembly has no process RLIMIT_FSIZE; browser persistence failures
+        * are covered by the IndexedDB/queue integration tests. */
     {
         char *outside = (char *)malloc(strlen(root) + 50);
         char *link = (char *)malloc(strlen(nested) + 50);
@@ -212,11 +215,13 @@ int main(int argc, char **argv) {
         assert(fread(preserved, 1, sizeof(preserved), file) == 9); assert(fclose(file) == 0);
         assert(!strcmp(preserved, "untouched"));
         assert(unlink(link) == 0); assert(unlink(outside) == 0);
+#ifndef __EMSCRIPTEN__ /* Emscripten's virtual filesystem has no named pipes. */
         sprintf(link, "%s/fifo.md", nested);
         assert(mkfifo(link, 0600) == 0);
         assert(note_store_read(&store, "fifo.md", &data, &size) == NOTE_IO_ERROR);
         assert(note_store_save(&store, "fifo.md", "bad", 3) == NOTE_IO_ERROR);
         assert(unlink(link) == 0);
+#endif
         sprintf(link, "%s/folder.md", nested);
         assert(mkdir(link, 0700) == 0);
         assert(note_store_save(&store, "folder.md", "bad", 3) == NOTE_IO_ERROR);

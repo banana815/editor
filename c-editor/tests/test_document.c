@@ -1,4 +1,5 @@
 #include "document.h"
+#include "cJSON.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -409,6 +410,96 @@ static void test_moved_offset(void) {
     assert(ce_document_undo(doc) && !strcmp(ce_document_text(doc),"B\nC\nA"));
     ce_document_free(doc);
 }
+/* Keep failing after the selected allocation: recovery that reparses the old
+ * JSON would fail too. All documents below use the same hooks for their whole
+ * lifetime, including the printable cJSON buffers copied by document.c. */
+typedef union { cJSON alignment; size_t magic; } TransactionAllocation;
+static size_t transaction_calls, transaction_fail_at, transaction_live, transaction_rejected;
+static void *transaction_allocate(size_t size) {
+    ++transaction_calls;
+    if (transaction_fail_at && transaction_calls >= transaction_fail_at) {
+        ++transaction_rejected; return NULL;
+    }
+    TransactionAllocation *p = malloc(sizeof *p + size);
+    if (!p) return NULL;
+    p->magic = 0x7a11ca7eu; ++transaction_live; return p + 1;
+}
+static void transaction_free(void *pointer) {
+    if (!pointer) return;
+    TransactionAllocation *p = (TransactionAllocation *)pointer - 1;
+    assert(p->magic == 0x7a11ca7eu && transaction_live);
+    --transaction_live; free(p);
+}
+static CeDocument *transaction_document(void) {
+    CeDocument *d = load("<p><em>Original</em></p>", CE_FORMAT_HTML);
+    assert(ce_document_insert(d, ce_document_length(d), " saved"));
+    ce_document_mark_saved(d);
+    assert(ce_document_insert(d, ce_document_length(d), " redo"));
+    assert(ce_document_undo(d));
+    assert(!ce_document_is_modified(d) && ce_document_can_undo(d) && ce_document_can_redo(d));
+    return d;
+}
+static void transaction_sweep(const char *target, bool no_op) {
+    CeDocument *probe = transaction_document();
+    char *same = no_op ? ce_document_export_json(probe) : NULL;
+    transaction_calls = 0;
+    assert(ce_document_apply_json(probe, no_op ? same : target));
+    size_t calls = transaction_calls; free(same); ce_document_free(probe);
+    assert(!transaction_live);
+    size_t multiple_failures = 0;
+    for (size_t fail_at = 1; fail_at <= calls; ++fail_at) {
+        CeDocument *d = transaction_document();
+        char *before = ce_document_export_json(d), *html = ce_document_export_html(d);
+        const char *text = ce_document_text(d);
+        size_t blocks = ce_document_block_count(d), spans = ce_document_span_count(d);
+        CeStyle style = ce_document_style_at(d, 1);
+        assert(before && html);
+        transaction_calls = transaction_rejected = 0; transaction_fail_at = fail_at;
+        bool ok = ce_document_apply_json(d, no_op ? before : target);
+        transaction_fail_at = 0;
+        if (ok) fprintf(stderr, "apply_json unexpectedly succeeded at sticky failure %zu/%zu\n", fail_at, calls);
+        assert(!ok && *ce_document_error(d));
+        if (transaction_rejected > 1) ++multiple_failures;
+        char *after = ce_document_export_json(d), *after_html = ce_document_export_html(d);
+        assert(after && after_html && !strcmp(before, after) && !strcmp(html, after_html));
+        assert(ce_document_text(d) == text && ce_document_block_count(d) == blocks && ce_document_span_count(d) == spans);
+        assert(ce_document_style_at(d, 1).marks == style.marks);
+        assert(!ce_document_is_modified(d) && ce_document_can_undo(d) && ce_document_can_redo(d));
+        /* Both histories survived, with their original savepoint semantics. */
+        assert(ce_document_redo(d) && !strcmp(ce_document_text(d), "Original saved redo"));
+        assert(ce_document_undo(d) && !ce_document_is_modified(d));
+        assert(ce_document_undo(d) && !strcmp(ce_document_text(d), "Original"));
+        free(before); free(html); free(after); free(after_html); ce_document_free(d);
+        assert(!transaction_live);
+    }
+    assert(calls && multiple_failures);
+    printf("apply_json sticky OOM: %zu allocation points (%zu with repeated failure) passed\n", calls, multiple_failures);
+}
+static void test_document_json_transaction_oom(void) {
+    cJSON_Hooks hooks = {transaction_allocate, transaction_free}; cJSON_InitHooks(&hooks);
+    transaction_sweep("{\"type\":\"doc\",\"content\":[{\"type\":\"heading\",\"attrs\":{\"level\":2},\"content\":[{\"type\":\"text\",\"text\":\"replacement\"}]},{\"type\":\"zoteroCitationBlock\",\"attrs\":{\"citationId\":\"c1\",\"endnoteNumber\":9}}]}", false);
+    transaction_sweep("{\"doc\":{\"type\":\"doc\",\"content\":[]}}", false);
+    transaction_sweep("{\"type\":\"doc\"}", false);
+    transaction_sweep(NULL, true);
+    CeDocument *d = transaction_document(); char *before = ce_document_export_json(d);
+    const char *text = ce_document_text(d);
+    assert(ce_document_apply_json(d, before) && ce_document_text(d) == text);
+    assert(ce_document_can_redo(d) && !ce_document_is_modified(d));
+    assert(ce_document_redo(d) && !strcmp(ce_document_text(d), "Original saved redo"));
+    free(before); ce_document_free(d);
+    /* Capacity eviction remains exactly one oldest undo entry per commit. */
+    d = load("0", CE_FORMAT_TEXT);
+    for (size_t i = 1; i <= 129; ++i) {
+        char value[192];
+        snprintf(value, sizeof value, "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"%zu\"}]}]}", i);
+        assert(ce_document_apply_json(d, value));
+    }
+    for (size_t i = 0; i < 128; ++i) assert(ce_document_undo(d));
+    assert(!ce_document_can_undo(d) && !strcmp(ce_document_text(d), "1"));
+    for (size_t i = 0; i < 128; ++i) assert(ce_document_redo(d));
+    assert(!ce_document_can_redo(d) && !strcmp(ce_document_text(d), "129"));
+    ce_document_free(d); assert(!transaction_live); cJSON_InitHooks(NULL);
+}
 int main(void) {
     test_edit();
     test_format();
@@ -423,6 +514,7 @@ int main(void) {
     test_edit_boundaries();
     test_moved_offset();
     test_document_json_transaction();
+    test_document_json_transaction_oom();
     puts("document tests passed");
     return 0;
 }

@@ -4,6 +4,7 @@
 #include <string.h>
 
 typedef union Block {
+    unsigned char padding[32];
     long double alignment;
     void *pointer_alignment;
     size_t size;

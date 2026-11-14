@@ -1,7 +1,7 @@
 # C citation processor — development module
 
-This is the beginning of an original C implementation of CSL processing. It is
-not connected to the editor and is not yet a complete document citation processor. The existing
+This is an original, bounded C implementation of CSL document processing. It is
+not connected to the editor yet. The existing
 editor continues to label its output as approximate. No JavaScript interpreter
 or third-party JavaScript formatter will be part of this implementation.
 
@@ -59,14 +59,25 @@ The current modules provide:
   the pinned profiles' keys, structured name components and selected date parts.
   [SORT_EVALUATE.md](SORT_EVALUATE.md) lists unsupported mixed-key cases and
   encoding checks; keys are not recovered by parsing formatted names or dates.
+- Semantic citation grouping and year/number collapse, preserving complete
+  source permutations and generated punctuation origins. [CLUSTER.md](CLUSTER.md)
+  records supported collapse forms and explicit restrictions.
+- Streaming bibliography rows/cells with owned formatting, field alignment,
+  indentation and spacing metadata, plus plain and escaped HTML export.
+  [BIBLIOGRAPHY.md](BIBLIOGRAPHY.md) describes layout boundaries and measurements.
+- Whole-document eligibility, sorting, numbering, real-renderer disambiguation,
+  positions and citation/bibliography output. Rebuilding a revision can remove
+  old suffixes and expansions after deletion. [DOCUMENT.md](DOCUMENT.md) records
+  the processing order, shared budgets and atomic replacement contract.
 
-These components still need document-wide disambiguation integration, citation
-collapse and document integration. Date parsing currently rejects
+The editor adapter and application rendering are still pending. This processor
+composes the explicitly supported module profiles rather than every CSL feature.
+Date parsing currently rejects
 mixed-precision intervals and unsupported raw date syntax; Roman numerals are
 limited to 1–3999. Automatic name-particle parsing is not implemented; explicit
 `parse-names=true` is rejected. The default collation does not provide Chinese
 pinyin or other CLDR language tailoring. Accepting an APA stylesheet
-does not establish that its citation or bibliography output is implemented.
+does not establish support for every possible item or option in that style.
 
 ```sh
 cmake -S c-editor/csl -B c-editor/build-csl -DCSL_SANITIZERS=ON
@@ -89,10 +100,9 @@ Unicode normalization/casing and default DUCET collation do not implement
 locale-specific collation tailoring. [POSITION.md](POSITION.md) records the
 separate in-text/note histories and the supported position policy.
 
-Processing must operate on the whole document's ordered citation clusters,
-not merely format each bibliography item independently. The planned result
-includes per-cluster citation runs and the ordered bibliography, with structured
-formatting and separate plain-text/HTML serializations. The document adapter
+Processing operates on the whole document's ordered citation clusters.
+The result includes per-cluster citation runs and the ordered bibliography, with
+structured formatting and separate plain-text/HTML serializations. The editor adapter
 will apply a successful result as one undoable transaction; unsupported styles
 or failed processing must not silently become approximate output.
 
@@ -111,8 +121,9 @@ styles. Its test adapter wraps a single citation layout and represents aligned
 bibliography fields with a space; the application document adapter is still
 pending. Three recorded processor differences are intentional: a family name-part
 case rule does not uppercase a non-personal literal name, and two IEEE page fields
-retain their source hyphens when no range format is requested. Multi-citation sorting,
-disambiguation and collapse are not established by these single-entry examples.
+retain their source hyphens when no range format is requested. Separate document
+tests cover real multi-citation sorting, disambiguation, grouping/collapse,
+delete/rebuild reversibility, empty bibliography entries and layout exports.
 
 The dedicated `C citation processor` workflow runs this independent module on
 Windows, macOS, Linux and WebAssembly, plus mobile cross-compilation. Mobile

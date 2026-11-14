@@ -336,13 +336,31 @@ bool ce_document_is_modified(const CeDocument *d) {
     free(s);
     return dirty;
 }
+/* Contents and their indexes travel together; savepoints and history stacks
+ * remain attached to their document. This operation cannot allocate or fail. */
+static void swap_content(CeDocument *d, CeDocument *candidate) {
+#define SWAP_CONTENT(type, member) do { type value = d->member; d->member = candidate->member; candidate->member = value; } while (0)
+    SWAP_CONTENT(cJSON *, root);
+    SWAP_CONTENT(Buffer, text);
+    SWAP_CONTENT(Span *, spans);
+    SWAP_CONTENT(size_t, nspans);
+    SWAP_CONTENT(size_t, cspans);
+    SWAP_CONTENT(Block *, blocks);
+    SWAP_CONTENT(size_t, nblocks);
+    SWAP_CONTENT(size_t, cblocks);
+#undef SWAP_CONTENT
+}
 static bool restore(CeDocument *d, const char *s) {
-    cJSON *j = cJSON_Parse(s);
-    if (!j)
-        return false;
-    cJSON_Delete(d->root);
-    d->root = j;
-    return rebuild(d);
+    CeDocument *candidate = calloc(1, sizeof *candidate);
+    if (!candidate) return fail(d, "Out of memory restoring document");
+    candidate->root = cJSON_Parse(s);
+    if (!candidate->root || !rebuild(candidate)) {
+        ce_document_free(candidate);
+        return fail(d, "Unable to construct restored document");
+    }
+    swap_content(d, candidate);
+    ce_document_free(candidate);
+    return true;
 }
 static char *begin(CeDocument *d) {
     d->error[0] = 0;
@@ -352,6 +370,10 @@ static char *begin(CeDocument *d) {
     return s;
 }
 static bool finish(CeDocument *d, char *before, bool ok) {
+    /* Legacy in-place edits still need allocations to reconstruct `before`.
+     * Persistent OOM can prevent that rollback. The stronger atomic guarantee
+     * belongs to apply_json and history, which prepare a private candidate
+     * before touching live content; it does not yet cover all editing APIs. */
     if (ok)
         ok = rebuild(d);
     if (!ok) {
@@ -377,20 +399,34 @@ static bool finish(CeDocument *d, char *before, bool ok) {
 }
 bool ce_document_apply_json(CeDocument *d, const char *json) {
     if (!d || !json) return false;
-    CeDocument *candidate = ce_document_new();
+    /* Import can build into an empty private object. Avoid constructing an
+     * unrelated initial document/savepoint before replacing it immediately. */
+    CeDocument *candidate = calloc(1, sizeof *candidate);
     if (!candidate) return fail(d, "Out of memory");
     char error[256];
     if (!ce_document_import(candidate, json, CE_FORMAT_JSON, error, sizeof(error))) {
         ce_document_free(candidate);
         return fail(d, error);
     }
-    char *before = begin(d);
-    if (!before) { ce_document_free(candidate); return false; }
-    cJSON *previous = d->root;
-    d->root = candidate->root; candidate->root = previous;
-    bool result = finish(d, before, true);
+    char *before = ce_document_export_json(d);
+    char *after = ce_document_export_json(candidate);
+    if (!before || !after) {
+        free(before); free(after); ce_document_free(candidate);
+        return fail(d, "Out of memory");
+    }
+    if (strcmp(before, after)) {
+        /* All fallible work is complete, including the new root's indexes and
+         * the history snapshot. Commit without allocating or reparsing the
+         * old state. Candidate takes ownership of the previous content. */
+        swap_content(d, candidate);
+        push(d->undo, &d->nundo, before);
+        before = NULL;
+        clear_stack(d->redo, &d->nredo);
+    }
+    free(before); free(after);
     ce_document_free(candidate);
-    return result;
+    d->error[0] = 0;
+    return true;
 }
 bool ce_document_can_undo(const CeDocument *d) { return d && d->nundo; }
 bool ce_document_can_redo(const CeDocument *d) { return d && d->nredo; }
@@ -401,7 +437,7 @@ static bool history(CeDocument *d, bool redo) {
         return false;
     char *now = ce_document_export_json(d);
     if (!now)
-        return false;
+        return fail(d, "Out of memory saving document history");
     if (!restore(d, a[*na - 1])) {
         free(now);
         return false;
@@ -1694,8 +1730,27 @@ bool ce_document_import(CeDocument *d, const char *data, CeFormat f, char *error
         fail(d, "Out of memory");
         goto bad;
     }
-    if (!cJSON_GetArraySize(field(r, "content")))
-        cJSON_AddItemToArray(array(r), paragraph());
+    if (!cJSON_GetArraySize(field(r, "content"))) {
+        /* Empty document normalization is also part of private construction.
+         * Check every attachment so OOM cannot leak a detached node or accept
+         * a partially constructed paragraph. */
+        cJSON *content = field(r, "content");
+        if (!content) {
+            content = cJSON_CreateArray();
+            if (!content || !cJSON_AddItemToObject(r, "content", content)) {
+                cJSON_Delete(content); cJSON_Delete(r); fail(d, "Out of memory"); goto bad;
+            }
+        }
+        cJSON *blank = cJSON_CreateObject(), *children = cJSON_CreateArray();
+        if (!blank || !children || !cJSON_AddStringToObject(blank, "type", "paragraph") ||
+            !cJSON_AddItemToObject(blank, "content", children)) {
+            cJSON_Delete(blank); cJSON_Delete(children); cJSON_Delete(r);
+            fail(d, "Out of memory"); goto bad;
+        }
+        if (!cJSON_AddItemToArray(content, blank)) {
+            cJSON_Delete(blank); cJSON_Delete(r); fail(d, "Out of memory"); goto bad;
+        }
+    }
     CeDocument temp = {0};
     temp.root = r;
     if (!rebuild(&temp)) {

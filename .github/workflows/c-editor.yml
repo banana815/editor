@@ -230,15 +230,12 @@ jobs:
         env:
           EDITOR_TEST_SYSTEM_CLIPBOARD: '1'
         run: node c-editor/tests/test_browser.mjs c-editor/build-web "$(command -v google-chrome)"
-      - name: Run document and Zotero fixtures in WebAssembly
+      - name: Run C core fixtures in WebAssembly
         run: |
           source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
           emcmake cmake -S c-editor -B c-editor/build-wasm-tests -DEDITOR_BUILD_APP=OFF -DBUILD_TESTING=ON
-          cmake --build c-editor/build-wasm-tests --target test_document test_citations test_library_panel test_zotero --parallel 4
-          node c-editor/build-wasm-tests/test_document.js
-          node c-editor/build-wasm-tests/test_citations.js
-          node c-editor/build-wasm-tests/test_library_panel.js
-          node c-editor/build-wasm-tests/test_zotero.js /
+          cmake --build c-editor/build-wasm-tests --parallel 4
+          ctest --test-dir c-editor/build-wasm-tests --output-on-failure
       - name: Upload browser application and screenshots
         if: always()
         uses: actions/upload-artifact@v4
