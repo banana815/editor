@@ -4,7 +4,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
-const source = readFileSync(new URL("../src/platform_persistence.c", import.meta.url), "utf8");
+// Git may check out C sources with CRLF on Windows. Macro extraction must use
+// logical lines rather than requiring a particular working-tree line ending.
+const source = readFileSync(new URL("../src/platform_persistence.c", import.meta.url), "utf8")
+  .replace(/\r\n/g, "\n");
 
 function bridgeBody(name) {
   const match = source.match(new RegExp(

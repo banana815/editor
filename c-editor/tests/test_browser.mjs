@@ -42,6 +42,11 @@ const chrome = spawn(executable, [
     '--use-angle=swiftshader', '--enable-unsafe-swiftshader', 'about:blank'
 ], {stdio:['ignore','ignore','pipe']});
 let browserError, stderr = '', ws, evaluate, cdp;
+let browserClosed = false;
+const browserFinished = new Promise(resolve => chrome.once('close', () => {
+    browserClosed = true;
+    resolve();
+}));
 chrome.on('error', error => { browserError = error; });
 chrome.stderr.on('data', data => { stderr = (stderr + data).slice(-5000); });
 const pending = new Map();
@@ -302,9 +307,22 @@ try {
     console.error(stderr);
     throw error;
 } finally {
-    ws?.close();
+    // Browser.close gives Chrome a chance to stop its workers and finish profile
+    // writes. Killing only the parent can race a renderer recreating Default/.
+    if (cdp && ws?.readyState === WebSocket.OPEN && !browserClosed) {
+        try { await Promise.race([cdp('Browser.close'), sleep(1000)]); } catch {}
+    }
+    try { ws?.close(); } catch {}
     for (const request of pending.values()) request.reject(new Error('test finished'));
-    chrome.kill(); server.close();
-    await Promise.race([new Promise(r=>chrome.once('exit',r)), sleep(1500)]);
-    await rm(profile, {recursive:true,force:true});
+    server.close(); server.closeAllConnections();
+    await Promise.race([browserFinished, sleep(3000)]);
+    if (!browserClosed) {
+        chrome.kill();
+        await Promise.race([browserFinished, sleep(3000)]);
+    }
+    if (!browserClosed) {
+        chrome.kill('SIGKILL');
+        await Promise.race([browserFinished, sleep(3000)]);
+    }
+    await rm(profile, {recursive:true,force:true,maxRetries:8,retryDelay:200});
 }

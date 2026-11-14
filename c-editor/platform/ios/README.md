@@ -52,17 +52,22 @@ sh c-editor/platform/ios/smoke_simulator.sh \
 ```
 
 Both arguments are optional and default to the paths above. The script discovers
-an available compatible iOS runtime and iPhone/iPad device type, creates a new
+an available compatible iOS runtime and iPhone/iPad device type, preferring a
+standard iPhone 16/15 when compatible, creates a new
 temporary simulator, and installs a temporary copy of the simulator bundle. It
 adds an ad-hoc signature to that copy only when required. Notes and the screenshot
 are written inside this installation's private `Documents` directory. Each
-simulator command has a timeout; boot readiness allows 180 seconds and the app
-allows 90 seconds. Cleanup shuts down and deletes only the UUID created by this
-run, including after failure.
+simulator command has a timeout; initial runtime discovery and each boot readiness
+check allow 180 seconds, installation/container lookup allow 120 seconds, and the
+app allows 90 seconds. Readiness rejects failed data migration even when `simctl`
+returns zero, checks the new device's state, and probes its running userspace.
+Only this empty temporary device may be shut down, erased, and booted again, up
+to two times. Application failures are not retried. Cleanup shuts down and deletes
+only the UUID created by this run, including after failure.
 
 A passing run requires the C app's success message, a successful console launch
 exit, and a complete BMP screenshot. Preserve `app.log`, `simulator.log`,
-`selection.json`, `result.json`, and `smoke.bmp` from the output directory as CI
+`boot-*.log`, `selection.json`, `result.json`, and `smoke.bmp` from the output directory as CI
 artifacts. The script's success and failure cleanup paths have been checked with
 a simulated command runner; a real simulator run remains unverified locally due
 to the CoreSimulator mismatch described above. This startup check does not cover

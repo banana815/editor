@@ -11,22 +11,27 @@ work_dir=$(mktemp -d "${TMPDIR:-/tmp}/notelab-ios-smoke.XXXXXX")
 device_uuid=
 log="$output/simulator.log"
 : > "$log"
-rm -f -- "$output/result.json" "$output/smoke.bmp" "$output/selection.json" "$output/app.log"
+rm -f -- "$output/result.json" "$output/smoke.bmp" "$output/selection.json" "$output/app.log" \
+  "$output/boot-1.log" "$output/boot-2.log" "$output/boot-3.log"
 
 # macOS does not ship GNU timeout. Bound each child command and kill only that
 # command's process group on timeout; Simulator itself is cleaned up by UUID.
 run_limited() {
   python3 - "$@" <<'PY'
-import os, signal, subprocess, sys
+import os, shlex, signal, subprocess, sys
 seconds = int(sys.argv[1])
 assert 0 < seconds <= 600
+print('+ ' + shlex.join(sys.argv[2:]), file=sys.stderr, flush=True)
 process = subprocess.Popen(sys.argv[2:], stdin=subprocess.DEVNULL, start_new_session=True)
 try:
     code = process.wait(timeout=seconds)
 except subprocess.TimeoutExpired:
-    os.killpg(process.pid, signal.SIGKILL)
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
     process.wait()
-    print(f'Timed out after {seconds}s: {sys.argv[2]}', file=sys.stderr)
+    print(f'Timed out after {seconds}s: ' + shlex.join(sys.argv[2:]), file=sys.stderr)
     code = 124
 sys.exit(code if code >= 0 else 128 - code)
 PY
@@ -39,6 +44,9 @@ cleanup() {
     printf '\nCleaning up this run\047s simulator: %s\n' "$device_uuid" >> "$log"
     run_limited 30 xcrun simctl shutdown "$device_uuid" >> "$log" 2>&1 || true
     run_limited 30 xcrun simctl delete "$device_uuid" >> "$log" 2>&1 || true
+  fi
+  if [ "$saved_status" -ne 0 ]; then
+    tail -n 100 "$log" >&2
   fi
   rm -rf -- "$work_dir"
   exit "$saved_status"
@@ -79,7 +87,8 @@ if not re.search(r'platform\s+IOSSIMULATOR\b', pathlib.Path(sys.argv[1]).read_te
     raise SystemExit('The executable is not an iOS simulator binary.')
 PY
 
-run_limited 30 xcrun simctl list --json > "$work_dir/inventory.json" 2>> "$log"
+# The first simctl call can spend minutes mounting installed runtime images.
+run_limited 180 xcrun simctl list --json > "$work_dir/inventory.json" 2>> "$log"
 python3 - "$work_dir" "$output" <<'PY'
 import json, pathlib, re, sys
 work, output = map(pathlib.Path, sys.argv[1:])
@@ -108,7 +117,11 @@ for runtime in runtimes:
         if version(device.get('maxRuntimeVersionString', '65535.255.255')) < current:
             continue
         choices.append(device)
+    # Prefer established standard-size iPhones over Air/Pro/Max templates.
+    # Every choice still has to match the discovered runtime's compatibility.
     choices.sort(key=lambda d: (d.get('productFamily') == 'iPhone',
+                               d['name'] in ('iPhone 16', 'iPhone 15'),
+                               bool(re.fullmatch(r'iPhone \d+', d['name'])),
                                version(d.get('minRuntimeVersionString', '0')), d['name']), reverse=True)
     if choices:
         selected = {'runtime': runtime['identifier'], 'runtime_name': runtime['name'],
@@ -141,10 +154,54 @@ print(str(uuid.UUID(sys.argv[1].strip())).upper())
 PY
 )
 printf 'Created simulator: %s\n' "$device_uuid" | tee -a "$log"
-run_limited 45 xcrun simctl boot "$device_uuid" >> "$log" 2>&1
-run_limited 180 xcrun simctl bootstatus "$device_uuid" -b >> "$log" 2>&1
-run_limited 60 xcrun simctl install "$device_uuid" "$work_dir/notelab.app" >> "$log" 2>&1
-container=$(run_limited 30 xcrun simctl get_app_container "$device_uuid" "$bundle_id" data 2>> "$log")
+
+boot_ready() {
+  run_limited 45 xcrun simctl boot "$device_uuid" || return 1
+  run_limited 180 xcrun simctl bootstatus "$device_uuid" -b || return 1
+  # Some CoreSimulator versions return zero even after data migration fails.
+  # A Booted device alone does not establish successful first-boot migration.
+  python3 - "$output/boot-$attempt.log" <<'PY' || return 1
+import pathlib, re, sys
+log = pathlib.Path(sys.argv[1]).read_text(errors='replace')
+if 'Data Migration Failed' in log or re.search(r'Status=3,\s*isTerminal=YES', log):
+    raise SystemExit('Simulator data migration failed; refusing to install the app')
+PY
+  run_limited 60 xcrun simctl list devices --json > "$work_dir/device-state.json" || return 1
+  python3 - "$work_dir/device-state.json" "$device_uuid" <<'PY' || return 1
+import json, pathlib, sys
+devices = json.loads(pathlib.Path(sys.argv[1]).read_text()).get('devices', {})
+matches = [d for group in devices.values() for d in group
+           if d.get('udid', '').lower() == sys.argv[2].lower()]
+if len(matches) != 1 or matches[0].get('state') != 'Booted':
+    raise SystemExit('The newly created simulator is not Booted')
+PY
+  # Confirm that this simulator's userspace responds before installing anything.
+  run_limited 60 xcrun simctl spawn "$device_uuid" launchctl list > "$work_dir/launchd-status"
+}
+
+attempt=1
+ready=false
+while [ "$attempt" -le 3 ]; do
+  if [ "$attempt" -gt 1 ]; then
+    # Only the empty simulator created above is reset, never a pre-existing one.
+    run_limited 30 xcrun simctl shutdown "$device_uuid" >> "$log" 2>&1 || true
+    run_limited 60 xcrun simctl erase "$device_uuid" >> "$log" 2>&1
+  fi
+  printf 'Boot readiness attempt %s of 3\n' "$attempt" | tee -a "$log"
+  if boot_ready > "$output/boot-$attempt.log" 2>&1; then
+    cat "$output/boot-$attempt.log" >> "$log"
+    ready=true
+    break
+  fi
+  cat "$output/boot-$attempt.log" >> "$log"
+  attempt=$((attempt + 1))
+done
+if [ "$ready" != true ]; then
+  echo 'Simulator did not become ready after three bounded boot attempts' >&2
+  exit 1
+fi
+run_limited 120 xcrun simctl install "$device_uuid" "$work_dir/notelab.app" >> "$log" 2>&1
+container=$(run_limited 120 xcrun simctl get_app_container "$device_uuid" "$bundle_id" data 2>> "$log")
 python3 - "$container" "$device_uuid" "$work_dir" <<'PY'
 import json, pathlib, sys
 container = pathlib.Path(sys.argv[1]).resolve(strict=True)
