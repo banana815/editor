@@ -2,10 +2,10 @@
 """Install a debug APK on an explicitly selected emulator and verify C startup."""
 import argparse
 from pathlib import Path
-import struct
 import subprocess
 import sys
 import time
+from smoke_checks import bmp_dimensions, wait_for_ready
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--serial', required=True)
@@ -24,9 +24,9 @@ log_filters = ('SDL:V', *(f'SDL/{category}:V' for category in
                'AndroidRuntime:E', 'libc:F', 'DEBUG:V', 'tombstoned:V')
 
 
-def adb(*arguments, check=True, binary=False):
+def adb(*arguments, check=True, binary=False, timeout=120):
     result = subprocess.run(['adb', '-s', args.serial, *arguments],
-                            capture_output=True, text=not binary, timeout=120)
+                            capture_output=True, text=not binary, timeout=timeout)
     if check and result.returncode:
         print(result.stderr.decode(errors='replace') if binary else result.stderr, file=sys.stderr)
         if not binary:
@@ -40,7 +40,9 @@ def adb(*arguments, check=True, binary=False):
 adb('wait-for-device')
 adb('install', '-r', str(args.apk.resolve()))
 try:
+    (args.output / 'android-smoke.bmp').unlink(missing_ok=True)
     adb('shell', 'run-as', package, 'rm', '-f', 'files/ci-smoke.bmp')
+    wait_for_ready(adb, args.output)
     adb('logcat', '-c')
     launched = adb('shell', 'am', 'start', '-W', '-n', package + '/.NoteLabActivity',
                    '--ez', 'notelabSmokeTest', 'true')
@@ -51,21 +53,14 @@ try:
         log = adb('logcat', '-d', '-s', *log_filters).stdout
         if 'NoteLab smoke test passed' in log:
             break
-        if 'Finished main function' in log or 'FATAL EXCEPTION' in log:
+        if ('Finished main function' in log or 'FATAL EXCEPTION' in log or
+                'activity finished' in log):
             raise RuntimeError('C application exited without the smoke success marker; see logcat.log')
         time.sleep(0.5)
     else:
         raise RuntimeError('C application did not report a successful startup within 90 seconds')
     shot = adb('exec-out', 'run-as', package, 'cat', 'files/ci-smoke.bmp', binary=True).stdout
-    if len(shot) < 54 or shot[:2] != b'BM':
-        raise RuntimeError('Application did not produce a BMP screenshot')
-    offset = struct.unpack_from('<I', shot, 10)[0]
-    width, height, planes, bits = struct.unpack_from('<iiHH', shot, 18)
-    if width < 100 or abs(height) < 100 or planes != 1 or bits not in (24, 32):
-        raise RuntimeError(f'Unexpected render dimensions: {width} x {height}')
-    stride = ((width * bits + 31) // 32) * 4
-    if offset < 54 or len(shot) < offset + stride * abs(height):
-        raise RuntimeError('Application screenshot pixels are incomplete')
+    width, height = bmp_dimensions(shot)
     (args.output / 'android-smoke.bmp').write_bytes(shot)
     print(f'Android C startup and rendering passed ({width} x {abs(height)})')
 finally:
@@ -77,6 +72,14 @@ finally:
     if not (args.output / 'android-smoke.bmp').exists():
         # Preserve diagnostic pixels even when the success marker was absent.
         shot = adb('exec-out', 'run-as', package, 'cat', 'files/ci-smoke.bmp', check=False, binary=True)
-        if shot.returncode == 0 and shot.stdout:
-            (args.output / 'android-smoke.bmp').write_bytes(shot.stdout)
+        try:
+            bmp_dimensions(shot.stdout)
+        except ValueError:
+            # `adb exec-out` can return zero even when remote cat emits an
+            # error. Keep diagnostics as text, never masquerading as a BMP.
+            (args.output / 'screenshot-error.log').write_text(
+                (shot.stdout + shot.stderr).decode('utf-8', errors='replace'))
+        else:
+            if shot.returncode == 0:
+                (args.output / 'android-smoke.bmp').write_bytes(shot.stdout)
     adb('uninstall', package, check=False)

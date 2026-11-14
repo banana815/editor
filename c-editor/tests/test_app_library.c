@@ -142,9 +142,13 @@ int main(int argc,char **argv) {
     draw(a);
     SDL_Rect ime; int ime_cursor=0; assert(SDL_GetTextInputArea(a->window,&ime,&ime_cursor));
     assert(ime.x>=12 && ime.y>=59 && ime.x+ime.w<=381 && ime.y+ime.h<=818);
-    /* Read the whole framebuffer, including the untouched device insets. */
-    assert(SDL_SetRenderViewport(a->renderer,NULL)); pixels=SDL_RenderReadPixels(a->renderer,NULL); assert(pixels);
-    assert(SDL_asprintf(&image_path,"%s/safe-area.bmp",argv[1])>0); assert(SDL_SaveBMP(pixels,image_path));
+    /* Exercise the production screenshot path: it includes device insets and
+     * must restore the UI viewport after reading the complete framebuffer. */
+    assert(SDL_asprintf(&image_path,"%s/safe-area.bmp",argv[1])>0);
+    a->screenshot=image_path; a->frames=2; draw(a); a->screenshot=NULL; a->frames=0;
+    pixels=SDL_LoadBMP(image_path); assert(pixels && pixels->w==393 && pixels->h==852);
+    assert(SDL_GetRenderViewport(a->renderer,&viewport));
+    assert(viewport.x==12 && viewport.y==59 && viewport.w==369 && viewport.h==759);
     SDL_free(image_path); SDL_DestroySurface(pixels); simulate_safe_area=false;
     layout(a); test_legacy_import(a);
     /* Fail a cache write without altering the previous on-disk cache. The

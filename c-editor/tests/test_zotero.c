@@ -460,7 +460,9 @@ static void test_cache_integer_precision(void) {
 
 /* Deliberately incompatible with free(payload): cJSON must release its own
  * buffers through the hook before any library/API result is returned. */
-typedef union { max_align_t alignment; size_t tag; } CacheHookHeader;
+/* The hook payloads are cJSON nodes or character buffers. Using the node type
+ * keeps both aligned on MSVC as well, whose C headers omit max_align_t. */
+typedef union { cJSON alignment; size_t tag; } CacheHookHeader;
 static size_t cache_hook_live;
 static void *cache_hook_allocate(size_t size) {
     if (size>SIZE_MAX-sizeof(CacheHookHeader)) return NULL;

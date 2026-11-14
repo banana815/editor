@@ -1146,8 +1146,19 @@ static void draw(App *a) {
         label(a,"取消",a->prompt_cancel.x+14,a->prompt_cancel.y+4,text);
     }
     if(a->screenshot && a->frames==2) {
-        SDL_Surface *shot=SDL_RenderReadPixels(a->renderer,NULL);
-        if(shot) { SDL_SaveBMP(shot,a->screenshot); SDL_DestroySurface(shot); }
+        SDL_Rect viewport;
+        if(SDL_GetRenderViewport(a->renderer,&viewport) && SDL_SetRenderViewport(a->renderer,NULL)) {
+            /* Include the device insets in startup evidence, not just the
+             * current safe-area viewport. Restore it before normal drawing. */
+            SDL_Surface *shot=SDL_RenderReadPixels(a->renderer,NULL);
+            if(!shot) SDL_Log("Screenshot read failed: %s",SDL_GetError());
+            if(!SDL_SetRenderViewport(a->renderer,&viewport))
+                SDL_Log("Screenshot viewport restore failed: %s",SDL_GetError());
+            if(shot) {
+                if(!SDL_SaveBMP(shot,a->screenshot)) SDL_Log("Screenshot save failed: %s",SDL_GetError());
+                SDL_DestroySurface(shot);
+            }
+        } else SDL_Log("Screenshot viewport setup failed: %s",SDL_GetError());
     }
     SDL_RenderPresent(a->renderer);
 }

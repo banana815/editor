@@ -7,7 +7,9 @@
 #include <stddef.h>
 
 static char error[256];
-typedef union { max_align_t alignment; size_t magic; } JsonAllocation;
+/* cJSON hooks allocate nodes and character buffers; align the prefix for the
+ * actual node type without relying on MSVC's unavailable C max_align_t. */
+typedef union { cJSON alignment; size_t magic; } JsonAllocation;
 static size_t json_live_allocations;
 static void *json_custom_allocate(size_t size) {
     JsonAllocation *allocation=malloc(sizeof *allocation+size);
