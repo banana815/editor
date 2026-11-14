@@ -176,8 +176,25 @@ static void sweep_exact_json_export(void) {
     fault_free(before); ce_document_free(d); assert(!fault_live && !fault_bytes);
     printf("document exact-integer JSON export: %zu sticky allocation failures passed\n",calls);
 }
+static void sweep_constructor(void) {
+    fault_calls=0;
+    CeDocument *d=ce_document_new(); assert(d);
+    size_t calls=fault_calls;
+    assert(ce_document_block_count(d)==1 && !ce_document_length(d));
+    assert(!ce_document_is_modified(d) && !ce_document_can_undo(d));
+    ce_document_free(d); assert(!fault_live && !fault_bytes);
+    for(size_t failure=1;failure<=calls;++failure) {
+        fault_calls=fault_rejected=0; fault_at=failure;
+        d=ce_document_new(); fault_at=0;
+        if(d || !fault_rejected || fault_live || fault_bytes)
+            fprintf(stderr,"constructor failure %zu/%zu: returned=%d rejected=%zu live=%zu bytes=%zu\n",failure,calls,d!=NULL,fault_rejected,fault_live,fault_bytes);
+        assert(!d && fault_rejected && !fault_live && !fault_bytes);
+    }
+    printf("document constructor: %zu sticky allocation failures leave no live allocations\n",calls);
+}
 int main(void) {
     cJSON_Hooks hooks={fault_malloc,fault_free};cJSON_InitHooks(&hooks);
+    sweep_constructor();
     sweep(APPLY,false);sweep(APPLY_EMPTY,false);sweep(UNDO,false);sweep(REDO,false);sweep(UNDO,true);
     sweep(IMPORT_METADATA,false);sweep_metadata_export();sweep_exact_json_export();
     cJSON_InitHooks(NULL);

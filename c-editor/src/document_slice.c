@@ -577,7 +577,8 @@ static char *decode_attribute(const char *text,size_t size,Error *e) {
         else if (length==4 && !memcmp(text+begin,"apos",4)) value='\'';
         else if (length==4 && !memcmp(text+begin,"nbsp",4)) value=160;
         else { fail(e,"unsupported HTML entity in slice envelope");break; }
-        if (!e->failed) scalar_append(&out,value,e);i=end+1;
+        if (!e->failed) scalar_append(&out,value,e);
+        i=end+1;
     }
     if (!e->failed) append(&out,"",0,e);
     if (e->failed) { free(out.data);return NULL; }

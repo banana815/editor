@@ -116,14 +116,27 @@ static cJSON *array(cJSON *j) {
 }
 static cJSON *paragraph(void) {
     cJSON *j = node("paragraph");
-    if (j)
-        array(j);
+    if (j && !array(j)) {
+        cJSON_Delete(j);
+        return NULL;
+    }
     return j;
 }
 static cJSON *empty_root(void) {
     cJSON *j = node("doc");
-    if (j)
-        cJSON_AddItemToArray(array(j), paragraph());
+    if (!j)
+        return NULL;
+    cJSON *content = array(j);
+    if (!content) {
+        cJSON_Delete(j);
+        return NULL;
+    }
+    cJSON *p = paragraph();
+    if (!p || !cJSON_AddItemToArray(content, p)) {
+        cJSON_Delete(p);
+        cJSON_Delete(j);
+        return NULL;
+    }
     return j;
 }
 static bool fail(CeDocument *d, const char *s) {
@@ -307,6 +320,10 @@ CeDocument *ce_document_new(void) {
         return NULL;
     }
     ce_document_mark_saved(d);
+    if (!d->saved) {
+        ce_document_free(d);
+        return NULL;
+    }
     return d;
 }
 void ce_document_free(CeDocument *d) {

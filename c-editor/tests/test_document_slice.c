@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,12 +15,56 @@ static bool allocation_fails(void) {
     if (fail_at && allocations>=fail_at) { rejected=true;return true; }
     return false;
 }
-static void *slice_malloc(size_t size) { return allocation_fails()?NULL:malloc(size); }
-static void *slice_calloc(size_t count,size_t size) { return allocation_fails()?NULL:calloc(count,size); }
-static void *slice_realloc(void *p,size_t size) { return allocation_fails()?NULL:realloc(p,size); }
+/* Keep the tested allocations ordinary malloc pointers: exported strings must
+ * also work with consumers outside this translation unit. Tracking records use
+ * the uninstrumented allocator and do not change the injected failure points.
+ * The table catches leaks on macOS too, where ASan has no LeakSanitizer. */
+typedef struct SliceAllocation {
+    void *pointer;
+    size_t size;
+    struct SliceAllocation *next;
+} SliceAllocation;
+static SliceAllocation *allocation_buckets[65536];
+static size_t live_allocations,live_bytes;
+static size_t allocation_bucket(const void *p) { return ((uintptr_t)p>>4)%65536; }
+static void track_allocation(SliceAllocation *record,void *p,size_t size) {
+    if (!record) { record=malloc(sizeof *record);assert(record); }
+    size_t bucket=allocation_bucket(p);
+    record->pointer=p;record->size=size;record->next=allocation_buckets[bucket];
+    allocation_buckets[bucket]=record;++live_allocations;live_bytes+=size;
+}
+static SliceAllocation *untrack_allocation(void *p) {
+    SliceAllocation **slot=&allocation_buckets[allocation_bucket(p)];
+    while (*slot && (*slot)->pointer!=p) slot=&(*slot)->next;
+    SliceAllocation *record=*slot;
+    if (record) { *slot=record->next;assert(live_allocations && live_bytes>=record->size);--live_allocations;live_bytes-=record->size; }
+    return record;
+}
+static void slice_free(void *p) {
+    if (!p) return;
+    free(untrack_allocation(p));free(p);
+}
+static void *slice_malloc(size_t size) {
+    if (allocation_fails()) return NULL;
+    void *p=malloc(size);if (p) track_allocation(NULL,p,size);return p;
+}
+static void *slice_calloc(size_t count,size_t size) {
+    if (allocation_fails() || (count && size>SIZE_MAX/count)) return NULL;
+    void *p=calloc(count,size);if (p) track_allocation(NULL,p,count*size);return p;
+}
+static void *slice_realloc(void *p,size_t size) {
+    if (allocation_fails()) return NULL;
+    if (!size) { slice_free(p);return NULL; }
+    SliceAllocation *record=untrack_allocation(p);
+    void *result=realloc(p,size);
+    if (result) track_allocation(record,result,size);
+    else if (record) track_allocation(record,record->pointer,record->size);
+    return result;
+}
 #define malloc slice_malloc
 #define calloc slice_calloc
 #define realloc slice_realloc
+#define free slice_free
 #include "../src/document_slice.c"
 #undef malloc
 #undef calloc
@@ -209,6 +254,7 @@ static size_t test_oom_one(CeDocument *source,size_t from,size_t to,CeDocument *
     for (unsigned operation=0;operation<8;operation++) {
         size_t total=0;
         for (size_t trial=0;trial<=total;trial++) {
+            size_t baseline_live=live_allocations,baseline_bytes=live_bytes;
             CeDocumentSlice *output=capture_slice(holder,0,1),*old_slice=output;
             CeDocumentCutGuard *guard=NULL;CeDocumentSlice *unused=NULL;
             assert(ce_document_slice_capture(holder,0,1,&unused,&guard,test_error,sizeof test_error));ce_document_slice_free(unused);
@@ -235,6 +281,9 @@ static size_t test_oom_one(CeDocument *source,size_t from,size_t to,CeDocument *
             }
             document_is(source,source_before);document_is(target,target_before);
             ce_document_slice_free(output);ce_document_cut_guard_free(guard);ce_document_free(candidate);free(string_out);
+            if (live_allocations!=baseline_live || live_bytes!=baseline_bytes)
+                fprintf(stderr,"leak op=%u trial=%zu: %zu/%zu allocations, %zu/%zu bytes\n",operation,trial,live_allocations,baseline_live,live_bytes,baseline_bytes);
+            assert(live_allocations==baseline_live && live_bytes==baseline_bytes);
         }
     }
     free(source_before);free(target_before);free(serialized);free(html);ce_document_slice_free(incoming);ce_document_free(holder);return checked;
@@ -275,7 +324,7 @@ static void test_oom(void) {
     printf("%zu text/list sticky allocation failure points preserve all outputs\n",checked);
     ce_document_free(source);ce_document_free(target);
 }
-typedef union { max_align_t alignment; unsigned char padding[32]; size_t marker; } Prefix;
+typedef union { long double alignment; double number; void *pointer; unsigned char padding[32]; size_t marker; } Prefix;
 static size_t prefixed_live;
 static void *prefixed_allocate(size_t size) {
     Prefix *p=malloc(sizeof *p+size);if (!p) return NULL;p->marker=0x51ce1234;++prefixed_live;return p+1;
@@ -298,8 +347,10 @@ static void test_allocator_contract(void) {
     free(json);free(plain);free(html);assert(!prefixed_live);cJSON_InitHooks(NULL);
 }
 int main(void) {
-    cJSON_Hooks hooks={slice_malloc,free};cJSON_InitHooks(&hooks);
+    cJSON_Hooks hooks={slice_malloc,slice_free};cJSON_InitHooks(&hooks);
     test_text();test_lists();test_atoms();test_bibliography();test_guard_and_validation();test_html_and_unknown();test_boundaries();test_oom();test_formal_whole_document();
+    assert(!live_allocations && !live_bytes);
     cJSON_InitHooks(NULL);test_allocator_contract();
+    assert(!live_allocations && !live_bytes);
     puts("owned typed slices, paragraph/list joins, citation identity preservation and safe exports passed");return 0;
 }
