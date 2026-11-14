@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#eff2ef">
+  <title>Note Lab</title>
+  <style>
+    html,body { margin:0; height:100%; background:#eff2ef; font-family:system-ui,sans-serif; }
+    canvas { display:block; width:100%; height:100%; outline:none; }
+    #editor-input { position:fixed; width:1px; height:1px; padding:0; border:0; opacity:0.01; resize:none; pointer-events:none; font-size:20px; }
+    #status { position:absolute; inset:40% 8% auto; text-align:center; color:#23342d; }
+    #status[hidden] { display:none; }
+  </style>
+</head>
+<body>
+  <p id="status" role="status">正在加载编辑器…</p>
+  <canvas id="canvas" tabindex="0" aria-label="Note Lab 编辑器"></canvas>
+  <textarea id="editor-input" aria-label="笔记文本输入" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
+  <script>
+    const status = document.getElementById('status');
+    var Module = {
+      canvas: document.getElementById('canvas'),
+      preRun: [function() {
+        FS.mkdir('/notes');
+        FS.mount(IDBFS, {}, '/notes');
+        addRunDependency('load-notes');
+        FS.syncfs(true, function(error) {
+          if (error) {
+            status.textContent = '无法读取浏览器存储。请检查浏览器的存储权限后重新加载。';
+            return; // Do not start an empty workspace over unreadable existing notes.
+          }
+          removeRunDependency('load-notes');
+        });
+      }],
+      onRuntimeInitialized: function() { status.hidden = true; },
+      onAbort: function(error) { status.hidden=false; status.textContent='编辑器启动失败：'+error; },
+      printErr: function(message) { console.error(message); }
+    };
+    window.addEventListener('beforeunload', function(event) {
+      if (Module.editorUnsaved || Module.editorPersistencePending || Module.editorInputPending) {
+        event.preventDefault();
+        event.returnValue = '';
+        // SDL's later beforeunload handler terminates the C app immediately.
+        // A user may cancel this warning, so preserve the running editor.
+        event.stopImmediatePropagation();
+      }
+    }, {capture:true});
+  </script>
+  {{{ SCRIPT }}}
+</body>
+</html>
