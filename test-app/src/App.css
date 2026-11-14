@@ -113,6 +113,11 @@ body {
   transform: translateY(1px);
 }
 
+.icon-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .icon-btn.active {
   color: var(--accent-color);
   background-color: var(--bg-active-item);

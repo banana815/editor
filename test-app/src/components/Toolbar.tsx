@@ -17,6 +17,8 @@ interface ToolbarProps {
   refreshFileList: () => void;
   editor: Editor | null;
   onExportJson: () => void;
+  onCheckForUpdates: () => void;
+  isCheckingUpdates: boolean;
 }
 
 export const Toolbar: React.FC<ToolbarProps> = ({
@@ -31,6 +33,8 @@ export const Toolbar: React.FC<ToolbarProps> = ({
   refreshFileList,
   editor,
   onExportJson,
+  onCheckForUpdates,
+  isCheckingUpdates,
 }) => {
   const setLink = () => {
     if (!editor) return;
@@ -154,6 +158,14 @@ export const Toolbar: React.FC<ToolbarProps> = ({
         )}
         <button className="icon-btn" onClick={onExportJson} title="导出 TipTap JSON">
           JSON
+        </button>
+        <button
+          className="icon-btn"
+          onClick={onCheckForUpdates}
+          disabled={isCheckingUpdates}
+          title="检查升级更新"
+        >
+          {isCheckingUpdates ? "检查中..." : "更新"}
         </button>
         <button
           className="icon-btn"

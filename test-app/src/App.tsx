@@ -11,6 +11,7 @@ import { Sidebar } from "./components/Sidebar";
 
 import type { Editor } from "@tiptap/react";
 import { noteApi } from "./api/notes";
+import { installLatestUpdate } from "./api/updater";
 
 const LazyEditorArea = lazy(async () => {
   const mod = await import("./components/EditorArea");
@@ -32,6 +33,7 @@ function App() {
   const [isResizing, setIsResizing] = useState(false);
   const [isTypewriterMode, setIsTypewriterMode] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
+  const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
 
   // 新建文件状态
   const [isCreating, setIsCreating] = useState(false);
@@ -155,6 +157,26 @@ function App() {
     URL.revokeObjectURL(url);
   };
 
+  const handleCheckForUpdates = async () => {
+    if (isCheckingUpdates) return;
+
+    setIsCheckingUpdates(true);
+    try {
+      const result = await installLatestUpdate();
+      if (!result.installed) {
+        alert("当前已是最新版本");
+        return;
+      }
+
+      alert(`更新安装完成：${result.currentVersion} -> ${result.latestVersion}。\n请重启应用以使用新版本。`);
+    } catch (error) {
+      console.error("检查更新失败", error);
+      alert(`检查更新失败：${String(error)}`);
+    } finally {
+      setIsCheckingUpdates(false);
+    }
+  };
+
   // === 拖拽调整宽度逻辑 ===
   const startResizing = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -196,6 +218,8 @@ function App() {
         refreshFileList={refreshFileList}
         editor={editorInstance}
         onExportJson={handleExportJson}
+        onCheckForUpdates={handleCheckForUpdates}
+        isCheckingUpdates={isCheckingUpdates}
       />
 
       <div className="main-content">
