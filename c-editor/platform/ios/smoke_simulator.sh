@@ -11,7 +11,7 @@ work_dir=$(mktemp -d "${TMPDIR:-/tmp}/notelab-ios-smoke.XXXXXX")
 device_uuid=
 log="$output/simulator.log"
 : > "$log"
-rm -f -- "$output/result.json" "$output/smoke.bmp" "$output/selection.json" "$output/app.log" \
+rm -f -- "$output/result.json" "$output/smoke.bmp" "$output/selection.json" "$output/app.log" "$output/unified.log" \
   "$output/boot-1.log" "$output/boot-2.log" "$output/boot-3.log"
 
 # macOS does not ship GNU timeout. Bound each child command and kill only that
@@ -220,11 +220,28 @@ fixture = {'type': 'doc', 'content': [
 PY
 notes_dir=$(cat "$work_dir/notes-dir")
 screenshot="$notes_dir/smoke.bmp"
-if run_limited 90 xcrun simctl launch --console --terminate-running-process "$device_uuid" "$bundle_id" \
-    --smoke-test --notes "$notes_dir" --screenshot "$screenshot" > "$output/app.log" 2>&1; then
-  cat "$output/app.log"
+launch_status=0
+run_limited 90 xcrun simctl launch --console --terminate-running-process "$device_uuid" "$bundle_id" \
+    --smoke-test --notes "$notes_dir" --screenshot "$screenshot" > "$output/app.log" 2>&1 || launch_status=$?
+cat "$output/app.log"
+# SDL's UIKit logger uses NSLog, which may go only to the unified log instead
+# of the stdout/stderr streams attached by simctl --console. This simulator is
+# exclusive to the test; collect only the PID returned by this launch.
+launch_pid=$(python3 - "$output/app.log" "$bundle_id" <<'PY'
+import pathlib, re, sys
+text = pathlib.Path(sys.argv[1]).read_text(errors='replace')
+matches = re.findall(r'^' + re.escape(sys.argv[2]) + r':\s*([1-9][0-9]*)\s*$', text, re.M)
+print(matches[-1] if matches else '')
+PY
+)
+if [ -n "$launch_pid" ]; then
+  run_limited 60 xcrun simctl spawn "$device_uuid" log show --style compact --last 5m --info --debug \
+      --predicate "processIdentifier == $launch_pid" > "$output/unified.log" 2>> "$log" || true
 else
-  cat "$output/app.log" >&2
+  printf 'simctl did not return a launch PID; no process logs collected\n' > "$output/unified.log"
+fi
+if [ -f "$screenshot" ]; then cp "$screenshot" "$output/smoke.bmp"; fi
+if [ "$launch_status" -ne 0 ]; then
   echo "Simulator launch failed or timed out; see $output" >&2
   exit 1
 fi
@@ -232,7 +249,9 @@ python3 - "$screenshot" "$output" "$device_uuid" <<'PY'
 import json, pathlib, shutil, struct, sys
 shot, output = map(pathlib.Path, sys.argv[1:3])
 data = shot.read_bytes()
-if 'NoteLab smoke test passed' not in (output / 'app.log').read_text(errors='replace'):
+messages = ''.join((output / name).read_text(errors='replace')
+                   for name in ('app.log', 'unified.log'))
+if 'NoteLab smoke test passed' not in messages:
     raise SystemExit('The C app did not report successful completion of its smoke test')
 if len(data) < 54 or data[:2] != b'BM':
     raise SystemExit('The app did not produce a valid BMP screenshot')

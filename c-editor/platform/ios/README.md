@@ -66,9 +66,11 @@ to two times. Application failures are not retried. Cleanup shuts down and delet
 only the UUID created by this run, including after failure.
 
 A passing run requires the C app's success message, a successful console launch
-exit, and a complete BMP screenshot. Preserve `app.log`, `simulator.log`,
+exit, and a complete BMP screenshot. Preserve `app.log`, `unified.log`, `simulator.log`,
 `boot-*.log`, `selection.json`, `result.json`, and `smoke.bmp` from the output directory as CI
-artifacts. The script's success and failure cleanup paths have been checked with
+artifacts. `unified.log` captures the C app's NSLog messages when they are not
+forwarded to the attached console. A screenshot may also be kept after failure
+for diagnosis; only `result.json` denotes a passing check. The script's success and failure cleanup paths have been checked with
 a simulated command runner; a real simulator run remains unverified locally due
 to the CoreSimulator mismatch described above. This startup check does not cover
 touch input, IME, background persistence, or hardware behavior.

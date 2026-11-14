@@ -18,6 +18,10 @@ if not args.apk.is_file():
     parser.error('Debug APK does not exist')
 args.output.mkdir(parents=True, exist_ok=True)
 package = 'org.notelab.editor'
+# SDL3 native logs use category tags; plain SDL only contains Java lifecycle.
+log_filters = ('SDL:V', *(f'SDL/{category}:V' for category in
+               ('APP', 'ERROR', 'ASSERT', 'SYSTEM', 'AUDIO', 'VIDEO', 'RENDER', 'INPUT', 'TEST', 'GPU')),
+               'AndroidRuntime:E', 'libc:F', 'DEBUG:V', 'tombstoned:V')
 
 
 def adb(*arguments, check=True, binary=False):
@@ -44,22 +48,35 @@ try:
     deadline = time.monotonic() + 90
     log = ''
     while time.monotonic() < deadline:
-        log = adb('logcat', '-d', '-s', 'SDL:V', 'AndroidRuntime:E', 'libc:F').stdout
+        log = adb('logcat', '-d', '-s', *log_filters).stdout
         if 'NoteLab smoke test passed' in log:
             break
+        if 'Finished main function' in log or 'FATAL EXCEPTION' in log:
+            raise RuntimeError('C application exited without the smoke success marker; see logcat.log')
         time.sleep(0.5)
     else:
         raise RuntimeError('C application did not report a successful startup within 90 seconds')
     shot = adb('exec-out', 'run-as', package, 'cat', 'files/ci-smoke.bmp', binary=True).stdout
     if len(shot) < 54 or shot[:2] != b'BM':
         raise RuntimeError('Application did not produce a BMP screenshot')
-    width, height = struct.unpack_from('<ii', shot, 18)
-    if width < 100 or abs(height) < 100:
+    offset = struct.unpack_from('<I', shot, 10)[0]
+    width, height, planes, bits = struct.unpack_from('<iiHH', shot, 18)
+    if width < 100 or abs(height) < 100 or planes != 1 or bits not in (24, 32):
         raise RuntimeError(f'Unexpected render dimensions: {width} x {height}')
+    stride = ((width * bits + 31) // 32) * 4
+    if offset < 54 or len(shot) < offset + stride * abs(height):
+        raise RuntimeError('Application screenshot pixels are incomplete')
     (args.output / 'android-smoke.bmp').write_bytes(shot)
     print(f'Android C startup and rendering passed ({width} x {abs(height)})')
 finally:
     # Keep logs even if app startup or screenshot validation failed.
-    logs = adb('logcat', '-d', '-s', 'SDL:V', 'AndroidRuntime:E', 'libc:F', check=False)
+    logs = adb('logcat', '-d', '-s', *log_filters, check=False)
     (args.output / 'logcat.log').write_text(logs.stdout + logs.stderr)
+    all_logs = adb('logcat', '-d', '-b', 'all', check=False)
+    (args.output / 'logcat-all.log').write_text(all_logs.stdout + all_logs.stderr)
+    if not (args.output / 'android-smoke.bmp').exists():
+        # Preserve diagnostic pixels even when the success marker was absent.
+        shot = adb('exec-out', 'run-as', package, 'cat', 'files/ci-smoke.bmp', check=False, binary=True)
+        if shot.returncode == 0 and shot.stdout:
+            (args.output / 'android-smoke.bmp').write_bytes(shot.stdout)
     adb('uninstall', package, check=False)
