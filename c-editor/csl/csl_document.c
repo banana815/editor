@@ -406,13 +406,15 @@ bool ce_csl_document_build(const CeCslStyle *style, const CeCslLocale *locale,
     const CeCslOutputAllocator *allocator, CeCslDocument **out, char *error, size_t capacity) {
     if (error && capacity) *error = 0;
     if (!style || !locale || !input || !out || (allocator && (!allocator->allocate || !allocator->deallocate))) {
-        if (error && capacity) snprintf(error, capacity, "CSL document: invalid arguments"); return false;
+        if (error && capacity) snprintf(error, capacity, "CSL document: invalid arguments");
+        return false;
     }
     CeCslDocumentOptions limits = options ? *options : (CeCslDocumentOptions){0};
 #define LIMIT(field, maximum) do { \
     if (!limits.field) limits.field = (maximum); \
     if (limits.field > (maximum)) { \
-        if (error && capacity) snprintf(error, capacity, "CSL document: invalid limit"); return false; \
+        if (error && capacity) snprintf(error, capacity, "CSL document: invalid limit"); \
+        return false; \
     } \
 } while (0)
     LIMIT(max_workspace_bytes, CE_CSL_DOCUMENT_MAX_WORKSPACE);
@@ -424,7 +426,8 @@ bool ce_csl_document_build(const CeCslStyle *style, const CeCslLocale *locale,
     if (limits.collation_language < CE_CSL_COLLATION_DEFAULT || limits.collation_language > CE_CSL_COLLATION_AZ ||
         (limits.include_count && !limits.include_items) || limits.include_count > CE_CSL_INPUT_MAX_ITEMS ||
         limits.max_workspace_bytes < sizeof(CeCslDocument)) {
-        if (error && capacity) snprintf(error, capacity, "CSL document: invalid options"); return false;
+        if (error && capacity) snprintf(error, capacity, "CSL document: invalid options");
+        return false;
     }
     CeCslOutputAllocator user = allocator ? *allocator : (CeCslOutputAllocator){NULL, normal_allocate, normal_free};
     CeCslDocument *d = user.allocate(user.context, sizeof(*d));
