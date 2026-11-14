@@ -34,11 +34,24 @@ jobs:
             libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev \
             libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev
       - name: Configure
-        run: cmake -S c-editor -B c-editor/build -DCMAKE_BUILD_TYPE=Release -DEDITOR_USE_SYSTEM_SDL=OFF
+        run: cmake -S c-editor -B c-editor/build -DCMAKE_BUILD_TYPE=Release -DEDITOR_DISTRIBUTION=ON
       - name: Build
         run: cmake --build c-editor/build --config Release --parallel 4
       - name: Test
         run: ctest --test-dir c-editor/build -C Release --output-on-failure
+      - name: Package desktop application
+        run: cpack --config c-editor/build/CPackConfig.cmake -C Release
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Launch the extracted desktop package
+        run: python c-editor/tests/test_distribution.py c-editor/build/packages
+      - name: Upload desktop package
+        uses: actions/upload-artifact@v4
+        with:
+          name: notelab-${{ runner.os }}-${{ runner.arch }}
+          path: c-editor/build/packages/NoteLab-*
+          if-no-files-found: error
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -98,6 +111,8 @@ jobs:
               assert apk.getinfo('assets/OFL.txt').file_size > 0
               assert apk.getinfo('assets/emoji.ttf').file_size > 1_000_000
               assert apk.getinfo('assets/OFL-Emoji.txt').file_size > 0
+              assert apk.getinfo('assets/THIRD_PARTY.md').file_size > 100
+              assert any(name.startswith('assets/licenses/android-ndk/NOTICE') for name in names)
           PY
       - name: Enable emulator acceleration
         run: |
@@ -153,6 +168,8 @@ jobs:
           assert (app / 'assets/OFL.txt').is_file()
           assert (app / 'assets/emoji.ttf').stat().st_size > 1_000_000
           assert (app / 'assets/OFL-Emoji.txt').is_file()
+          assert (app / 'assets/THIRD_PARTY.md').is_file()
+          assert (app / 'assets/licenses/SOURCES.json').is_file()
           with (app / 'Info.plist').open('rb') as handle:
               assert plistlib.load(handle)['CFBundleIdentifier'] == 'org.notelab.editor'
           PY
@@ -166,10 +183,24 @@ jobs:
           name: notelab-ios-startup
           path: c-editor/build-ios-simulator/smoke-output
           if-no-files-found: warn
+      - name: Archive unsigned iOS bundle with file permissions
+        env:
+          IOS_TARGET: ${{ matrix.target }}
+        run: |
+          python3 - <<'PY'
+          import os, subprocess
+          from pathlib import Path
+          target = os.environ['IOS_TARGET']
+          root = Path('c-editor') / ('build-ios-' + target) / 'notelab'
+          bundles = list(root.glob('Release-*/notelab.app'))
+          assert len(bundles) == 1, bundles
+          archive = Path('c-editor') / ('notelab-ios-' + target + '-unsigned.tar.gz')
+          subprocess.run(['tar', '-czf', str(archive), '-C', str(bundles[0].parent), bundles[0].name], check=True)
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: notelab-ios-${{ matrix.target }}-unsigned
-          path: c-editor/build-ios-${{ matrix.target }}/notelab/Release-*/notelab.app
+          path: c-editor/notelab-ios-${{ matrix.target }}-unsigned.tar.gz
           if-no-files-found: error
 
   browser:
@@ -194,11 +225,14 @@ jobs:
         env:
           EDITOR_TEST_SYSTEM_CLIPBOARD: '1'
         run: node c-editor/tests/test_browser.mjs c-editor/build-web "$(command -v google-chrome)"
-      - name: Run SQLite import fixtures in WebAssembly
+      - name: Run document and Zotero fixtures in WebAssembly
         run: |
           source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
           emcmake cmake -S c-editor -B c-editor/build-wasm-tests -DEDITOR_BUILD_APP=OFF -DBUILD_TESTING=ON
-          cmake --build c-editor/build-wasm-tests --target test_zotero --parallel 4
+          cmake --build c-editor/build-wasm-tests --target test_document test_citations test_library_panel test_zotero --parallel 4
+          node c-editor/build-wasm-tests/test_document.js
+          node c-editor/build-wasm-tests/test_citations.js
+          node c-editor/build-wasm-tests/test_library_panel.js
           node c-editor/build-wasm-tests/test_zotero.js /
       - name: Upload browser application and screenshots
         if: always()
@@ -210,5 +244,7 @@ jobs:
             c-editor/build-web/notelab.js
             c-editor/build-web/notelab.wasm
             c-editor/build-web/notelab.data
+            c-editor/build-web/THIRD_PARTY.md
+            c-editor/build-web/licenses/
             c-editor/build-web/*validation.png
           if-no-files-found: error

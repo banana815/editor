@@ -1,12 +1,15 @@
 #include "zotero.h"
 #include "cJSON.h"
 #include <inttypes.h>
+#include <errno.h>
+#include <limits.h>
 #include <sqlite3.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "zotero_mapping.h"
 
 #define CE_ZOTERO_UNTITLED "未命名文献"
 #define CE_ZOTERO_UNKNOWN_AUTHOR "未知作者"
@@ -52,6 +55,16 @@ static char *copy_string(const char *source) {
     return copy_n(source ? source : "", source ? strlen(source) : 0);
 }
 
+/* Public results and library fields have a free() ownership contract. cJSON
+ * hooks may allocate from an unrelated arena, so never expose its print buffer. */
+static char *print_json_owned(const cJSON *object) {
+    char *printed = cJSON_PrintUnformatted(object);
+    if (!printed) return NULL;
+    char *owned = copy_string(printed);
+    cJSON_free(printed);
+    return owned;
+}
+
 static bool ascii_space(unsigned char value) {
     return value == ' ' || value == '\t' || value == '\n' || value == '\r' ||
            value == '\f' || value == '\v';
@@ -75,7 +88,7 @@ static void trim_in_place(char *text) {
 
 static char *trim_copy(const char *text) {
     size_t start = 0, length;
-    if (!text)
+    if (!text || !*text)
         return copy_string("");
     length = strlen(text);
     while (start < length && ascii_space((unsigned char)text[start]))
@@ -619,7 +632,7 @@ static bool parse_csl_item(const cJSON *object, CeZoteroItem *item, Report *repo
         goto out;
     if (!set_csl_uris(item, object, report))
         goto out;
-    item->csl_json = cJSON_PrintUnformatted(object);
+    item->csl_json = print_json_owned(object);
     if (!item->csl_json)
         goto out;
     ok = true;
@@ -715,6 +728,7 @@ typedef struct {
     bool collections_library_id;
     bool deleted_items, deleted_collections, groups, libraries, attachments;
     bool item_creators_order;
+    bool creator_roles;
     bool modern_creators;
     bool modern_creator_field_mode;
     bool legacy_creators;
@@ -862,6 +876,14 @@ static bool inspect_schema(sqlite3 *database, SqliteSchema *schema, Report *repo
         return false;
     if (!require_column(database, "creators", "creatorID", report))
         return false;
+    if (!table_exists(database, "creatorTypes", &exists, report))
+        return false;
+    if (exists) {
+        if (!require_column(database, "creatorTypes", "creatorTypeID", report) ||
+            !require_column(database, "creatorTypes", "creatorType", report) ||
+            !optional_column(database, "itemCreators", "creatorTypeID", &schema->creator_roles, report))
+            return false;
+    }
 
     {
         bool first_name = false, last_name = false;
@@ -1148,8 +1170,137 @@ static bool load_items(sqlite3 *database, const SqliteSchema *schema, CeZoteroLi
     return true;
 }
 
+static bool json_put(cJSON *object, const char *key, cJSON *value) {
+    if (!object || !value) { cJSON_Delete(value); return false; }
+    bool ok = cJSON_GetObjectItemCaseSensitive(object, key)
+        ? cJSON_ReplaceItemInObjectCaseSensitive(object, key, value)
+        : cJSON_AddItemToObject(object, key, value);
+    if (!ok) cJSON_Delete(value);
+    return ok;
+}
+
+static const ZoteroTypeMap *type_mapping(const char *type) {
+    for (size_t i = 0; i < sizeof zotero_type_map / sizeof *zotero_type_map; ++i)
+        if (!strcmp(type, zotero_type_map[i].zotero)) return &zotero_type_map[i];
+    return NULL;
+}
+
+static const char *creator_mapping(const char *role, const char *type) {
+    for (size_t i = 0; i < sizeof zotero_creator_map / sizeof *zotero_creator_map; ++i)
+        if (!strcmp(role, zotero_creator_map[i].zotero)) return zotero_creator_map[i].csl;
+    const ZoteroTypeMap *mapping = type_mapping(type);
+    return mapping && !strcmp(role, mapping->primary) ? "author" : NULL;
+}
+
+static cJSON *metadata_date(const char *value) {
+    cJSON *date = cJSON_CreateObject();
+    size_t len = strlen(value), date_len = len;
+    if (len > 10 && (value[10] == ' ' || value[10] == 'T')) date_len = 10;
+    bool iso = date_len == 4 || date_len == 7 || date_len == 10;
+    for (size_t i = 0; iso && i < date_len; ++i)
+        if (i == 4 || i == 7) iso = value[i] == '-';
+        else iso = ascii_digit((unsigned char)value[i]);
+    int year = iso ? (value[0]-'0')*1000+(value[1]-'0')*100+(value[2]-'0')*10+value[3]-'0' : 0;
+    int month = iso && date_len >= 7 ? (value[5]-'0')*10+value[6]-'0' : 0;
+    int day = iso && date_len == 10 ? (value[8]-'0')*10+value[9]-'0' : 0;
+    static const int month_days[] = {0,31,28,31,30,31,30,31,31,30,31,30,31};
+    iso = iso && year > 0 && (date_len < 7 || (month >= 1 && month <= 12));
+    if (iso && date_len == 10) {
+        int days = month_days[month] + (month == 2 && year%4 == 0 && (year%100 != 0 || year%400 == 0));
+        iso = day >= 1 && day <= days;
+    }
+    if (!date) return NULL;
+    if (!iso) {
+        /* Retain non-ISO dates for the CSL processor's date parser. The original
+         * field is also retained verbatim in custom.zotero.fields. */
+        if (cJSON_AddStringToObject(date, "raw", value)) return date;
+    } else {
+        int parts[] = {year, month, day};
+        cJSON *array = cJSON_AddArrayToObject(date, "date-parts");
+        cJSON *row = cJSON_CreateIntArray(parts, date_len == 4 ? 1 : date_len == 7 ? 2 : 3);
+        if (array && row && cJSON_AddItemToArray(array, row)) return date;
+        cJSON_Delete(row);
+    }
+    cJSON_Delete(date);
+    return NULL;
+}
+
+static void metadata_free(cJSON **metadata, size_t count) {
+    if (metadata) for (size_t i = 0; i < count; ++i) cJSON_Delete(metadata[i]);
+    free(metadata);
+}
+
+static bool load_metadata(sqlite3 *database, CeZoteroLibrary *library,
+                           cJSON ***output, Report *report) {
+    *output = NULL;
+    if (!library->item_count) return true;
+    if (library->item_count > SIZE_MAX / sizeof(cJSON *)) return fail(report, "Out of memory");
+    cJSON **metadata = calloc(library->item_count, sizeof *metadata);
+    if (!metadata) return fail(report, "Out of memory");
+    sqlite3_stmt *statement = NULL;
+    bool success = false;
+    if (!prepare_sql(database,
+        "SELECT i.itemID,t.typeName,f.fieldName,v.value FROM items i "
+        "JOIN itemTypes t ON t.itemTypeID=i.itemTypeID "
+        "LEFT JOIN itemData d ON d.itemID=i.itemID "
+        "LEFT JOIN fields f ON f.fieldID=d.fieldID "
+        "LEFT JOIN itemDataValues v ON v.valueID=d.valueID ORDER BY i.itemID,d.fieldID",
+        &statement, report)) goto done;
+    int result;
+    while ((result = sqlite3_step(statement)) == SQLITE_ROW) {
+        size_t index;
+        if (!find_item(library->items, library->item_count, sqlite3_column_int64(statement,0), &index)) continue;
+        char *type = NULL, *name = NULL, *value = NULL;
+        if (!column_text(statement,1,&type,report) || !column_text(statement,2,&name,report) ||
+            !column_text(statement,3,&value,report)) { free(type); free(name); free(value); goto done; }
+        cJSON *object = metadata[index];
+        if (!object) {
+            metadata[index] = object = cJSON_CreateObject();
+            const ZoteroTypeMap *mapping = type_mapping(type);
+            cJSON *custom = object ? cJSON_AddObjectToObject(object,"custom") : NULL;
+            cJSON *zotero = custom ? cJSON_AddObjectToObject(custom,"zotero") : NULL;
+            if (!object || !zotero || !cJSON_AddObjectToObject(zotero,"fields") ||
+                !cJSON_AddStringToObject(zotero,"itemType",type) ||
+                !cJSON_AddStringToObject(object,"id",library->items[index].id) ||
+                !cJSON_AddStringToObject(object,"type",mapping ? mapping->csl : "document")) {
+                free(type); free(name); free(value); goto oom;
+            }
+        }
+        if (*name) {
+            cJSON *fields = cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(
+                cJSON_GetObjectItemCaseSensitive(object,"custom"),"zotero"),"fields");
+            if (!json_put(fields,name,cJSON_CreateString(value))) { free(type); free(name); free(value); goto oom; }
+            for (size_t m = 0; *value && m < sizeof zotero_field_map / sizeof *zotero_field_map; ++m) {
+                const ZoteroFieldMap *map = &zotero_field_map[m];
+                if (strcmp(name,map->zotero) || (*map->type && strcmp(type,map->type))) continue;
+                if (cJSON_GetObjectItemCaseSensitive(object,map->csl) && !*map->type) continue;
+                cJSON *field = map->date ? metadata_date(value) : cJSON_CreateString(value);
+                if (!json_put(object,map->csl,field)) { free(type); free(name); free(value); goto oom; }
+                char **display = !strcmp(map->csl,"title") ? &library->items[index].title
+                    : !strcmp(map->csl,"issued") ? &library->items[index].year
+                    : !strcmp(map->csl,"citation-key") ? &library->items[index].cite_key : NULL;
+                if (display) {
+                    char *next = !strcmp(map->csl,"issued") ? year_from_date(value) : trim_copy(value);
+                    if (!next) { free(type); free(name); free(value); goto oom; }
+                    free(*display); *display = next;
+                }
+            }
+        }
+        free(type); free(name); free(value);
+    }
+    if (result != SQLITE_DONE) { sqlite_error(report,database,"Cannot read Zotero metadata"); goto done; }
+    success = true;
+    *output = metadata;
+    goto done;
+oom: fail(report,"Out of memory while reading Zotero metadata");
+done:
+    sqlite3_finalize(statement);
+    if (!success) metadata_free(metadata,library->item_count);
+    return success;
+}
+
 static bool load_creators(sqlite3 *database, const SqliteSchema *schema,
-                          CeZoteroLibrary *library, Report *report) {
+                          CeZoteroLibrary *library, cJSON **metadata, Report *report) {
     char sql[1024];
     sqlite3_stmt *statement = NULL;
     TextBuffer *authors = NULL;
@@ -1168,20 +1319,26 @@ static bool load_creators(sqlite3 *database, const SqliteSchema *schema,
     if (schema->modern_creators) {
         written = snprintf(
             sql, sizeof sql,
-            "SELECT ic.itemID, c.firstName, c.lastName, %s "
+            "SELECT ic.itemID, c.firstName, c.lastName, %s, %s, t.typeName "
             "FROM itemCreators ic JOIN creators c ON c.creatorID=ic.creatorID "
+            "JOIN items i ON i.itemID=ic.itemID JOIN itemTypes t ON t.itemTypeID=i.itemTypeID %s "
             "ORDER BY ic.itemID, %s",
             schema->modern_creator_field_mode ? "COALESCE(c.fieldMode,0)" : "0",
+            schema->creator_roles ? "ct.creatorType" : "'author'",
+            schema->creator_roles ? "LEFT JOIN creatorTypes ct ON ct.creatorTypeID=ic.creatorTypeID" : "",
             schema->item_creators_order ? "ic.orderIndex, ic.creatorID" : "ic.creatorID");
     } else {
         written = snprintf(
             sql, sizeof sql,
-            "SELECT ic.itemID, cd.firstName, cd.lastName, %s "
+            "SELECT ic.itemID, cd.firstName, cd.lastName, %s, %s, t.typeName "
             "FROM itemCreators ic "
             "JOIN creators c ON c.creatorID=ic.creatorID "
             "JOIN creatorData cd ON cd.creatorDataID=c.creatorDataID "
+            "JOIN items i ON i.itemID=ic.itemID JOIN itemTypes t ON t.itemTypeID=i.itemTypeID %s "
             "ORDER BY ic.itemID, %s",
             schema->legacy_creator_field_mode ? "COALESCE(cd.fieldMode,0)" : "0",
+            schema->creator_roles ? "ct.creatorType" : "'author'",
+            schema->creator_roles ? "LEFT JOIN creatorTypes ct ON ct.creatorTypeID=ic.creatorTypeID" : "",
             schema->item_creators_order ? "ic.orderIndex, ic.creatorID" : "ic.creatorID");
     }
     if (written < 0 || (size_t)written >= sizeof sql) {
@@ -1195,19 +1352,53 @@ static bool load_creators(sqlite3 *database, const SqliteSchema *schema,
         int64_t item_id = sqlite3_column_int64(statement, 0);
         int mode = sqlite3_column_int(statement, 3);
         size_t item_index;
-        char *first = NULL, *last = NULL;
+        char *first = NULL, *last = NULL, *role = NULL, *type = NULL;
         if (!find_item(library->items, library->item_count, item_id, &item_index)) {
             result = sqlite3_step(statement);
             continue;
         }
         if (!column_text(statement, 1, &first, report) ||
-            !column_text(statement, 2, &last, report) || !first || !last) {
+            !column_text(statement, 2, &last, report) ||
+            !column_text(statement, 4, &role, report) ||
+            !column_text(statement, 5, &type, report) || !first || !last) {
             free(first);
             free(last);
+            free(role); free(type);
             goto done;
         }
         trim_in_place(first);
         trim_in_place(last);
+        cJSON *zotero = cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(
+            metadata[item_index],"custom"),"zotero");
+        cJSON *raw_names = cJSON_GetObjectItemCaseSensitive(zotero,"creators");
+        if (!raw_names) raw_names = cJSON_AddArrayToObject(zotero,"creators");
+        cJSON *raw_name = cJSON_CreateObject();
+        if (!raw_name || !raw_names || !cJSON_AddStringToObject(raw_name,"firstName",first) ||
+            !cJSON_AddStringToObject(raw_name,"lastName",last) ||
+            !cJSON_AddStringToObject(raw_name,"creatorType",role) ||
+            !cJSON_AddNumberToObject(raw_name,"fieldMode",mode) ||
+            !cJSON_AddItemToArray(raw_names,raw_name)) {
+            cJSON_Delete(raw_name); free(first); free(last); free(role); free(type);
+            fail(report,"Out of memory while retaining creator metadata"); goto done;
+        }
+        const char *mapped = creator_mapping(role,type);
+        if (mapped && (*first || *last)) {
+            cJSON *names = cJSON_GetObjectItemCaseSensitive(metadata[item_index],mapped);
+            if (!names) names = cJSON_AddArrayToObject(metadata[item_index],mapped);
+            cJSON *name = cJSON_CreateObject();
+            bool valid = name && (mode == 1
+                ? cJSON_AddStringToObject(name,"literal",*last ? last : first) != NULL
+                : cJSON_AddStringToObject(name,"family",last) && cJSON_AddStringToObject(name,"given",first));
+            if (!valid || !names || !cJSON_AddItemToArray(names,name)) {
+                cJSON_Delete(name); free(first); free(last); free(role); free(type);
+                fail(report,"Out of memory while reading structured creators"); goto done;
+            }
+        }
+        /* Editors/translators belong to distinct CSL roles, never the author
+         * display string or approximate author field. */
+        bool is_author = mapped && !strcmp(mapped,"author");
+        free(role); free(type);
+        if (!is_author) { free(first); free(last); result = sqlite3_step(statement); continue; }
         if (mode == 1) {
             const char *literal = *last ? last : first;
             if (*literal) {
@@ -1502,43 +1693,45 @@ static bool link_collections(CeZoteroLibrary *library, Report *report) {
     return true;
 }
 
-bool ce_zotero_load_sqlite(const char *path, CeZoteroLibrary *library, char *error,
-                           size_t error_capacity) {
+/* Takes ownership of database on every path. Both import routes use the same
+ * consistent transaction and only replace the output after a complete read. */
+static bool load_database(sqlite3 *database, CeZoteroLibrary *library,
+                          char *error, size_t error_capacity) {
     Report report = {error, error_capacity};
     CeZoteroLibrary temporary = {0};
     SqliteSchema schema;
-    sqlite3 *database = NULL;
+    cJSON **metadata = NULL;
     bool transaction = false, success = false;
-    int result;
 
-    clear_error(&report);
-    if (!library)
-        return fail(&report, "Invalid library output");
-    if (!path || !*path)
-        return fail(&report, "SQLite database path is required");
-    if (!utf8_valid(path))
-        return fail(&report, "SQLite database path must be valid UTF-8");
-    result = sqlite3_open_v2(path, &database, SQLITE_OPEN_READONLY, NULL);
-    if (result != SQLITE_OK) {
-        fail(&report, "Cannot open Zotero database read-only: %s",
-             database ? sqlite3_errmsg(database) : sqlite3_errstr(result));
+    sqlite3_db_config(database, SQLITE_DBCONFIG_DEFENSIVE, 1, NULL);
+    sqlite3_db_config(database, SQLITE_DBCONFIG_TRUSTED_SCHEMA, 0, NULL);
+    if (!exec_sql(database, "PRAGMA query_only=ON", &report))
         goto done;
-    }
     if (!exec_sql(database, "BEGIN DEFERRED", &report))
         goto done;
     transaction = true;
     if (!inspect_schema(database, &schema, &report) || !load_items(database, &schema, &temporary, &report) ||
-        !load_creators(database, &schema, &temporary, &report) ||
+        !load_metadata(database, &temporary, &metadata, &report) ||
+        !load_creators(database, &schema, &temporary, metadata, &report) ||
         !load_collections(database, &schema, &temporary, &report) ||
         !load_collection_items(database, &temporary, &report) ||
         !link_collections(&temporary, &report))
         goto done;
+    if (temporary.item_count && !metadata) {
+        fail(&report,"Missing bibliographic metadata");
+        goto done;
+    }
+    for (size_t i = 0; i < temporary.item_count; ++i) {
+        temporary.items[i].csl_json = print_json_owned(metadata[i]);
+        if (!temporary.items[i].csl_json) { fail(&report,"Out of memory"); goto done; }
+    }
     if (!exec_sql(database, "COMMIT", &report))
         goto done;
     transaction = false;
     success = true;
 
 done:
+    metadata_free(metadata, temporary.item_count);
     if (transaction)
         (void)sqlite3_exec(database, "ROLLBACK", NULL, NULL, NULL);
     if (database)
@@ -1551,6 +1744,231 @@ done:
     *library = temporary;
     clear_error(&report);
     return true;
+}
+
+bool ce_zotero_load_sqlite(const char *path, CeZoteroLibrary *library, char *error,
+                           size_t error_capacity) {
+    Report report = {error, error_capacity};
+    sqlite3 *database = NULL;
+    clear_error(&report);
+    if (!library)
+        return fail(&report, "Invalid library output");
+    if (!path || !*path)
+        return fail(&report, "SQLite database path is required");
+    if (!utf8_valid(path))
+        return fail(&report, "SQLite database path must be valid UTF-8");
+    int result = sqlite3_open_v2(path, &database, SQLITE_OPEN_READONLY, NULL);
+    if (result != SQLITE_OK) {
+        fail(&report, "Cannot open Zotero database read-only: %s",
+             database ? sqlite3_errmsg(database) : sqlite3_errstr(result));
+        sqlite3_close(database);
+        return false;
+    }
+    return load_database(database, library, error, error_capacity);
+}
+
+bool ce_zotero_load_sqlite_bytes(const void *data, size_t size, CeZoteroLibrary *library,
+                                 char *error, size_t error_capacity) {
+    Report report = {error, error_capacity};
+    clear_error(&report);
+    if (!library)
+        return fail(&report, "Invalid library output");
+    if (!data || size < 100 || memcmp(data, "SQLite format 3\0", 16))
+        return fail(&report, "请选择完整的 SQLite 数据库或 CSL JSON 文件");
+    if (size > (size_t)128 * 1024 * 1024)
+        return fail(&report, "导入文件超过 128 MiB；请导出所需文献的 CSL JSON");
+    const unsigned char *bytes = data;
+    if (bytes[18] != 1 || bytes[19] != 1)
+        return fail(&report, "此数据库可能依赖单独的 WAL 日志；请使用桌面原始路径，或导出 CSL JSON / 完整 SQLite 备份");
+    sqlite3 *database = NULL;
+    int result = sqlite3_open_v2(":memory:", &database,
+                                SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_MEMORY, NULL);
+    if (result != SQLITE_OK) {
+        fail(&report, "Cannot open SQLite snapshot: %s",
+             database ? sqlite3_errmsg(database) : sqlite3_errstr(result));
+        sqlite3_close(database);
+        return false;
+    }
+    /* SQLite recommends 20 padding bytes for untrusted serialized databases.
+     * We own the copy through close, including when deserialize fails. */
+    unsigned char *copy = sqlite3_malloc64((sqlite3_uint64)size + 20);
+    if (!copy) {
+        sqlite3_close(database);
+        return fail(&report, "Out of memory while importing SQLite snapshot");
+    }
+    memcpy(copy, bytes, size);
+    memset(copy + size, 0, 20);
+    result = sqlite3_deserialize(database, "main", copy, (sqlite3_int64)size,
+                                (sqlite3_int64)size + 20, SQLITE_DESERIALIZE_READONLY);
+    bool success;
+    if (result != SQLITE_OK) {
+        success = fail(&report, "Cannot read SQLite snapshot: %s", sqlite3_errmsg(database));
+        sqlite3_close(database);
+    } else {
+        success = load_database(database, library, error, error_capacity);
+    }
+    sqlite3_free(copy);
+    return success;
+}
+
+typedef struct { const char *name; size_t offset; } CacheString;
+#define CACHE_STRING(member) {#member, offsetof(CeZoteroItem, member)}
+static const CacheString cache_item_strings[] = {
+    CACHE_STRING(id), CACHE_STRING(item_key), CACHE_STRING(title), CACHE_STRING(author),
+    CACHE_STRING(year), CACHE_STRING(cite_key), CACHE_STRING(item_uri), CACHE_STRING(pdf_uri),
+    CACHE_STRING(csl_json)
+};
+#undef CACHE_STRING
+
+static bool cache_integer_write(cJSON *object, const char *name, int64_t value) {
+    char digits[32]; snprintf(digits,sizeof digits,"%" PRId64,value);
+    return cJSON_AddStringToObject(object,name,digits) != NULL;
+}
+static bool cache_integer_read(cJSON *object, const char *name, int64_t *value) {
+    cJSON *field = cJSON_GetObjectItemCaseSensitive(object,name);
+    if (!cJSON_IsString(field) || !*field->valuestring) return false;
+    const char *digits=field->valuestring;
+    if (*digits!='-' && !ascii_digit((unsigned char)*digits)) return false;
+    char *end; errno=0;
+    intmax_t parsed=strtoimax(digits,&end,10);
+    if (errno || *end || parsed<INT64_MIN || parsed>INT64_MAX) return false;
+    *value=(int64_t)parsed; return true;
+}
+char *ce_zotero_cache_export(const CeZoteroLibrary *library, char *error, size_t capacity) {
+    Report report={error,capacity}; clear_error(&report);
+    if (!library || (library->item_count && !library->items) ||
+        (library->collection_count && !library->collections) ||
+        library->item_count>INT_MAX || library->collection_count>INT_MAX) {
+        fail(&report,"Invalid library cache source"); return NULL;
+    }
+    cJSON *root=cJSON_CreateObject();
+    cJSON *items=root?cJSON_AddArrayToObject(root,"items"):NULL;
+    cJSON *collections=root?cJSON_AddArrayToObject(root,"collections"):NULL;
+    char *result=NULL;
+    if (!root || !items || !collections || !cJSON_AddNumberToObject(root,"version",1)) goto oom;
+    for (size_t i=0;i<library->item_count;++i) {
+        const CeZoteroItem *item=&library->items[i];
+        cJSON *row=cJSON_CreateObject();
+        if (!row || !cJSON_AddItemToArray(items,row)) { cJSON_Delete(row); goto oom; }
+        if (!cache_integer_write(row,"database_id",item->database_id) ||
+            !cache_integer_write(row,"library_id",item->library_id)) goto oom;
+        for (size_t s=0;s<sizeof cache_item_strings/sizeof *cache_item_strings;++s) {
+            const CacheString *member=&cache_item_strings[s];
+            char *const *value=(char *const *)((const char *)item+member->offset);
+            cJSON *field=*value?cJSON_CreateString(*value):cJSON_CreateNull();
+            if (!json_put(row,member->name,field)) goto oom;
+        }
+    }
+    for (size_t i=0;i<library->collection_count;++i) {
+        const CeZoteroCollection *collection=&library->collections[i];
+        if (i && collection->id<=library->collections[i-1].id) {
+            fail(&report,"Invalid cached collection order"); goto done;
+        }
+        cJSON *row=cJSON_CreateObject();
+        if (!row || !cJSON_AddItemToArray(collections,row)) { cJSON_Delete(row); goto oom; }
+        if (!cache_integer_write(row,"id",collection->id) ||
+            !cache_integer_write(row,"library_id",collection->library_id) ||
+            !cache_integer_write(row,"parent_id",collection->parent_id) ||
+            !cJSON_AddBoolToObject(row,"has_parent",collection->has_parent) ||
+            !cJSON_AddStringToObject(row,"key",collection->key?collection->key:"") ||
+            !cJSON_AddStringToObject(row,"name",collection->name?collection->name:"")) goto oom;
+        cJSON *members=cJSON_AddArrayToObject(row,"items");
+        if (!members) goto oom;
+        for (size_t j=0;j<collection->item_count;++j) {
+            if (!collection->item_indices || collection->item_indices[j]>=library->item_count ||
+                collection->item_indices[j]>INT_MAX ||
+                library->items[collection->item_indices[j]].library_id!=collection->library_id ||
+                (j && collection->item_indices[j]<=collection->item_indices[j-1])) {
+                fail(&report,"Invalid cached collection membership"); goto done;
+            }
+            cJSON *member=cJSON_CreateNumber((double)collection->item_indices[j]);
+            if (!member || !cJSON_AddItemToArray(members,member)) { cJSON_Delete(member); goto oom; }
+        }
+    }
+    result=print_json_owned(root);
+    if (!result) goto oom;
+    goto done;
+oom: fail(&report,"Out of memory while serializing library cache");
+done: cJSON_Delete(root); return result;
+}
+
+bool ce_zotero_cache_import(const char *json, CeZoteroLibrary *library, char *error, size_t capacity) {
+    Report report={error,capacity}; clear_error(&report);
+    if (!library || !json || !utf8_valid(json) || contains_escaped_nul(json))
+        return fail(&report,"Invalid UTF-8 library cache");
+    cJSON *root=cJSON_ParseWithOpts(json,NULL,true);
+    cJSON *version=cJSON_GetObjectItemCaseSensitive(root,"version");
+    cJSON *items=cJSON_GetObjectItemCaseSensitive(root,"items");
+    cJSON *collections=cJSON_GetObjectItemCaseSensitive(root,"collections");
+    CeZoteroLibrary next={0}; bool success=false;
+    if (!cJSON_IsObject(root) || !cJSON_IsNumber(version) || version->valuedouble!=1 ||
+        !cJSON_IsArray(items) || !cJSON_IsArray(collections)) goto malformed;
+    size_t item_count=(size_t)cJSON_GetArraySize(items);
+    size_t collection_count=(size_t)cJSON_GetArraySize(collections);
+    if (item_count>SIZE_MAX/sizeof *next.items || collection_count>SIZE_MAX/sizeof *next.collections) goto oom;
+    if (item_count && !(next.items=calloc(item_count,sizeof *next.items))) goto oom;
+    next.item_count=item_count;
+    if (collection_count && !(next.collections=calloc(collection_count,sizeof *next.collections))) goto oom;
+    next.collection_count=collection_count;
+    cJSON *row=items->child;
+    for (size_t i=0;i<next.item_count;++i, row=row->next) {
+        CeZoteroItem *item=&next.items[i];
+        if (!cJSON_IsObject(row) || !cache_integer_read(row,"database_id",&item->database_id) ||
+            !cache_integer_read(row,"library_id",&item->library_id)) goto malformed;
+        for (size_t s=0;s<sizeof cache_item_strings/sizeof *cache_item_strings;++s) {
+            const CacheString *member=&cache_item_strings[s];
+            cJSON *value=cJSON_GetObjectItemCaseSensitive(row,member->name);
+            if (cJSON_IsNull(value)) continue;
+            if (!cJSON_IsString(value)) goto malformed;
+            char **target=(char **)((char *)item+member->offset);
+            *target=copy_string(value->valuestring); if (!*target) goto oom;
+        }
+        /* Fields used by the UI have always been strings; normalize a missing
+         * optional input to empty instead of letting a corrupt cache crash it. */
+        for (size_t s=0;s+1<sizeof cache_item_strings/sizeof *cache_item_strings;++s) {
+            char **target=(char **)((char *)item+cache_item_strings[s].offset);
+            if (!*target && !(*target=copy_string(""))) goto oom;
+        }
+        if (item->csl_json) {
+            cJSON *csl=contains_escaped_nul(item->csl_json)?NULL:cJSON_ParseWithOpts(item->csl_json,NULL,true);
+            bool valid=csl && validate_csl_item(csl,&report);
+            cJSON_Delete(csl); if (!valid) goto malformed;
+        }
+    }
+    row=collections->child;
+    for (size_t i=0;i<next.collection_count;++i, row=row->next) {
+        CeZoteroCollection *collection=&next.collections[i];
+        cJSON *parent=cJSON_GetObjectItemCaseSensitive(row,"has_parent");
+        cJSON *key=cJSON_GetObjectItemCaseSensitive(row,"key");
+        cJSON *name=cJSON_GetObjectItemCaseSensitive(row,"name");
+        cJSON *members=cJSON_GetObjectItemCaseSensitive(row,"items");
+        if (!cJSON_IsObject(row) || !cJSON_IsBool(parent) || !cJSON_IsString(key) ||
+            !cJSON_IsString(name) || !cJSON_IsArray(members) ||
+            !cache_integer_read(row,"id",&collection->id) ||
+            !cache_integer_read(row,"library_id",&collection->library_id) ||
+            !cache_integer_read(row,"parent_id",&collection->parent_id) ||
+            (i && collection->id<=next.collections[i-1].id)) goto malformed;
+        collection->has_parent=cJSON_IsTrue(parent);
+        collection->key=copy_string(key->valuestring); collection->name=copy_string(name->valuestring);
+        if (!collection->key || !collection->name) goto oom;
+        collection->item_count=(size_t)cJSON_GetArraySize(members);
+        if (collection->item_count>SIZE_MAX/sizeof *collection->item_indices) goto oom;
+        if (collection->item_count && !(collection->item_indices=malloc(collection->item_count*sizeof *collection->item_indices))) goto oom;
+        cJSON *member=members->child;
+        for (size_t j=0;j<collection->item_count;++j, member=member->next) {
+            if (!cJSON_IsNumber(member) || member->valueint<0 || member->valuedouble!=member->valueint ||
+                (size_t)member->valueint>=next.item_count ||
+                next.items[member->valueint].library_id!=collection->library_id ||
+                (j && (size_t)member->valueint<=collection->item_indices[j-1])) goto malformed;
+            collection->item_indices[j]=(size_t)member->valueint;
+        }
+    }
+    if (!link_collections(&next,&report)) goto done;
+    ce_zotero_library_free(library); *library=next; memset(&next,0,sizeof next);
+    success=true; clear_error(&report); goto done;
+malformed: fail(&report,"Library cache is malformed or uses an unsupported version; original library retained"); goto done;
+oom: fail(&report,"Out of memory while loading library cache");
+done: cJSON_Delete(root); ce_zotero_library_free(&next); return success;
 }
 
 /* ------------------------------------------------------------------------- */

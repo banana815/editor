@@ -3,7 +3,7 @@
 // node tests/test_browser.mjs <wasm-build-dir> [chromium-executable]
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
-import {mkdtemp, readFile, writeFile, rm, mkdir, readdir} from 'node:fs/promises';
+import {mkdtemp, readFile, writeFile, rm, mkdir, readdir, open} from 'node:fs/promises';
 import {createServer} from 'node:http';
 import {tmpdir} from 'node:os';
 import {join, extname, resolve, sep} from 'node:path';
@@ -114,6 +114,13 @@ try {
     await cdp('Emulation.setDeviceMetricsOverride', {width:1100,height:760,deviceScaleFactor:1,mobile:false});
     await cdp('Page.navigate', {url: origin + '/notelab.html'});
     await cdp('Page.bringToFront'); await ready();
+    const notices = await evaluate(`Promise.all(['/THIRD_PARTY.md','/licenses/SOURCES.json','/licenses/cJSON.txt'].map(async path=>{
+        const response=await fetch(path);if(!response.ok)throw new Error(path+': '+response.status);return response.text();
+    }))`);
+    assert.match(notices[0],/SDL/);
+    assert.ok(JSON.parse(notices[1]).licenses.some(license=>license.file==='cJSON.txt' && license.sha256));
+    assert.match(notices[2],/Permission is hereby granted/);
+    console.log('PASS: browser-distributed notices, license provenance and license text');
     await click(125,65);
     await until(() => evaluate("document.activeElement.id === 'editor-input'"), 'filename input focus');
     await cdp('Input.insertText', {text:'浏览器测试'}); await key('Enter','Enter',13);
@@ -206,6 +213,34 @@ try {
     await click(45,65); // Close the intentional sidebar overlay to inspect the narrow editor.
     await writeFile(join(build,'browser-mobile-validation.png'), Buffer.from((await cdp('Page.captureScreenshot')).data,'base64'));
     console.log('PASS: browser canvas follows a narrow mobile viewport');
+    await cdp('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:3,mobile:true});
+    await cdp('Page.reload'); await ready();
+    await until(() => evaluate('canvas.width === 1170 && canvas.height === 2532'), 'mobile DPR 3 drawing buffer');
+    await click(125,65); await until(() => evaluate("document.activeElement.id === 'editor-input'"), 'DPR 3 filename hit test');
+    const promptPosition = await evaluate("({left:parseFloat(document.getElementById('editor-input').style.left),top:parseFloat(document.getElementById('editor-input').style.top)})");
+    assert.ok(promptPosition.left >= 20 && promptPosition.left <= 30 && promptPosition.top > 300 && promptPosition.top < 600,
+        'native IME textarea must use CSS coordinates on a DPR 3 screen');
+    await cdp('Input.insertText',{text:'MobileHiDPI'}); await key('Enter','Enter',13);
+    const mobileFile = '/notes/MobileHiDPI.md';
+    await until(() => evaluate(`FS.analyzePath(${JSON.stringify(mobileFile)}).exists`), 'DPR 3 note creation');
+    // Opening a note already dismisses the narrow-screen sidebar overlay.
+    const editorPoint = await evaluate(`(()=>{const r=canvas.getBoundingClientRect(),a=Module.editorInputArea;
+        return {x:r.left+a.x*r.width/canvas.width,y:r.top+a.y*r.height/canvas.height};})()`);
+    assert.ok(editorPoint.x >= 20 && editorPoint.x <= 30);
+    await click(editorPoint.x+1,editorPoint.y+10);
+    await cdp('Input.insertText',{text:'首行\n第二行'});
+    const mobileRead = `FS.readFile(${JSON.stringify(mobileFile)},{encoding:'utf8'})`;
+    await until(() => evaluate(`${mobileRead} === '<p>首行</p><p>第二行</p>' && !Module.editorUnsaved && !Module.editorPersistencePending`), 'DPR 3 text input');
+    await cdp('Input.imeSetComposition',{text:'zhongwen',selectionStart:8,selectionEnd:8});
+    await sleep(1000);
+    assert.equal(await evaluate(mobileRead),'<p>首行</p><p>第二行</p>');
+    assert.equal(await evaluate('Module.editorUnsaved'),false);
+    await cdp('Input.insertText',{text:'中文'});
+    await until(() => evaluate(`${mobileRead} === '<p>首行</p><p>第二行中文</p>' && !Module.editorUnsaved && !Module.editorPersistencePending`), 'DPR 3 IME commit');
+    await click(editorPoint.x+1,editorPoint.y+10); await cdp('Input.insertText',{text:'点'});
+    await until(() => evaluate(`${mobileRead} === '<p>点首行</p><p>第二行中文</p>' && !Module.editorUnsaved && !Module.editorPersistencePending`), 'DPR 3 canvas caret hit test');
+    await writeFile(join(build,'browser-hidpi-validation.png'),Buffer.from((await cdp('Page.captureScreenshot')).data,'base64'));
+    console.log('PASS: DPR 3 mobile layout, toolbar/caret hit tests and IME preedit/commit');
     await cdp('Emulation.setDeviceMetricsOverride', {width:1100,height:760,deviceScaleFactor:1,mobile:false});
     await until(() => evaluate('canvas.width === 1100'), 'desktop viewport restoration');
     await click(125,65); await until(() => evaluate("document.activeElement.id === 'editor-input'"), 'emoji filename focus');
@@ -291,6 +326,204 @@ try {
     await click(25,180); await cdp('Input.insertText', {text:'S'});
     await until(() => evaluate("FS.readFile('/notes/Navigation.md',{encoding:'utf8'}) === '<p>Saaaa</p><p>YbbbbZ</p><p>tail</p>' && !Module.editorUnsaved && !Module.editorPersistencePending"), 'canvas hit test');
     console.log('PASS: visual Up/Down, Home/End, Shift selection and canvas click editing');
+
+    // A separate first-sorted note lets reload exercise actual document import,
+    // followed by JSON export, rather than merely reading stored HTML bytes.
+    await click(125,65); await until(() => evaluate("document.activeElement.id === 'editor-input'"), 'citation filename focus');
+    await cdp('Input.insertText',{text:'000References'}); await key('Enter','Enter',13);
+    const citationFile = '/notes/000References.md';
+    await until(() => evaluate(`FS.analyzePath(${JSON.stringify(citationFile)}).exists`), 'citation note creation');
+    await click(400,200); await cdp('Input.insertText',{text:'Before After'});
+    await key('Home','Home',36);
+    for (let i=0;i<7;i++) await key('ArrowRight','ArrowRight',39);
+    await cdp('Page.setInterceptFileChooserDialog',{enabled:true});
+    async function observeImports() { await evaluate(`window.importResults=[];window.importFinish=window.importFinish||_platform_import_web_finish;
+        _platform_import_web_finish=(job,status,name,data,size,message)=>{
+            window.importResults.push({status,name:name?UTF8ToString(name):'',size,
+                bytes:data&&size<4096?Array.from(HEAPU8.slice(data,data+size)):null,
+                message:message?UTF8ToString(message):''});
+            window.importFinish(job,status,name,data,size,message);
+        };`); }
+    await observeImports();
+    await click(1047,24);
+    async function chooseImport(path, trigger = () => click(700,79)) {
+        await until(() => evaluate('!Module.editorPersistencePending'), 'storage settled before file chooser');
+        const before = await evaluate('window.importResults.length');
+        await trigger();
+        await until(() => evaluate("!!document.querySelector('[data-editor-import]')"), 'import file chooser');
+        const root = (await cdp('DOM.getDocument')).root.nodeId;
+        const input = (await cdp('DOM.querySelector',{nodeId:root,selector:'[data-editor-import]'})).nodeId;
+        if (path) await cdp('DOM.setFileInputFiles',{nodeId:input,files:[path]});
+        else await evaluate("document.querySelector('[data-editor-import]').dispatchEvent(new Event('cancel'))");
+        await until(() => evaluate(`window.importResults.length === ${before + 1} && !document.querySelector('[data-editor-import]')`), 'import completion');
+        await sleep(120);
+        return evaluate('window.importResults.at(-1)');
+    }
+    const importedItem = {id:'browser-csl-one',type:'article-journal',title:'浏览器导入文献🙂',
+        author:[{family:'张',given:'三'}],issued:{'date-parts':[[2024]]},
+        DOI:'10.1000/browser', 'container-title':'测试期刊',volume:'12',page:'10-20'};
+    const importedText = JSON.stringify([importedItem,{id:'browser-csl-two',type:'book',title:'另一本书'}]);
+    const importPath = join(profile,'文献🙂.json'); await writeFile(importPath,importedText);
+    let importResult = await chooseImport(importPath);
+    assert.equal(importResult.status,1); assert.equal(importResult.name,'文献🙂.json');
+    assert.deepEqual(importResult.bytes,Array.from(new TextEncoder().encode(importedText)));
+    await evaluate('window.RealFileReader=FileReader;FileReader=class extends RealFileReader {readAsArrayBuffer(){throw new Error("injected import failure");}};');
+    importResult = await chooseImport(importPath);
+    assert.equal(importResult.status,3); assert.match(importResult.message,/injected import failure/);
+    await evaluate('FileReader=window.RealFileReader');
+    assert.equal((await chooseImport(importPath)).status,1, 'retry must work after a failed read');
+    assert.equal((await chooseImport(null)).status,2);
+    const oversizedPath = join(profile,'too-large.json');
+    const oversized = await open(oversizedPath,'w');
+    try { await oversized.truncate(128*1024*1024+1); } finally { await oversized.close(); }
+    importResult = await chooseImport(oversizedPath);
+    assert.equal(importResult.status,3); assert.match(importResult.message,/128/);
+    const invalidPath = join(profile,'invalid.json'); await writeFile(invalidPath,'{"incomplete":');
+    assert.equal((await chooseImport(invalidPath)).status,1, 'file bytes load; the library parser must reject them atomically');
+    // Inserting the original item below proves cancel, limit and invalid JSON
+    // did not discard the previously imported library.
+    await click(860,131); await until(() => evaluate("document.activeElement.id === 'editor-input'"), 'library search focus');
+    await cdp('Input.insertText',{text:'浏览器导入'}); await key('Enter','Enter',13);
+    await click(700,263);
+    await click(700,576); await cdp('Input.insertText',{text:'12–13'}); await key('Enter','Enter',13);
+    const quotation = '摘录第一行🙂\n第二行';
+    await click(970,576); await cdp('Input.insertText',{text:quotation}); await key('Enter','Enter',13,2);
+    await click(700,627);
+    const citationRead = `FS.readFile(${JSON.stringify(citationFile)},{encoding:'utf8'})`;
+    const citationState = () => evaluate(`(()=>{
+        const html=${citationRead}, doc=new DOMParser().parseFromString(html,'text/html');
+        const cite=doc.querySelector('[data-type="zoteroCitationBlock"]');
+        const tail=doc.querySelector('[data-type="zoteroEndnoteSection"]');
+        return {html,title:document.title,saved:!Module.editorUnsaved&&!Module.editorPersistencePending,
+            cite:cite?Object.fromEntries(Array.from(cite.attributes).map(a=>[a.name,a.value])):null,
+            tail:tail?Object.fromEntries(Array.from(tail.attributes).map(a=>[a.name,a.value])):null};
+    })()`);
+    await until(async () => { const s=await citationState(); return s.saved && s.cite; }, 'citation durable insertion');
+    let cited = await citationState();
+    assert.equal(cited.cite.title,importedItem.title); assert.equal(cited.cite.page,'12–13');
+    assert.equal(cited.cite.note,quotation); assert.equal(cited.cite['data-source-id'],importedItem.id);
+    assert.deepEqual(JSON.parse(cited.cite['data-csl-json']),importedItem);
+    assert.match(cited.html,/<p>Before <\/p>/); assert.match(cited.html,/<p>After<\/p>/);
+    console.log('PASS: real file import preserves Unicode/CSL metadata; cancel, read errors, oversized and invalid files retain the library');
+    await click(1047,24); await click(700,697); await click(970,697);
+    await until(async () => { const s=await citationState(); return s.saved && s.tail?.style === 'ieee'; }, 'IEEE approximate bibliography');
+    cited = await citationState();
+    const entries = JSON.parse(cited.tail.entriesjson);
+    assert.equal(entries.length,1); assert.equal(entries[0].formatting,'approximate');
+    assert.equal(cited.cite.endnotenumber,'1');
+    const citationId = cited.cite.citationid;
+    await click(700,576); await key('a','KeyA',65,2);
+    await cdp('Input.insertText',{text:'44'}); await key('Enter','Enter',13); await click(700,627);
+    await until(async () => { const s=await citationState(); return s.saved && s.cite?.page === '44'; }, 'edit existing citation');
+    cited = await citationState(); assert.equal(cited.cite.citationid,citationId); assert.equal(cited.cite.note,quotation);
+    await key('z','KeyZ',90,2);
+    await until(async () => { const s=await citationState(); return s.saved && s.cite?.page === '12–13'; }, 'undo citation metadata edit');
+    await key('y','KeyY',89,2);
+    await until(async () => { const s=await citationState(); return s.saved && s.cite?.page === '44'; }, 'redo citation metadata edit');
+    await click(1047,24);
+    await writeFile(join(build,'browser-citation-validation.png'),Buffer.from((await cdp('Page.captureScreenshot')).data,'base64'));
+    await click(1060,30); // Close the panel before checking reload serialization.
+    const citationHTML = (await citationState()).html;
+    await cdp('Page.reload'); await ready(); await cdp('Page.bringToFront');
+    await until(() => evaluate('document.title.includes("000References")'), 'reloaded citation document');
+    assert.equal(await evaluate(citationRead),citationHTML);
+    for (const name of await readdir(downloads)) await rm(join(downloads,name),{force:true});
+    await click(360,106);
+    const citationDownload = await until(async () => (await readdir(downloads)).find(name => name.endsWith('.json')), 'reloaded citation JSON download');
+    const citationJSON = JSON.parse(await readFile(join(downloads,citationDownload),'utf8'));
+    const descendants = node => [node,...(node.content || []).flatMap(descendants)];
+    const nodes = descendants(citationJSON);
+    const roundtrip = nodes.find(node => node.type === 'zoteroCitationBlock');
+    assert.ok(roundtrip); assert.equal(roundtrip.attrs.page,'44'); assert.equal(roundtrip.attrs.note,quotation);
+    assert.deepEqual(JSON.parse(roundtrip.attrs.cslJson),importedItem);
+    assert.equal(nodes.find(node => node.type === 'zoteroEndnoteSection').attrs.style,'ieee');
+    console.log('PASS: search, citation page/multiline quotation, edit/undo/redo, approximate style/sync and reload → JSON roundtrip');
+
+    const cachePath = '/notes/.notelab-library/library.json';
+    await until(() => evaluate(`FS.analyzePath(${JSON.stringify(cachePath)}).exists && !Module.editorPersistencePending`), 'private library cache');
+    const validCache = await evaluate(`FS.readFile(${JSON.stringify(cachePath)},{encoding:'utf8'})`);
+    assert.ok(JSON.parse(validCache));
+    // The preceding reload must restore the library without another chooser.
+    await click(1047,24); await click(860,79); await click(860,131);
+    await until(() => evaluate("document.activeElement.id === 'editor-input'"), 'restored library search');
+    await key('a','KeyA',65,2); await cdp('Input.insertText',{text:'浏览器导入'}); await key('Enter','Enter',13);
+    await click(700,263); await click(700,627);
+    const citationCount = () => evaluate(`new DOMParser().parseFromString(${citationRead},'text/html').querySelectorAll('[data-type="zoteroCitationBlock"]').length`);
+    await until(async () => (await citationCount()) === 2 && await evaluate('!Module.editorUnsaved && !Module.editorPersistencePending'), 'insert from restored cache');
+    const beforeBadCache = await evaluate(citationRead);
+    async function replaceCache(text) {
+        await evaluate(`new Promise((resolve,reject)=>{FS.writeFile(${JSON.stringify(cachePath)},${JSON.stringify(text)});FS.syncfs(false,e=>e?reject(e):resolve());})`);
+    }
+    await replaceCache('{broken'); await cdp('Page.reload'); await ready();
+    await until(() => evaluate('document.title.includes("000References")'), 'notes remain available with invalid cache');
+    assert.equal(await evaluate(citationRead),beforeBadCache);
+    assert.equal(await evaluate(`FS.readFile(${JSON.stringify(cachePath)},{encoding:'utf8'})`),'{broken');
+    await click(1047,24); await click(860,79); await click(700,263); await click(700,627); await sleep(500);
+    assert.equal(await evaluate(citationRead),beforeBadCache, 'invalid cache must not expose a phantom selectable item');
+    await writeFile(join(build,'browser-library-invalid-cache.png'),Buffer.from((await cdp('Page.captureScreenshot')).data,'base64'));
+    await replaceCache(validCache); await cdp('Page.reload'); await ready();
+    await until(() => evaluate('document.title.includes("000References")'), 'valid cache recovery');
+    assert.equal(await evaluate(citationRead),beforeBadCache);
+    console.log('PASS: private library cache survives reload; corrupt cache preserves notes and its original bytes');
+
+    await observeImports();
+    async function documentChooser(path) {
+        // Desktop note opening retains the sidebar state; ensure it is visible
+        // using the editor area's actual position rather than toggling blindly.
+        if (await evaluate('Module.editorInputArea.x < 200')) await click(45,65);
+        return chooseImport(path, () => click(186,160));
+    }
+    const noteSnapshot = () => evaluate(`JSON.stringify(FS.readdir('/notes').filter(n=>!n.startsWith('.')&&/\\.(json|md|txt)$/.test(n)).sort().map(n=>[n,FS.readFile('/notes/'+n,{encoding:'utf8'})]))`);
+    let notesBefore = await noteSnapshot(), titleBefore = await evaluate('document.title');
+    assert.ok(JSON.parse(notesBefore).length > 0, 'preservation checks must include existing notes');
+    assert.equal((await documentChooser(null)).status,2);
+    assert.equal(await noteSnapshot(),notesBefore); assert.equal(await evaluate('document.title'),titleBefore);
+    const brokenDocument = join(profile,'Broken document.json'); await writeFile(brokenDocument,'{"type":');
+    assert.equal((await documentChooser(brokenDocument)).status,1); await sleep(300);
+    assert.equal(await noteSnapshot(),notesBefore); assert.equal(await evaluate('document.title'),titleBefore);
+    // Typed metadata requires JSON storage; the import must not flatten it to
+    // HTML or discard the original CSL snapshot embedded in its citation.
+    const legacyJSON = structuredClone(citationJSON);
+    descendants(legacyJSON).find(n=>n.type==='zoteroCitationBlock').attrs.customData={keep:'原始信息🙂',enabled:true};
+    const legacyJSONPath = join(profile,'Legacy JSON🙂.json');
+    const legacyJSONText = JSON.stringify(legacyJSON); await writeFile(legacyJSONPath,legacyJSONText);
+    assert.equal((await documentChooser(legacyJSONPath)).status,1);
+    const importedDocumentPath = '/notes/Legacy JSON🙂.json';
+    await until(() => evaluate(`FS.analyzePath(${JSON.stringify(importedDocumentPath)}).exists && !Module.editorPersistencePending`), 'legacy JSON note creation');
+    const firstImported = await evaluate(`FS.readFile(${JSON.stringify(importedDocumentPath)},{encoding:'utf8'})`);
+    assert.deepEqual(JSON.parse(firstImported),legacyJSON);
+    assert.equal((await documentChooser(legacyJSONPath)).status,1);
+    await until(() => evaluate("FS.analyzePath('/notes/Legacy JSON🙂 (2).json').exists && !Module.editorPersistencePending"), 'duplicate source creates a distinct note');
+    assert.equal(await evaluate(`FS.readFile(${JSON.stringify(importedDocumentPath)},{encoding:'utf8'})`),firstImported);
+    assert.equal(await readFile(legacyJSONPath,'utf8'),legacyJSONText);
+
+    const htmlEntries = [{citationId:'legacy-html',number:1,entryHtml:'<i>旧作者</i>. 原始条目🙂.'}];
+    const escapeAttribute = value => String(value).replaceAll('&','&amp;').replaceAll('"','&quot;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+    const oldHTML = '<h2><strong>旧笔记 HTML</strong></h2><p><em>正文🙂</em></p>'+
+        '<div data-type="zoteroCitationBlock" citationId="legacy-html" data-citation-id="legacy-html" endnoteNumber="1" data-endnote-number="1" itemKey="ABCD1234" itemUri="zotero://select/library/items/ABCD1234" title="旧文献" author="旧作者" year="2020" citeKey="Old2020" page="8" note="旧摘录"></div>'+
+        '<div data-type="zoteroEndnoteSection" style="apa" entriesJson="'+escapeAttribute(JSON.stringify(htmlEntries))+'"></div>';
+    const oldHTMLPath = join(profile,'Legacy HTML.htm'); await writeFile(oldHTMLPath,oldHTML);
+    assert.equal((await documentChooser(oldHTMLPath)).status,1);
+    await until(() => evaluate("FS.analyzePath('/notes/Legacy HTML.json').exists && !Module.editorPersistencePending"), 'legacy HTML note creation');
+    const htmlDocument = await evaluate("JSON.parse(FS.readFile('/notes/Legacy HTML.json',{encoding:'utf8'}))");
+    const htmlNodes = descendants(htmlDocument);
+    assert.equal(htmlNodes.find(n=>n.type==='heading').attrs.level,2);
+    assert.ok(htmlNodes.find(n=>n.text==='旧笔记 HTML').marks.some(mark=>mark.type==='bold'));
+    assert.ok(htmlNodes.find(n=>n.text==='正文🙂').marks.some(mark=>mark.type==='italic'));
+    assert.equal(htmlNodes.find(n=>n.type==='zoteroCitationBlock').attrs.citationId,'legacy-html');
+    assert.equal(htmlNodes.find(n=>n.type==='zoteroCitationBlock').attrs.page,'8');
+    assert.deepEqual(JSON.parse(htmlNodes.find(n=>n.type==='zoteroEndnoteSection').attrs.entriesJson),htmlEntries);
+    const literalPath = join(profile,'Literal.txt'); await writeFile(literalPath,'<literal>&\n中文🙂');
+    assert.equal((await documentChooser(literalPath)).status,1);
+    await until(() => evaluate("FS.analyzePath('/notes/Literal.json').exists && !Module.editorPersistencePending"), 'plain text note creation');
+    const literal = await evaluate("JSON.parse(FS.readFile('/notes/Literal.json',{encoding:'utf8'}))");
+    assert.equal(descendants(literal).filter(n=>n.type==='text').map(n=>n.text).join('\n'),'<literal>&\n中文🙂');
+    notesBefore = await noteSnapshot(); titleBefore = await evaluate('document.title');
+    const binaryPath = join(profile,'Binary.txt'); await writeFile(binaryPath,Buffer.from([65,0,66]));
+    assert.equal((await documentChooser(binaryPath)).status,1); await sleep(300);
+    assert.equal(await noteSnapshot(),notesBefore); assert.equal(await evaluate('document.title'),titleBefore);
+    await writeFile(join(build,'browser-document-import-validation.png'),Buffer.from((await cdp('Page.captureScreenshot')).data,'base64'));
+    console.log('PASS: actual JSON/legacy HTML/TXT note chooser, typed metadata, duplicate names and rejected/canceled imports');
     assert.deepEqual(exceptions, []);
     console.log('PASS: initial storage read failure blocks editor; data survives recovery');
     await Promise.all([rm(join(build,'browser-failure.json'),{force:true}),rm(join(build,'browser-failure.png'),{force:true})]);
@@ -298,7 +531,7 @@ try {
 } catch (error) {
     if (evaluate) {
         try {
-            const state = await evaluate(`({title:document.title,unsaved:Module.editorUnsaved,pending:Module.editorPersistencePending,inputPending:Module.editorInputPending,inputLog:window.testInputLog,notes:FS.readdir('/notes').filter(n=>!n.startsWith('.')).map(n=>({name:n,data:FS.readFile('/notes/'+n,{encoding:'utf8'})}))})`);
+            const state = await evaluate(`({title:document.title,unsaved:Module.editorUnsaved,pending:Module.editorPersistencePending,inputPending:Module.editorInputPending,inputLog:window.testInputLog,viewport:{dpr:devicePixelRatio,innerWidth,innerHeight,canvas:[canvas.width,canvas.height],rect:canvas.getBoundingClientRect().toJSON(),input:Module.editorInputArea},notes:FS.readdir('/notes').filter(n=>!n.startsWith('.')).map(n=>({name:n,data:FS.readFile('/notes/'+n,{encoding:'utf8'})}))})`);
             await writeFile(join(build,'browser-failure.json'), JSON.stringify(state,null,2));
             console.error('Browser test state:', JSON.stringify(state));
             await writeFile(join(build,'browser-failure.png'), Buffer.from((await cdp('Page.captureScreenshot')).data,'base64'));

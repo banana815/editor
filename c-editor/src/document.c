@@ -43,6 +43,12 @@ static char *copy_n(const char *s, size_t n) {
     return p;
 }
 static char *copy(const char *s) { return copy_n(s ? s : "", strlen(s ? s : "")); }
+static char *print_owned(const cJSON *value) {
+    char *printed=cJSON_PrintUnformatted(value);
+    char *owned=printed?copy(printed):NULL;
+    cJSON_free(printed);
+    return owned;
+}
 static void addn(Buffer *b, const char *s, size_t n) {
     if (b->failed)
         return;
@@ -311,7 +317,7 @@ const char *ce_document_text(const CeDocument *d) { return d && d->text.p ? d->t
 size_t ce_document_length(const CeDocument *d) { return d ? d->text.n : 0; }
 const char *ce_document_error(const CeDocument *d) { return d ? d->error : "Invalid document"; }
 char *ce_document_export_json(const CeDocument *d) {
-    return d ? cJSON_PrintUnformatted(d->root) : NULL;
+    return d ? print_owned(d->root) : NULL;
 }
 void ce_document_mark_saved(CeDocument *d) {
     if (d) {
@@ -465,7 +471,7 @@ CeStyle ce_document_style_at(const CeDocument *d, size_t p) {
     return (CeStyle){0, "", "", ""};
 }
 char *ce_document_block_json(const CeDocument *d, size_t i) {
-    return d && i < d->nblocks ? cJSON_PrintUnformatted(d->blocks[i].node) : NULL;
+    return d && i < d->nblocks ? print_owned(d->blocks[i].node) : NULL;
 }
 static cJSON *parent_of(cJSON *j, cJSON *wanted, unsigned depth) {
     if (depth > CE_DEPTH)
@@ -1576,6 +1582,22 @@ static bool html_blocks(CeDocument *d, cJSON *h, cJSON *out, unsigned depth) {
                 } else
                     cJSON_AddStringToObject(attrs, citation_keys[i], v);
             }
+            /* Optional metadata stays absent when unknown. String IDs retain
+             * all digits; cslJson retains the original bibliographic snapshot. */
+            const char *identity_keys[] = {"sourceId", "libraryId", "cslJson"};
+            const char *html_keys[] = {"data-source-id", "data-library-id", "data-csl-json"};
+            const char *legacy_keys[] = {"sourceid", "libraryid", "csljson"};
+            for (size_t i = 0; i < sizeof identity_keys / sizeof *identity_keys; i++) {
+                cJSON *value = field(ha, html_keys[i]);
+                if (!value)
+                    value = field(ha, legacy_keys[i]);
+                if (cJSON_IsString(value) &&
+                    !cJSON_AddStringToObject(attrs, identity_keys[i], value->valuestring)) {
+                    cJSON_Delete(attrs);
+                    cJSON_Delete(n);
+                    return fail(d, "Out of memory while importing citation metadata");
+                }
+            }
         } else {
             cJSON_AddStringToObject(attrs, "style", *str(ha, "style") ? str(ha, "style") : "apa");
             cJSON_AddStringToObject(attrs, "entriesJson",
@@ -1775,7 +1797,8 @@ static bool html_export(CeDocument *d, cJSON *n, Buffer *b, unsigned depth) {
                                                     : "";
     if (atom)
         known = !strcmp(t, "zoteroCitationBlock") ? "citationId|endnoteNumber|itemKey|itemUri|"
-                                                    "pdfUri|title|author|year|citeKey|page|note"
+                                                    "pdfUri|title|author|year|citeKey|page|note|"
+                                                    "sourceId|libraryId|cslJson"
                                                   : "style|entriesJson";
     if (!keys_supported(attrs, known))
         return fail(d, "Additional node attributes require JSON export to avoid data loss");
@@ -1853,12 +1876,20 @@ static bool html_export(CeDocument *d, cJSON *n, Buffer *b, unsigned depth) {
         attribute(b, "data-type", t);
         cJSON *a;
         cJSON_ArrayForEach (a, attrs) {
+            const char *key = a->string;
+            if (!strcmp(t, "zoteroCitationBlock") &&
+                (!strcmp(key, "sourceId") || !strcmp(key, "libraryId") || !strcmp(key,"cslJson"))) {
+                if (!cJSON_IsString(a))
+                    return fail(d, "Non-string citation metadata requires JSON export to preserve its type");
+                key = !strcmp(key, "sourceId") ? "data-source-id"
+                    : !strcmp(key,"libraryId") ? "data-library-id" : "data-csl-json";
+            }
             if (cJSON_IsString(a))
-                attribute(b, a->string, a->valuestring);
+                attribute(b, key, a->valuestring);
             else if (cJSON_IsNumber(a)) {
                 char num[32];
                 snprintf(num, sizeof num, "%.17g", a->valuedouble);
-                attribute(b, a->string, num);
+                attribute(b, key, num);
             } else
                 return fail(d,
                             "Cannot export complex atomic attributes to HTML; export JSON instead");

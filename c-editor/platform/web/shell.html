@@ -7,7 +7,10 @@
   <title>Note Lab</title>
   <style>
     html,body { margin:0; height:100%; background:#eff2ef; font-family:system-ui,sans-serif; }
-    canvas { display:block; width:100%; height:100%; outline:none; }
+    /* SDL/Emscripten may write inline pixel dimensions while creating a HiDPI
+       window. This application always fills its CSS viewport; keep those
+       framebuffer dimensions from widening the mobile page. */
+    canvas { display:block; width:100% !important; height:100% !important; outline:none; }
     #editor-input { position:fixed; width:1px; height:1px; padding:0; border:0; opacity:0.01; resize:none; pointer-events:none; font-size:20px; }
     #status { position:absolute; inset:40% 8% auto; text-align:center; color:#23342d; }
     #status[hidden] { display:none; }

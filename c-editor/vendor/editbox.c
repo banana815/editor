@@ -428,7 +428,20 @@ static void DrawCandidates(EditBox *edit)
         return;
     }
 
-    SDL_GetRenderSafeArea(renderer, &safe_rect);
+    /* Convert the window safe area once, then clip in viewport-local space.
+     * SDL_GetRenderSafeArea in SDL 3.2 intersects against a viewport rectangle
+     * that still has its origin, which double-counts a nonzero safe-area inset. */
+    SDL_Rect viewport, window_safe;
+    SDL_GetRenderViewport(renderer, &viewport);
+    safe_rect = (SDL_Rect){0, 0, viewport.w, viewport.h};
+    if (SDL_GetWindowSafeArea(edit->window, &window_safe)) {
+        float x1, y1, x2, y2;
+        if (SDL_RenderCoordinatesFromWindow(renderer, (float)window_safe.x, (float)window_safe.y, &x1, &y1) &&
+            SDL_RenderCoordinatesFromWindow(renderer, (float)(window_safe.x + window_safe.w), (float)(window_safe.y + window_safe.h), &x2, &y2)) {
+            SDL_Rect converted = {(int)SDL_ceilf(x1), (int)SDL_ceilf(y1), (int)SDL_floorf(x2-x1), (int)SDL_floorf(y2-y1)}, clipped;
+            if (SDL_GetRectIntersection(&safe_rect, &converted, &clipped)) safe_rect = clipped;
+        }
+    }
     TTF_GetTextSize(edit->candidates, &candidates_w, &candidates_h);
     candidates_rect.x = edit->rect.x + cursor.x;
     candidates_rect.y = edit->rect.y + cursor.y + cursor.h + 2.0f;

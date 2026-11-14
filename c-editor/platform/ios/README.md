@@ -36,6 +36,24 @@ read-only application bundle. A successful compile alone does not verify touch,
 IME input, background saves, file sharing, or Zotero integration on iOS; those
 need simulator/device interaction separately.
 
+The native Files picker accepts old notes as JSON, HTML/HTM, Markdown, or plain
+text. Zotero import also accepts SQLite snapshots; the C importer validates file
+contents after selection. The picker filter policy has a small macOS-hosted test
+using the same Uniform Type Identifiers framework, without starting a simulator:
+
+```sh
+xcrun clang -fobjc-arc -Wall -Wextra -Werror \
+  -I c-editor/include -I c-editor/build-web/_deps/editor_sdl-src/include \
+  c-editor/platform/ios/test_import_types.m \
+  -framework Foundation -framework UniformTypeIdentifiers \
+  -o /tmp/notelab-import-types
+/tmp/notelab-import-types
+```
+
+Point the SDL include path at the SDL source checkout used by your build. This
+checks that each supported extension can be selected and that the JSON-only
+picker remains restricted; actual provider and picker interaction is separate.
+
 Validation on 2026-11-14: both commands completed with Xcode 27.2 / SDK 27.2 on
 Apple Silicon. The resulting arm64 binaries report `IOSSIMULATOR` and `IOS`
 respectively, deployment target 15.0. Both bundles contain the verified Noto font

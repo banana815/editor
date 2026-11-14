@@ -72,7 +72,9 @@ static void test_migration(void) {
         "<h2 style=\"text-align: center\">标题</h2><ul><li><p><em>Nested</em></p><ol "
         "start=\"3\"><li><p><mark data-color=\"#f00\">text</mark></p></li></ol></li></ul><div "
         "data-type=\"zoteroCitationBlock\" citationid=\"cite-1\" endnotenumber=\"2\" "
-        "itemkey=\"ABC\" title=\"A &amp; B\" note=\"摘录\"></div><div "
+        "itemkey=\"ABC\" title=\"A &amp; B\" note=\"摘录\" "
+        "data-source-id=\"库/&quot;A&quot;&amp;条目\" data-library-id=\"9007199254740993\" "
+        "data-csl-json=\"{&quot;title&quot;:&quot;文献 &amp; 资料&quot;,&quot;DOI&quot;:&quot;10.123/test&quot;}\"></div><div "
         "data-type=\"zoteroEndnoteSection\" style=\"apa\" "
         "entriesjson=\"[{&quot;number&quot;:1,&quot;entryHtml&quot;:&quot;&lt;em&gt;Title&lt;/"
         "em&gt;&quot;}]\"></div>";
@@ -83,8 +85,13 @@ static void test_migration(void) {
     assert(strstr(j, "A & B"));
     assert(strstr(j, "entriesJson"));
     assert(strstr(j, "orderedList"));
+    assert(strstr(j, "\"sourceId\":\"库/\\\"A\\\"&条目\""));
+    assert(strstr(j, "\"libraryId\":\"9007199254740993\""));
+    assert(strstr(j, "\"cslJson\":\"{\\\"title\\\":\\\"文献 & 资料\\\",\\\"DOI\\\":\\\"10.123/test\\\"}\""));
     char *h = ce_document_export_html(d);
     assert(h);
+    assert(strstr(h, "data-source-id=\"库/&quot;A&quot;&amp;条目\""));
+    assert(strstr(h, "data-library-id=\"9007199254740993\""));
     CeDocument *r = load(h, CE_FORMAT_HTML);
     char *j2 = ce_document_export_json(r);
     assert(!strcmp(j, j2));
@@ -113,6 +120,34 @@ static void test_unknown_json(void) {
     assert(strstr(j, "\"payload\":[1,2,3]"));
     free(j);
     assert(!ce_document_export_html(d));
+    ce_document_free(d);
+}
+static void test_citation_identity(void) {
+    CeDocument *d = load("<div data-type=\"zoteroCitationBlock\" itemkey=\"ABC\"></div>",
+                         CE_FORMAT_HTML);
+    char *json = ce_document_export_json(d);
+    assert(json && !strstr(json, "sourceId") && !strstr(json, "libraryId"));
+    free(json);
+    ce_document_free(d);
+
+    d = load("<div data-type=\"zoteroCitationBlock\" sourceid=\"legacy-id\" "
+             "libraryid=\"42\"></div>", CE_FORMAT_HTML);
+    json = ce_document_export_json(d);
+    assert(json && strstr(json, "\"sourceId\":\"legacy-id\""));
+    assert(strstr(json, "\"libraryId\":\"42\""));
+    free(json);
+    ce_document_free(d);
+
+    /* Numeric legacy JSON remains available losslessly as JSON. HTML cannot
+     * carry its original type, so it must fail without changing the document. */
+    d = load("{\"type\":\"doc\",\"content\":[{\"type\":\"zoteroCitationBlock\","
+             "\"attrs\":{\"libraryId\":42}}]}", CE_FORMAT_JSON);
+    json = ce_document_export_json(d);
+    assert(!ce_document_export_html(d));
+    char *after = ce_document_export_json(d);
+    assert(after && !strcmp(json, after));
+    free(json); free(after);
+    assert(!ce_document_is_modified(d));
     ce_document_free(d);
 }
 static void test_search_history(void) {
@@ -379,6 +414,7 @@ int main(void) {
     test_format();
     test_migration();
     test_unknown_json();
+    test_citation_identity();
     test_search_history();
     test_lists_and_random_edits();
     test_clear_and_alignment();

@@ -123,6 +123,99 @@ static unsigned char *snapshot(const char *path, size_t *size) {
     return data;
 }
 
+static void test_cache_roundtrip(const CeZoteroLibrary *expected) {
+    CeZoteroLibrary restored={0}; char error[256];
+    char *cache=ce_zotero_cache_export(expected,error,sizeof error);
+    assert(cache && !*error && ce_zotero_cache_import(cache,&restored,error,sizeof error));
+    assert(restored.item_count==expected->item_count && restored.collection_count==expected->collection_count);
+    assert(restored.repaired_parents==expected->repaired_parents && restored.root_count==expected->root_count);
+    char *again=ce_zotero_cache_export(&restored,error,sizeof error);
+    assert(again && !strcmp(cache,again)); free(again);
+    CeZoteroItem *retained=restored.items;
+    cJSON *broken=cJSON_Parse(cache); assert(broken);
+    cJSON_ReplaceItemInObjectCaseSensitive(broken,"version",cJSON_CreateNumber(2));
+    char *invalid=cJSON_PrintUnformatted(broken); assert(invalid);
+    assert(!ce_zotero_cache_import(invalid,&restored,error,sizeof error));
+    assert(restored.items==retained && restored.item_count==expected->item_count);
+    free(invalid); cJSON_Delete(broken);
+    if (restored.item_count) {
+        broken=cJSON_Parse(cache);
+        cJSON *row=cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(broken,"items"),0);
+        cJSON_ReplaceItemInObjectCaseSensitive(row,"csl_json",cJSON_CreateString("{broken"));
+        invalid=cJSON_PrintUnformatted(broken);
+        assert(invalid && !ce_zotero_cache_import(invalid,&restored,error,sizeof error));
+        assert(restored.items==retained); free(invalid); cJSON_Delete(broken);
+        static const char *bad_ids[]={"9223372036854775808","-9223372036854775809",
+            "1e3","0x10","-","+1"," 1","1 ","1.0",""};
+        for (size_t i=0;i<sizeof bad_ids/sizeof *bad_ids;++i) {
+            broken=cJSON_Parse(cache); assert(broken);
+            row=cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(broken,"items"),0);
+            assert(cJSON_ReplaceItemInObjectCaseSensitive(row,"database_id",cJSON_CreateString(bad_ids[i])));
+            invalid=cJSON_PrintUnformatted(broken); assert(invalid);
+            assert(!ce_zotero_cache_import(invalid,&restored,error,sizeof error));
+            assert(*error && restored.items==retained); free(invalid); cJSON_Delete(broken);
+        }
+    }
+    if (restored.collection_count) {
+        broken=cJSON_Parse(cache);
+        cJSON *row=cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(broken,"collections"),0);
+        cJSON *members=cJSON_CreateArray(); assert(members);
+        assert(cJSON_AddItemToArray(members,cJSON_CreateNumber(999999)));
+        cJSON_ReplaceItemInObjectCaseSensitive(row,"items",members);
+        invalid=cJSON_PrintUnformatted(broken);
+        assert(invalid && !ce_zotero_cache_import(invalid,&restored,error,sizeof error));
+        assert(restored.items==retained); free(invalid); cJSON_Delete(broken);
+        static const char *bad_members[]={"[0,0]","[-1]","[0.5]","[\"0\"]","[null]"};
+        for (size_t i=0;i<sizeof bad_members/sizeof *bad_members;++i) {
+            broken=cJSON_Parse(cache); assert(broken);
+            row=cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(broken,"collections"),0);
+            assert(cJSON_ReplaceItemInObjectCaseSensitive(row,"items",cJSON_Parse(bad_members[i])));
+            invalid=cJSON_PrintUnformatted(broken); assert(invalid);
+            assert(!ce_zotero_cache_import(invalid,&restored,error,sizeof error));
+            assert(*error && restored.items==retained); free(invalid); cJSON_Delete(broken);
+        }
+    }
+    assert(!ce_zotero_cache_import("{\"version\":1,\"items\":[{\"id\":\"a\\u0000b\"}],\"collections\":[]}",&restored,error,sizeof error));
+    assert(restored.items==retained);
+    free(cache); ce_zotero_library_free(&restored);
+}
+
+static void test_snapshot_import(const unsigned char *data, size_t size,
+                                  const CeZoteroLibrary *expected) {
+    CeZoteroLibrary imported = {0};
+    char error[256];
+    unsigned char *original = malloc(size);
+    assert(original); memcpy(original, data, size);
+    assert(ce_zotero_load_sqlite_bytes(data, size, &imported, error, sizeof error));
+    assert(!*error && imported.item_count == expected->item_count);
+    assert(imported.collection_count == expected->collection_count);
+    assert(imported.repaired_parents == expected->repaired_parents);
+    for (size_t i = 0; i < imported.item_count; ++i) {
+        assert(!strcmp(imported.items[i].title, expected->items[i].title));
+        assert(!strcmp(imported.items[i].author, expected->items[i].author));
+        assert(!strcmp(imported.items[i].item_uri, expected->items[i].item_uri));
+        assert(!strcmp(imported.items[i].pdf_uri, expected->items[i].pdf_uri));
+        assert(imported.items[i].csl_json && expected->items[i].csl_json);
+        assert(!strcmp(imported.items[i].csl_json, expected->items[i].csl_json));
+    }
+    assert(!memcmp(original, data, size));
+    CeZoteroItem *retained = imported.items;
+    assert(!ce_zotero_load_sqlite_bytes(NULL, size, &imported, error, sizeof error));
+    assert(!ce_zotero_load_sqlite_bytes(data, 99, &imported, error, sizeof error));
+    assert(!ce_zotero_load_sqlite_bytes(data, 100, &imported, error, sizeof error));
+    assert(!ce_zotero_load_sqlite_bytes(data, (size_t)128*1024*1024 + 1,
+                                        &imported, error, sizeof error));
+    assert(imported.items == retained && imported.item_count == expected->item_count);
+    /* A selected WAL-mode main file can omit committed journal data. Reject it
+     * instead of silently changing its header to make deserialize accept it. */
+    original[18] = original[19] = 2;
+    assert(!ce_zotero_load_sqlite_bytes(original, size, &imported, error, sizeof error));
+    assert(strstr(error, "WAL") && imported.items == retained);
+    free(original);
+    test_cache_roundtrip(&imported);
+    ce_zotero_library_free(&imported);
+}
+
 static void test_sqlite(const char *path) {
     CeZoteroLibrary lib = {0};
     char error[256];
@@ -154,6 +247,7 @@ static void test_sqlite(const char *path) {
     assert(!indices && !count);
     unsigned char *after = snapshot(path, &after_size);
     assert(before_size == after_size && !memcmp(before, after, before_size));
+    test_snapshot_import(before, before_size, &lib);
     free(before); free(after);
 
     /* Failure after items have been read must preserve the previous library. */
@@ -182,6 +276,9 @@ static void test_sqlite(const char *path) {
     assert(!strcmp(lib.items[0].author, "Lovelace Ada; Legacy Institute"));
     assert(!strcmp(lib.items[0].year, "1999"));
     assert(!*lib.items[0].pdf_uri);
+    before = snapshot(path, &before_size);
+    test_snapshot_import(before, before_size, &lib);
+    free(before);
     ce_zotero_library_free(&lib);
     remove_path(path);
     assert(!ce_zotero_load_sqlite(path, &lib, error, sizeof error));
@@ -209,6 +306,80 @@ static void test_unicode_path(const char *path) {
     remove_path(path);
 }
 
+static cJSON *metadata_for(const CeZoteroLibrary *library, int64_t id) {
+    for (size_t i = 0; i < library->item_count; ++i)
+        if (library->items[i].database_id == id) {
+            cJSON *data = cJSON_Parse(library->items[i].csl_json);
+            assert(data); return data;
+        }
+    assert(!"Missing fixture item"); return NULL;
+}
+static const char *json_text(cJSON *object, const char *key) {
+    const char *value = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(object,key));
+    assert(value); return value;
+}
+static void test_metadata(const char *path) {
+    sqlite3 *db = create_db(path);
+    modern_fixture(db);
+    execute(db,
+        "CREATE TABLE creatorTypes(creatorTypeID INTEGER PRIMARY KEY,creatorType TEXT);"
+        "INSERT INTO creatorTypes VALUES(1,'author'),(2,'editor'),(3,'translator'),(4,'inventor'),(5,'unmappedRole');"
+        "INSERT INTO creators VALUES(3,'编','李',0),(4,'译','王',0),(5,'明','赵',0),(6,'其','钱',0);"
+        "INSERT INTO itemCreators VALUES(1,3,2,2),(1,4,3,3),(1,6,5,4);"
+        "INSERT INTO itemTypes VALUES(5,'journalArticle'),(6,'patent'),(7,'case'),(8,'bookSection'),(9,'thesis');"
+        "INSERT INTO items VALUES(20,5,'JOURNAL1',1),(21,7,'CASE0001',1),(22,6,'PATENT01',1),"
+        "(23,9,'THESIS01',1),(24,8,'CHAPTER1',1);"
+        "INSERT INTO itemCreators VALUES(22,5,4,0);"
+        "INSERT INTO fields VALUES(3,'DOI'),(4,'publicationTitle'),(5,'volume'),(6,'issue'),(7,'pages'),"
+        "(8,'publisher'),(9,'place'),(10,'bookTitle'),(11,'caseName'),(12,'dateDecided'),(13,'issueDate'),"
+        "(14,'university'),(15,'citationKey'),(16,'extra'),(17,'customField');"
+        "INSERT INTO itemDataValues VALUES(100,'期刊文章'),(101,'10.1234/example'),(102,'学术期刊'),"
+        "(103,'12'),(104,'3'),(105,'10–20'),(106,'案例名称'),(107,'2023-02-29'),"
+        "(108,'专利名称'),(109,'2024-02-29'),(110,'某大学'),(111,'论文'),(112,'章节'),"
+        "(113,'图书全名'),(114,'Key2024'),(115,'原始附加信息'),(116,'保留未知字段');"
+        "INSERT INTO itemData VALUES(20,1,100),(20,3,101),(20,4,102),(20,5,103),(20,6,104),(20,7,105),"
+        "(20,15,114),(20,16,115),(20,17,116),(21,11,106),(21,12,107),"
+        "(22,1,108),(22,13,109),(23,1,111),(23,14,110),(24,1,112),(24,10,113);");
+    assert(sqlite3_close(db) == SQLITE_OK);
+    CeZoteroLibrary library = {0}; char error[256];
+    assert(ce_zotero_load_sqlite(path,&library,error,sizeof error));
+    cJSON *item = metadata_for(&library,1);
+    assert(cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(item,"author")) == 2);
+    assert(cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(item,"editor")) == 1);
+    assert(cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(item,"translator")) == 1);
+    assert(!strcmp(library.items[0].author,"张 三; 研究机构"));
+    cJSON *raw = cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(item,"custom"),"zotero");
+    assert(cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(raw,"creators")) == 5);
+    cJSON_Delete(item);
+    item = metadata_for(&library,20);
+    assert(!strcmp(json_text(item,"type"),"article-journal"));
+    assert(!strcmp(json_text(item,"DOI"),"10.1234/example"));
+    assert(!strcmp(json_text(item,"container-title"),"学术期刊"));
+    assert(!strcmp(json_text(item,"volume"),"12") && !strcmp(json_text(item,"issue"),"3"));
+    assert(!strcmp(json_text(item,"page"),"10–20") && !strcmp(json_text(item,"citation-key"),"Key2024"));
+    raw = cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(item,"custom"),"zotero");
+    assert(!strcmp(json_text(cJSON_GetObjectItemCaseSensitive(raw,"fields"),"customField"),"保留未知字段"));
+    cJSON_Delete(item);
+    item = metadata_for(&library,21);
+    assert(!strcmp(json_text(item,"type"),"legal_case") && !strcmp(json_text(item,"title"),"案例名称"));
+    assert(!strcmp(json_text(cJSON_GetObjectItemCaseSensitive(item,"issued"),"raw"),"2023-02-29"));
+    cJSON_Delete(item);
+    item = metadata_for(&library,22);
+    assert(!strcmp(json_text(item,"type"),"patent"));
+    cJSON *parts = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(item,"issued"),"date-parts"),0);
+    assert(cJSON_GetArraySize(parts)==3 && cJSON_GetArrayItem(parts,0)->valueint==2024 && cJSON_GetArrayItem(parts,2)->valueint==29);
+    assert(!strcmp(json_text(cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(item,"author"),0),"family"),"赵"));
+    cJSON_Delete(item);
+    item = metadata_for(&library,23);
+    assert(!strcmp(json_text(item,"publisher"),"某大学")); cJSON_Delete(item);
+    item = metadata_for(&library,24);
+    assert(!strcmp(json_text(item,"type"),"chapter") && !strcmp(json_text(item,"container-title"),"图书全名"));
+    cJSON_Delete(item);
+    size_t length; unsigned char *bytes = snapshot(path,&length);
+    test_snapshot_import(bytes,length,&library); free(bytes);
+    ce_zotero_library_free(&library); remove_path(path);
+}
+
 static void test_csl(void) {
     CeZoteroLibrary lib = {0};
     char error[256];
@@ -221,6 +392,7 @@ static void test_csl(void) {
         "{\"id\":12345678},{\"id\":\"ABCDEFGH\"}]";
     assert(ce_zotero_import_csl(json, &lib, error, sizeof error));
     assert(lib.item_count == 4 && !*error);
+    test_cache_roundtrip(&lib);
     assert(!strcmp(lib.items[0].title, "中文标题"));
     assert(!strcmp(lib.items[0].author, "张 三; 研究院"));
     assert(!strcmp(lib.items[0].year, "2024"));
@@ -248,7 +420,76 @@ static void test_csl(void) {
     assert(lib.item_count == 2 && !*lib.items[0].item_uri && !*lib.items[1].item_uri);
     assert(ce_zotero_import_csl("[]", &lib, error, sizeof error));
     assert(!lib.item_count && !lib.items);
+    test_cache_roundtrip(&lib);
     ce_zotero_library_free(&lib);
+}
+
+static void test_cache_integer_precision(void) {
+    CeZoteroLibrary library={0}, restored={0}; char error[256];
+    assert(ce_zotero_import_csl("[{\"id\":\"same\",\"title\":\"Exact IDs\"}]",&library,error,sizeof error));
+    library.items[0].database_id=INT64_MIN; library.items[0].library_id=INT64_MAX;
+    library.collections=calloc(2,sizeof *library.collections); assert(library.collections);
+    library.collection_count=2;
+    library.collections[0].id=INT64_MIN; library.collections[1].id=INT64_MAX;
+    library.collections[0].library_id=library.collections[1].library_id=INT64_MAX;
+    library.collections[0].has_parent=true; library.collections[0].parent_id=INT64_MAX;
+    library.collections[0].item_indices=calloc(2,sizeof(size_t)); assert(library.collections[0].item_indices);
+    library.collections[0].item_count=1;
+    char *cache=ce_zotero_cache_export(&library,error,sizeof error);
+    assert(cache && strstr(cache,"9223372036854775807") && strstr(cache,"-9223372036854775808"));
+    assert(ce_zotero_cache_import(cache,&restored,error,sizeof error));
+    assert(restored.items[0].database_id==INT64_MIN && restored.items[0].library_id==INT64_MAX);
+    assert(restored.collections[0].id==INT64_MIN && restored.collections[1].id==INT64_MAX);
+    assert(restored.collections[0].parent_id==INT64_MAX && restored.collections[0].parent_index==1);
+    assert(restored.root_count==1 && restored.roots[0]==1 && restored.collections[1].child_count==1);
+    assert(restored.collections[1].children[0]==0 && restored.collections[0].item_indices[0]==0);
+    library.collections[0].item_count=2; /* Duplicate member 0. */
+    assert(!ce_zotero_cache_export(&library,error,sizeof error) && *error);
+    library.collections[0].item_count=1;
+    library.collections[0].item_indices[0]=1;
+    assert(!ce_zotero_cache_export(&library,error,sizeof error) && *error);
+    library.collections[0].item_indices[0]=0;
+    library.collections[0].library_id=0;
+    assert(!ce_zotero_cache_export(&library,error,sizeof error) && *error);
+    library.collections[0].library_id=INT64_MAX;
+    library.collections[1].id=INT64_MIN;
+    assert(!ce_zotero_cache_export(&library,error,sizeof error) && *error);
+    library.collections[1].id=INT64_MAX;
+    free(cache); ce_zotero_library_free(&library); ce_zotero_library_free(&restored);
+}
+
+/* Deliberately incompatible with free(payload): cJSON must release its own
+ * buffers through the hook before any library/API result is returned. */
+typedef union { max_align_t alignment; size_t tag; } CacheHookHeader;
+static size_t cache_hook_live;
+static void *cache_hook_allocate(size_t size) {
+    if (size>SIZE_MAX-sizeof(CacheHookHeader)) return NULL;
+    CacheHookHeader *header=malloc(sizeof *header+size); if (!header) return NULL;
+    header->tag=0xC501; ++cache_hook_live; return header+1;
+}
+static void cache_hook_release(void *memory) {
+    if (!memory) return;
+    CacheHookHeader *header=(CacheHookHeader *)memory-1;
+    assert(header->tag==0xC501 && cache_hook_live); header->tag=0; --cache_hook_live; free(header);
+}
+static void test_cache_allocator_contract(const char *path) {
+    sqlite3 *database=create_db(path); modern_fixture(database); assert(sqlite3_close(database)==SQLITE_OK);
+    size_t size; unsigned char *bytes=snapshot(path,&size);
+    cJSON_Hooks hooks={cache_hook_allocate,cache_hook_release}; cJSON_InitHooks(&hooks);
+    CeZoteroLibrary library={0}, restored={0}; char error[256];
+    assert(ce_zotero_import_csl("[{\"id\":\"hooks\",\"title\":\"中文引用\"}]",&library,error,sizeof error));
+    assert(!cache_hook_live);
+    char *cache=ce_zotero_cache_export(&library,error,sizeof error); assert(cache && !cache_hook_live);
+    assert(ce_zotero_cache_import(cache,&restored,error,sizeof error) && !cache_hook_live);
+    free(cache); ce_zotero_library_free(&restored);
+    assert(ce_zotero_load_sqlite(path,&library,error,sizeof error) && !cache_hook_live);
+    cache=ce_zotero_cache_export(&library,error,sizeof error); assert(cache && !cache_hook_live);
+    assert(ce_zotero_cache_import(cache,&restored,error,sizeof error) && !cache_hook_live);
+    assert(restored.item_count==3 && restored.collection_count==8);
+    free(cache); ce_zotero_library_free(&restored);
+    assert(ce_zotero_load_sqlite_bytes(bytes,size,&library,error,sizeof error) && !cache_hook_live);
+    ce_zotero_library_free(&library); free(bytes);
+    cJSON_InitHooks(NULL); remove_path(path);
 }
 
 static int run_tests(const char *directory) {
@@ -256,7 +497,10 @@ static int run_tests(const char *directory) {
     assert(snprintf(path, sizeof path, "%s/test-zotero.sqlite", directory) < (int)sizeof path);
     assert(snprintf(unicode_path, sizeof unicode_path, "%s/test-zotero-中文.sqlite", directory) < (int)sizeof unicode_path);
     test_csl();
+    test_cache_integer_precision();
+    test_cache_allocator_contract(path);
     test_sqlite(path);
+    test_metadata(path);
     test_unicode_path(unicode_path);
     puts("Zotero CSL, modern/legacy SQLite, read-only, atomic replacement and collections passed");
     return 0;

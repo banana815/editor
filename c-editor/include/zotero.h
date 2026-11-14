@@ -8,7 +8,8 @@ typedef struct CeZoteroItem {
     int64_t database_id, library_id;
     char *id, *item_key, *title, *author, *year, *cite_key;
     char *item_uri, *pdf_uri;
-    char *csl_json; /* Original CSL object, or NULL for a SQLite item. */
+    char *csl_json; /* Original CSL object, or mapped SQLite metadata with raw
+                    * fields retained in custom.zotero.fields. */
 } CeZoteroItem;
 
 typedef struct CeZoteroCollection {
@@ -38,7 +39,25 @@ bool ce_zotero_import_csl(const char *json, CeZoteroLibrary *library,
  * Zotero data. This loader does not discover/access any default user path. */
 bool ce_zotero_load_sqlite(const char *path, CeZoteroLibrary *library,
                            char *error, size_t error_capacity);
+/* Imports a complete SQLite snapshot selected in a browser/document provider.
+ * Copies at most 128 MiB into a read-only in-memory database. No temporary file
+ * or source modification. WAL-mode files are rejected: their separate journal
+ * may contain newer data. Use the native path API for a live Zotero database,
+ * or export CSL JSON / a standalone SQLite backup for portable import.
+ * Failure preserves the previous library. The input remains caller-owned. */
+bool ce_zotero_load_sqlite_bytes(const void *data, size_t size,
+                                 CeZoteroLibrary *library,
+                                 char *error, size_t error_capacity);
 void ce_zotero_library_free(CeZoteroLibrary *library);
+
+/* Versioned application cache, separate from CSL exchange files. Preserves
+ * item metadata, exact 64-bit IDs and collection relationships. Caller owns
+ * the exported UTF-8 string (free()). Import is atomic and rebuilds the safe
+ * collection tree. This codec never reads or writes filesystem paths. */
+char *ce_zotero_cache_export(const CeZoteroLibrary *library,
+                             char *error, size_t error_capacity);
+bool ce_zotero_cache_import(const char *json, CeZoteroLibrary *library,
+                             char *error, size_t error_capacity);
 
 /* Deduplicated item indices in library order. include_descendants follows the
  * repaired, acyclic collection tree. Free returned indices with free(). */

@@ -4,7 +4,8 @@ The target is the same note editor on **Windows, macOS, Linux, Android, iOS and
 the browser**, with the existing rich-text and Zotero workflows. This directory
 is an ongoing rewrite, not a completed replacement. `../test-app` remains intact.
 
-Application code and document/storage logic are C11. SDL3 handles windows and
+Application code and document/storage logic are C11. The iOS file picker uses
+the platform's Objective-C API behind a C interface. SDL3 handles windows and
 input; SDL_ttf, FreeType and HarfBuzz handle Unicode shaping. HarfBuzz is a C API
 implemented in C++, and the platform SDKs supply their required native glue.
 The new application does not depend on React, TypeScript, Node or Rust at runtime.
@@ -31,6 +32,37 @@ Use `--notes /absolute/path/to/a/copied-notes-folder` to test an existing set of
 notes. Use a copy during migration. The old `.md` files often contain HTML,
 despite their extension; they must not be treated as plain Markdown.
 
+The sidebar's **导入** button reads a selected old note and creates a new `.json`
+copy. HTML/HTM preserves supported rich formatting and citation blocks; JSON
+preserves unknown attributes; TXT is literal text, and MD uses content detection
+for compatibility with the old HTML-in-MD files. The input limit is 128 MiB.
+The original file is never overwritten. Existing names receive a numbered
+suffix, and the current note must save successfully before switching documents.
+
+## Desktop preview packages
+
+```sh
+cmake -S c-editor -B c-editor/build-package \
+  -DCMAKE_BUILD_TYPE=Release -DEDITOR_DISTRIBUTION=ON
+cmake --build c-editor/build-package --config Release --parallel 4
+ctest --test-dir c-editor/build-package -C Release --output-on-failure
+cpack --config c-editor/build-package/CPackConfig.cmake -C Release
+python3 c-editor/tests/test_distribution.py c-editor/build-package/packages
+```
+
+This produces a ZIP with a macOS application bundle or Windows executable, or
+a Linux tar.gz, including fonts and third-party notices. Extract the complete
+archive before launching the application. The archive is specific to the OS
+and architecture used for the build. Application libraries are linked statically;
+Linux still uses the host's system libraries and window services. The CI Linux
+package targets Ubuntu 24.04 and compatible environments.
+
+Packages are development previews. Apple signing/notarization, Windows signing
+and automatic updates are not configured. The package test extracts into an
+isolated directory and starts that copy with temporary notes and bundled fonts.
+It does not install anything or change the user's notes. Dependency versions,
+attribution and license texts are recorded in [THIRD_PARTY.md](THIRD_PARTY.md).
+
 ## Tests
 
 ```sh
@@ -52,14 +84,14 @@ tests cover stale selections, IME cancellation/commit and clipboard edge cases.
 | Area | Current evidence / remaining work |
 | --- | --- |
 | C document core | Tested text/HTML/TipTap JSON import/export, rich marks, alignment, history, search, citation/endnote preservation, nested-list Enter/exit, atom-adjacent insertion and paragraph splitting. Same-container block/list-item movement is supported; arbitrary cross-container moves remain restricted. |
-| Note storage | Tested Unicode filenames, exclusive creation, atomic saving, read/delete/list, failure propagation. Windows code exists but needs execution on Windows. |
-| Native interface | macOS rich-text rendering and input tests pass: headings, marks, colors, nested lists, alignment, selection, caret geometry, IME, reference cards and emoji shaping. Autosave, themes, resizable sidebar, repeat search and file export are wired. Bibliography panels remain in progress. RTL/bidi text uses the plain layout to preserve safe editing; full rich bidi layout and Unicode line-breaking rules remain. |
-| Browser | Actual Emscripten 4.0.14 build and Chrome integration tests pass: IME preedit/commit/cancel, Unicode input, IndexedDB save/reload, failure/retry, editing during saves, canceling navigation and JSON file downloads. Safari/Firefox and mobile browser device validation remain. |
-| Windows / Linux | Portable source path exists. Full build, input and packaging checks are required. |
-| Android | Gradle/NDK wrapper, matching SDL Java bridge and font packaging are provided. The development host has no Android SDK; APK compilation and emulator/device validation remain. |
-| iOS | Actual arm64 simulator and device bundles compile with Xcode 27.2, with iPhone/iPad configuration and the verified CJK font/license. They are unsigned. Simulator launch was blocked by the host's CoreSimulator service/SDK mismatch; runtime and device interaction remain unverified. |
-| Zotero | Tested C CSL import and read-only modern/legacy SQLite loading, group-library links, actual PDF-attachment links, deleted-item/collection filtering and descendant collection queries. Citation insertion/editing, library UI, full CSL formatting and bibliography workflows remain in progress. Approximate formatters are explicitly named as such. |
-| Distribution | Platform install packages, update behavior and accessibility remain to be completed and verified. |
+| Note storage | Unicode filenames, exclusive creation, atomic saving, read/delete/list and failure propagation pass on macOS, Windows and Linux CI. |
+| Native interface | Rich-text rendering, input, headings, marks, lists, alignment, selection, IME, reference cards and emoji shaping are tested. Autosave, themes, resizable sidebar, repeat search, file export and safe legacy import are wired. The library panel supports search, collection filtering, citation insertion/editing and undo. Logical-pixel and device-safe-area layout keep controls and IME within the usable mobile area. RTL/bidi text uses the plain layout; full rich bidi layout and Unicode line-breaking rules remain. |
+| Browser | Actual Emscripten/Chrome integration tests cover IME, Unicode, IndexedDB save/reload and failures, navigation cancellation, real system clipboard, JSON download, file chooser import and the citation workflow. Safari/Firefox and mobile browser device validation remain. |
+| Windows / Linux | Full desktop builds, C tests and dummy-video application startup pass in GitHub Actions. Interactive OS-specific input and install-package validation remain. |
+| Android | Release/debug APKs, two native ABIs and font resources pass CI. The C application actually launches and renders on an Android emulator. Physical-device input, lifecycle and file-provider interaction still need validation. |
+| iOS | Unsigned simulator/device bundles compile; the C app actually launches and renders on a GitHub-hosted iPhone simulator. New UIKit import/export bridges also link in complete local device/simulator builds. Actual file-picker/provider interactions and hardware validation remain. |
+| Zotero | CSL JSON and read-only modern/legacy SQLite import, structured bibliographic fields, collection queries, cross-library identities, citation insertion/editing and undo are tested. Citation blocks retain their CSL metadata snapshot. Explicitly approximate APA/IEEE/GB/T bibliography synchronization is available; a full CSL processor is still required. |
+| Distribution | Desktop preview archives include fonts and notices; the extracted macOS arm64 bundle passes startup independently of the build directory. Windows/Linux archive checks are in CI. Mobile artifacts remain unsigned, and signing, update behavior and accessibility remain to be completed and verified. |
 
 The six-platform objective is not satisfied by compilation on one host. Final
 acceptance requires platform builds and runtime checks, editing/formatting
@@ -73,8 +105,37 @@ Build details and reproducible platform checks:
 - [Android](platform/android/README.md)
 - [iOS](platform/ios/README.md)
 
-The C editor workflow includes desktop, sanitizer, browser, Android and iOS
-jobs. Merely adding those jobs does not establish that a GitHub run has passed.
+The baseline at commit `20af8839ef7d302c88b50913fef66b343d98db0a` passed all
+desktop, sanitizer, browser, Android and iOS jobs in
+[run 43606135066](https://github.com/banana815/editor/actions/runs/43606135066).
+Android and iOS results include a success marker from the C application and a
+complete rendered screenshot. This is evidence for that commit's startup;
+later feature changes need their own checks, and startup alone does not verify
+complete mobile usability or feature parity.
+
+The **文献** button opens the library panel. Import CSL JSON on any platform,
+or select a SQLite database. Desktop SQLite reads use the original path and a
+read-only transaction so committed WAL data remains visible. Browser/mobile
+single-file SQLite imports use a bounded, read-only memory snapshot and reject
+WAL-mode main files because their separate journal may contain newer data;
+export CSL JSON or a standalone SQLite backup in that case. Failed imports
+retain the current library and note. Select a document, set page/excerpt, then
+insert; use the current-citation view to edit it. Bibliography buttons explicitly
+say **近似** until a standards processor is integrated.
+
+The imported library is cached only in the application's own
+`.notelab-library/library.json` beneath its notes directory. Restart restores
+items, collections and CSL metadata. No external Zotero directory is scanned
+automatically. A damaged cache remains untouched, with a visible warning;
+failed saves retain the imported library in memory and offer a retry. Browser
+success is reported only after the persistent-storage flush completes.
+
+SQLite field mappings follow Zotero data schema version 45 at commit
+`b86c79b56479cadac3288e1f122cf34ef04e8809`; `tools/generate_zotero_mapping.py`
+regenerates the C lookup data from that schema. Raw fields/creator metadata are
+retained in the generated CSL object's `custom.zotero` property. Advanced date
+interpretation, name particles and CSL overrides in Zotero's Extra field still
+need compatibility work.
 
 The SQLite importer is also tested as actual WebAssembly code, including
 modern/legacy database fixtures and failure rollback:

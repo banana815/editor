@@ -37,6 +37,12 @@ EM_JS(int, download_json, (const char *filename, const char *data), {
         return 0;
     }
 });
+#elif defined(SDL_PLATFORM_IOS)
+void platform_export_ios_begin(SDL_Window *window, PlatformExport *job,
+                               const char *filename, const char *json);
+void platform_export_ios_complete(PlatformExport *job, PlatformExportStatus status, const char *message) {
+    completed(job, status, message);
+}
 #else
 static const SDL_DialogFileFilter filters[] = {{"JSON document", "json"}};
 
@@ -97,6 +103,8 @@ PlatformExport *platform_export_json(SDL_Window *window, const char *filename, c
     if (download_json(job->filename, job->data))
         completed(job, PLATFORM_EXPORT_DONE, "已请求下载 JSON 文档");
     else completed(job, PLATFORM_EXPORT_FAILED, "无法开始下载 JSON 文档");
+#elif defined(SDL_PLATFORM_IOS)
+    platform_export_ios_begin(window, job, job->filename, job->data);
 #else
     SDL_ShowSaveFileDialog(selected_file, job, window, filters, 1, job->filename);
 #endif
