@@ -25,12 +25,12 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
-      - name: Configure the independent C module
-        run: cmake -S c-editor/csl -B c-editor/build-csl -DCMAKE_BUILD_TYPE=Debug
+      - name: Configure the independent C module with release optimizations
+        run: cmake -S c-editor/csl -B c-editor/build-csl -DCMAKE_BUILD_TYPE=Release
       - name: Compile and test
         run: |
-          cmake --build c-editor/build-csl --config Debug --parallel 4
-          ctest --test-dir c-editor/build-csl -C Debug --output-on-failure
+          cmake --build c-editor/build-csl --config Release --parallel 4
+          ctest --test-dir c-editor/build-csl -C Release --output-on-failure
       - name: Preserve test results
         if: always()
         uses: actions/upload-artifact@v4

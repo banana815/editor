@@ -393,7 +393,7 @@ static bool text_leaf(CeCslEvaluation *e, CeCslEvalNode *n) {
 static bool number_leaf(CeCslEvaluation *e, CeCslEvalNode *n) {
     const CeCslXmlNode *source = n->info.occurrence.source;
     const char *variable = attr(source, "variable");
-    CeCslNumberForm form;
+    CeCslNumberForm form = CE_CSL_NUMBER_NUMERIC;
     if (!variable || !numeric_form(e, attr(source, "form"), &form) ||
         !uses_allocate(e, n, 1) || !bind(e, n, 0, variable, CE_CSL_VARIABLE_LONG)) return false;
     CeCslVariableValue *v = &n->uses[0].public.value;
