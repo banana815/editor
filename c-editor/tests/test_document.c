@@ -15,6 +15,47 @@ static CeDocument *load(const char *s, CeFormat f) {
     }
     return d;
 }
+static void exact_metadata_is(const CeDocument *d) {
+    char *json=ce_document_export_json(d),*block=ce_document_block_json(d,0);
+    assert(json && block);
+    /* Match decimal spellings as well as parsed values: cJSON_Compare itself
+     * treats some neighboring large integers as equal. */
+    assert(strstr(json,"\"rootNumber\":4503599627370501"));
+    assert(strstr(json,"\"nested\":[-4503599627370501,9007199254740991]"));
+    assert(strstr(block,"\"nodeNumber\":4503599627370501"));
+    cJSON *tree=cJSON_Parse(json); assert(tree);
+    assert(cJSON_GetObjectItemCaseSensitive(tree,"rootNumber")->valuedouble==4503599627370501.0);
+    cJSON *attrs=cJSON_GetObjectItemCaseSensitive(tree,"attrs");
+    cJSON *nested=cJSON_GetObjectItemCaseSensitive(attrs,"nested");
+    assert(cJSON_GetArrayItem(nested,0)->valuedouble==-4503599627370501.0);
+    assert(cJSON_GetArrayItem(nested,1)->valuedouble==9007199254740991.0);
+    cJSON_Delete(tree); free(json); free(block);
+}
+static void test_exact_unknown_integers(void) {
+    /* This covers already representable safe integers. It does not promise
+     * recovery of unsafe integers/decimal tokens rounded by initial import. */
+    const char *source="{\"type\":\"doc\",\"rootNumber\":4503599627370501,"
+        "\"attrs\":{\"nested\":[-4503599627370501,9007199254740991]},"
+        "\"content\":[{\"type\":\"paragraph\",\"attrs\":{\"nodeNumber\":4503599627370501},"
+        "\"content\":[{\"type\":\"text\",\"text\":\"Original\"}]}]}";
+    CeDocument *d=load(source,CE_FORMAT_JSON); exact_metadata_is(d);
+    char *before=ce_document_export_json(d); assert(before);
+    CeDocument *round=load(before,CE_FORMAT_JSON); exact_metadata_is(round);
+    char *again=ce_document_export_json(round); assert(again && !strcmp(before,again));
+    free(again); ce_document_free(round);
+    assert(ce_document_insert(d,ce_document_length(d)," edited")); exact_metadata_is(d);
+    assert(ce_document_is_modified(d));
+    assert(ce_document_undo(d)); exact_metadata_is(d);
+    assert(!ce_document_is_modified(d));
+    again=ce_document_export_json(d); assert(again && !strcmp(before,again)); free(again);
+    assert(ce_document_redo(d)); exact_metadata_is(d);
+    assert(!strcmp(ce_document_text(d),"Original edited"));
+    assert(ce_document_apply_json(d,before)); exact_metadata_is(d);
+    assert(!ce_document_is_modified(d));
+    assert(ce_document_undo(d)); exact_metadata_is(d);
+    assert(!strcmp(ce_document_text(d),"Original edited"));
+    free(before); ce_document_free(d);
+}
 static void test_edit(void) {
     CeDocument *d = load("你好 world\nsecond", CE_FORMAT_TEXT);
     assert(ce_document_length(d) == 19);
@@ -150,6 +191,105 @@ static void test_citation_identity(void) {
     free(json); free(after);
     assert(!ce_document_is_modified(d));
     ce_document_free(d);
+}
+static void test_citation_html_metadata(void) {
+    const char *html = "<html><body>\n<div data-type=\"notelabDocument\" data-citation-profile=\"apa&amp;&quot;&lt;&gt;&#39;\" "
+        "data-citation-locale=\"zh-CN\"><p>Editable 中文</p><div data-type=\"zoteroCitationBlock\" citationid=\"c1\" "
+        "data-library-id=\"9007199254740993\" data-source-id=\"来源/1\" data-csl-json=\"{&quot;title&quot;:&quot;原文&quot;}\" "
+        "data-csl-render-json=\"{&quot;html&quot;:&quot;&lt;script&gt;bad&lt;/script&gt;&amp;&quot;,&quot;future&quot;:1}\"></div>"
+        "<div data-type=\"zoteroEndnoteSection\" style=\"apa\" entriesjson=\"[]\" data-bibliography-mode=\"citations\" "
+        "data-csl-render-json=\"opaque &lt;em&gt;文字&lt;/em&gt; &amp; &quot; &#39; {broken\"></div></div>\n</body></html>";
+    CeDocument *d=load(html,CE_FORMAT_HTML); char *json=ce_document_export_json(d); assert(json);
+    cJSON *tree=cJSON_Parse(json); assert(tree);
+    cJSON *attrs=cJSON_GetObjectItemCaseSensitive(tree,"attrs");
+    assert(!strcmp(cJSON_GetObjectItemCaseSensitive(attrs,"citationProfile")->valuestring,"apa&\"<>'"));
+    assert(!strcmp(cJSON_GetObjectItemCaseSensitive(attrs,"citationLocale")->valuestring,"zh-CN"));
+    cJSON *content=cJSON_GetObjectItemCaseSensitive(tree,"content");
+    attrs=cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(content,1),"attrs");
+    assert(!strcmp(cJSON_GetObjectItemCaseSensitive(attrs,"cslRenderJson")->valuestring,
+        "{\"html\":\"<script>bad</script>&\",\"future\":1}"));
+    assert(!strcmp(cJSON_GetObjectItemCaseSensitive(attrs,"libraryId")->valuestring,"9007199254740993"));
+    attrs=cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(content,2),"attrs");
+    assert(!strcmp(cJSON_GetObjectItemCaseSensitive(attrs,"bibliographyMode")->valuestring,"citations"));
+    assert(!strcmp(cJSON_GetObjectItemCaseSensitive(attrs,"cslRenderJson")->valuestring,"opaque <em>文字</em> & \" ' {broken"));
+    cJSON_Delete(tree);
+    char *exported=ce_document_export_html(d); assert(exported && !strncmp(exported,"<div data-type=\"notelabDocument\"",32));
+    assert(strstr(exported,"data-csl-render-json=") && !strstr(exported,"<script>") && !strstr(exported,"<em>文字"));
+    assert(strstr(exported,"data-bibliography-mode=\"citations\""));
+    assert(strstr(exported,"data-citation-profile=\"apa&amp;&quot;&lt;&gt;&#39;\""));
+    CeDocument *round=load(exported,CE_FORMAT_HTML); char *after=ce_document_export_json(round);
+    assert(after && !strcmp(json,after)); free(after); ce_document_free(round);
+    after=ce_document_export_json(d); assert(after && !strcmp(json,after)); free(after);
+    free(json); free(exported); ce_document_free(d);
+    d=load("<div data-type='notelabDocument' data-citation-locale=''><div data-type='zoteroEndnoteSection' "
+        "data-csl-render-json=''></div></div>",CE_FORMAT_HTML);
+    exported=ce_document_export_html(d); assert(exported && strstr(exported,"data-citation-locale=\"\"") &&
+        strstr(exported,"data-csl-render-json=\"\"") && !strstr(exported,"data-citation-profile") &&
+        !strstr(exported,"bibliography-mode"));
+    json=ce_document_export_json(d); assert(json && !strstr(json,"bibliographyMode"));
+    free(json); free(exported); ce_document_free(d);
+    d=load("<p>legacy</p>",CE_FORMAT_HTML); exported=ce_document_export_html(d);
+    assert(exported && !strcmp(exported,"<p>legacy</p>")); free(exported); ce_document_free(d);
+    d=load("<div data-type='zoteroCitationBlock' citationId='legacy-html' data-citation-id='legacy-html' "
+        "endnoteNumber='1' data-endnote-number='1' sourceid='source' data-source-id='source' "
+        "libraryid='9007199254740993' data-library-id='9007199254740993' csljson='{}' data-csl-json='{}' "
+        "cslrenderjson='{}' data-csl-render-json='{}'></div>",CE_FORMAT_HTML);
+    json=ce_document_export_json(d); assert(json && strstr(json,"\"citationId\":\"legacy-html\"") &&
+        strstr(json,"\"endnoteNumber\":1") && strstr(json,"\"libraryId\":\"9007199254740993\"") &&
+        strstr(json,"\"cslJson\":\"{}\"") && strstr(json,"\"cslRenderJson\":\"{}\""));
+    exported=ce_document_export_html(d); round=load(exported,CE_FORMAT_HTML); after=ce_document_export_json(round);
+    assert(after && !strcmp(json,after)); free(after); free(json); free(exported); ce_document_free(round); ce_document_free(d);
+
+    const char *bad_html[]={
+        "<div data-type='notelabDocument'><div data-type='notelabDocument'></div></div>",
+        "<div data-type='notelabDocument'></div><div data-type='notelabDocument'></div>",
+        "<p>sibling</p><div data-type='notelabDocument'></div>",
+        "<ul><li><div data-type='notelabDocument'></div></li></ul>",
+        "<div data-type='zoteroCitationBlock'><div data-type='notelabDocument'></div></div>",
+        "<div data-type='notelabDocument' data-citation-profile='apa' unknown='keep'></div>",
+        "<div data-type='notelabDocument' data-citation-profile='apa' DATA-CITATION-PROFILE='ieee'></div>",
+        "<p data-citation-profile='apa'>x</p>", "<p data-csl-render-json='{}'>x</p>",
+        "<span data-type='notelabDocument' data-citation-profile='apa'></span>",
+        "<div data-type='zoteroCitationBlock' data-csl-render-json='{}' data-csl-render-json='{}'></div>",
+        "<div data-type='zoteroCitationBlock' data-csl-render-json='{}' cslrenderjson='[]'></div>",
+        "<div data-type='zoteroCitationBlock' data-source-id='a' sourceid='b'></div>",
+        "<div data-type='zoteroCitationBlock' citationid='a' data-citation-id='b'></div>",
+        "<div data-type='zoteroEndnoteSection' data-csl-render-json='{}' unknown='keep'></div>",
+        "<p data-bibliography-mode='citations'>x</p>",
+        "<div data-type='zoteroCitationBlock' data-bibliography-mode='citations'></div>",
+        "<div data-type='notelabDocument' data-bibliography-mode='citations'></div>",
+        "<div data-type='zoteroEndnoteSection' data-bibliography-mode='future'></div>",
+        "<div data-type='zoteroEndnoteSection' data-bibliography-mode=''></div>",
+        "<div data-type='zoteroEndnoteSection' data-bibliography-mode='citations' DATA-BIBLIOGRAPHY-MODE='citations'></div>",
+        "<div data-type='zoteroEndnoteSection' data-bibliography-mode='citations' unknown='keep'></div>"};
+    d=load("Original",CE_FORMAT_TEXT); assert(ce_document_insert(d,8," saved")); ce_document_mark_saved(d);
+    assert(ce_document_insert(d,ce_document_length(d)," redo") && ce_document_undo(d));
+    json=ce_document_export_json(d); const char *borrowed=ce_document_text(d); char error[256];
+    for(size_t i=0;i<sizeof(bad_html)/sizeof(*bad_html);++i) {
+        assert(!ce_document_import(d,bad_html[i],CE_FORMAT_HTML,error,sizeof(error)) && error[0]);
+        after=ce_document_export_json(d); assert(after && !strcmp(after,json)); free(after);
+        assert(ce_document_text(d)==borrowed && !ce_document_is_modified(d) && ce_document_can_undo(d) && ce_document_can_redo(d));
+    }
+    free(json); ce_document_free(d);
+    const char *bad_json[]={
+        "{\"type\":\"doc\",\"attrs\":{\"citationProfile\":1}}",
+        "{\"type\":\"doc\",\"attrs\":{\"citationLocale\":null}}",
+        "{\"type\":\"doc\",\"attrs\":{\"citationProfile\":\"apa\",\"unknown\":{\"keep\":1}}}",
+        "{\"type\":\"doc\",\"attrs\":{\"citationProfile\":\"apa\",\"citationProfile\":\"ieee\"}}",
+        "{\"type\":\"doc\",\"content\":[{\"type\":\"doc\",\"attrs\":{\"citationProfile\":\"apa\"}}]}",
+        "{\"type\":\"doc\",\"content\":[{\"type\":\"zoteroCitationBlock\",\"attrs\":{\"cslRenderJson\":{}}}]}",
+        "{\"type\":\"doc\",\"content\":[{\"type\":\"zoteroEndnoteSection\",\"attrs\":{\"cslRenderJson\":1}}]}",
+        "{\"type\":\"doc\",\"content\":[{\"type\":\"zoteroCitationBlock\",\"attrs\":{\"cslRenderJson\":\"{}\",\"future\":[1,2]}}]}",
+        "{\"type\":\"doc\",\"content\":[{\"type\":\"zoteroEndnoteSection\",\"attrs\":{\"bibliographyMode\":1}}]}",
+        "{\"type\":\"doc\",\"content\":[{\"type\":\"zoteroEndnoteSection\",\"attrs\":{\"bibliographyMode\":null}}]}",
+        "{\"type\":\"doc\",\"content\":[{\"type\":\"zoteroEndnoteSection\",\"attrs\":{\"bibliographyMode\":\"future\"}}]}",
+        "{\"type\":\"doc\",\"content\":[{\"type\":\"zoteroCitationBlock\",\"attrs\":{\"bibliographyMode\":\"citations\"}}]}"};
+    for(size_t i=0;i<sizeof(bad_json)/sizeof(*bad_json);++i) {
+        d=load(bad_json[i],CE_FORMAT_JSON); json=ce_document_export_json(d);
+        assert(!ce_document_export_html(d) && *ce_document_error(d));
+        after=ce_document_export_json(d); assert(after && !strcmp(json,after) && !ce_document_is_modified(d));
+        free(json); free(after); ce_document_free(d);
+    }
 }
 static void test_search_history(void) {
     CeDocument *d = load("One one 中文 one", CE_FORMAT_TEXT);
@@ -501,11 +641,13 @@ static void test_document_json_transaction_oom(void) {
     ce_document_free(d); assert(!transaction_live); cJSON_InitHooks(NULL);
 }
 int main(void) {
+    test_exact_unknown_integers();
     test_edit();
     test_format();
     test_migration();
     test_unknown_json();
     test_citation_identity();
+    test_citation_html_metadata();
     test_search_history();
     test_lists_and_random_edits();
     test_clear_and_alignment();

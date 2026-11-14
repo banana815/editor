@@ -1,5 +1,7 @@
 #include "zotero.h"
 #include "cJSON.h"
+#include "csl_json.h"
+#include "csl_date.h"
 #include <inttypes.h>
 #include <errno.h>
 #include <limits.h>
@@ -58,7 +60,7 @@ static char *copy_string(const char *source) {
 /* Public results and library fields have a free() ownership contract. cJSON
  * hooks may allocate from an unrelated arena, so never expose its print buffer. */
 static char *print_json_owned(const cJSON *object) {
-    char *printed = cJSON_PrintUnformatted(object);
+    char *printed = ce_csl_json_print_exact_with_limit(object,128u*1024u*1024u);
     if (!printed) return NULL;
     char *owned = copy_string(printed);
     cJSON_free(printed);
@@ -1192,9 +1194,22 @@ static const char *creator_mapping(const char *role, const char *type) {
     return mapping && !strcmp(role, mapping->primary) ? "author" : NULL;
 }
 
+static bool iso_interval_candidate(const char *value) {
+    /* Recognize an ISO-shaped year before a slash, not M/D/YYYY. A candidate
+     * that fails the shared strict parser must not silently become its first
+     * sortable date. No natural-language date parsing is attempted here. */
+    if (!strchr(value,'/')) return false;
+    if (!strncmp(value,"../",3)) return true;
+    size_t i = value[0]=='-' ? 1 : 0;
+    for (size_t digit = 0; digit < 4; ++digit)
+        if (!ascii_digit((unsigned char)value[i++])) return false;
+    return value[i]=='-' || value[i]=='/';
+}
 static cJSON *metadata_date(const char *value) {
     cJSON *date = cJSON_CreateObject();
     size_t len = strlen(value), date_len = len;
+    bool multipart = len > 10 && value[10] == ' ';
+    if (!date) return NULL;
     if (len > 10 && (value[10] == ' ' || value[10] == 'T')) date_len = 10;
     bool iso = date_len == 4 || date_len == 7 || date_len == 10;
     for (size_t i = 0; iso && i < date_len; ++i)
@@ -1203,13 +1218,42 @@ static cJSON *metadata_date(const char *value) {
     int year = iso ? (value[0]-'0')*1000+(value[1]-'0')*100+(value[2]-'0')*10+value[3]-'0' : 0;
     int month = iso && date_len >= 7 ? (value[5]-'0')*10+value[6]-'0' : 0;
     int day = iso && date_len == 10 ? (value[8]-'0')*10+value[9]-'0' : 0;
+    int part_count = date_len == 4 ? 1 : date_len == 7 ? 2 : 3;
     static const int month_days[] = {0,31,28,31,30,31,30,31,31,30,31,30,31};
-    iso = iso && year > 0 && (date_len < 7 || (month >= 1 && month <= 12));
-    if (iso && date_len == 10) {
+    /* Zotero's SQLite multipart prefix is a sortable YYYY-MM-DD, with zero
+     * month/day denoting missing precision, followed by the original user text.
+     * These zeros are not accepted in bare ISO dates or T-separated timestamps.
+     * Source: zotero/utilities date.js, strToMultipart/multipartToSQL, pinned
+     * 4051881d59c6c12d34417d4c226f37218051be90. */
+    bool partial = multipart && date_len == 10 && day == 0;
+    iso = iso && year > 0 && (date_len < 7 || (month >= 1 && month <= 12) ||
+                            (partial && month == 0));
+    if (iso && partial)
+        part_count = month ? 2 : 1;
+    else if (iso && date_len == 10) {
         int days = month_days[month] + (month == 2 && year%4 == 0 && (year%100 != 0 || year%400 == 0));
         iso = day >= 1 && day <= days;
     }
-    if (!date) return NULL;
+    if (iso && multipart && iso_interval_candidate(value+11)) {
+        cJSON raw = {.type=cJSON_String,.string=(char *)"raw",.valuestring=(char *)(value+11)};
+        cJSON candidate = {.type=cJSON_Object,.child=&raw};
+        CeCslDateValueView view;
+        const char *retained = value;
+        bool valid = ce_csl_date_value_view(&candidate,&view,NULL,0) && view.endpoint_count==2;
+        for (size_t i = 0; valid && i < view.endpoint_count; ++i) {
+            const CeCslDateEndpointView *end = &view.endpoints[i];
+            if (end->season) { valid = false; break; }
+            if (end->month && end->day) {
+                unsigned days = (unsigned)month_days[end->month] +
+                    (end->month==2 && end->year%4==0 && (end->year%100!=0 || end->year%400==0));
+                valid = end->day <= days;
+            }
+        }
+        if (valid)
+            retained = value+11;
+        if (cJSON_AddStringToObject(date,"raw",retained)) return date;
+        cJSON_Delete(date); return NULL;
+    }
     if (!iso) {
         /* Retain non-ISO dates for the CSL processor's date parser. The original
          * field is also retained verbatim in custom.zotero.fields. */
@@ -1217,7 +1261,7 @@ static cJSON *metadata_date(const char *value) {
     } else {
         int parts[] = {year, month, day};
         cJSON *array = cJSON_AddArrayToObject(date, "date-parts");
-        cJSON *row = cJSON_CreateIntArray(parts, date_len == 4 ? 1 : date_len == 7 ? 2 : 3);
+        cJSON *row = cJSON_CreateIntArray(parts, part_count);
         if (array && row && cJSON_AddItemToArray(array, row)) return date;
         cJSON_Delete(row);
     }

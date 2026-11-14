@@ -345,11 +345,23 @@ static void test_json_allocator_contract(void) {
     assert(!json_live_allocations);
     cJSON_InitHooks(NULL);
 }
+static void test_metadata_number_precision(void) {
+    CeDocument *doc=ce_document_new(); assert(doc);
+    OK(ce_document_import(doc,"{\"type\":\"doc\",\"attrs\":{\"unknown\":4503599627370501},\"content\":[{\"type\":\"paragraph\"}]}",CE_FORMAT_JSON,error,sizeof error));
+    CeZoteroItem item={0}; item.id="exact"; item.title="Exact metadata";
+    char *id=NULL; OK(ce_citation_insert(doc,0,&item,"","",&id,error,sizeof error));
+    for(int step=0;step<3;step++) {
+        char *json=ce_document_export_json(doc); assert(json && strstr(json,"4503599627370501")); free(json);
+        if(step==0) OK(ce_citation_update(doc,id,"2","quote",error,sizeof error));
+        if(step==1) OK(ce_citations_sync_approximate(doc,CE_ZOTERO_APPROXIMATE_APA,NULL,error,sizeof error));
+    }
+    free(id); ce_document_free(doc);
+}
 int main(void) {
     test_insert_and_update(); test_insert_validation_and_history();
     test_sync_numbering_identity_and_repairs(); test_known_source_metadata();
     test_metadata_preservation_and_escaping(); test_remove_old_sections_without_citations();
     test_sync_reorder_styles_and_extra_sections(); test_failures_are_atomic();
-    test_json_allocator_contract();
+    test_json_allocator_contract(); test_metadata_number_precision();
     puts("citation insertion, editing and explicit approximate bibliography tests passed"); return 0;
 }

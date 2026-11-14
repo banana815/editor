@@ -58,7 +58,12 @@ static void *fault_realloc(void *memory, size_t size) {
 #undef realloc
 #undef free
 
-typedef enum Operation { APPLY, APPLY_EMPTY, UNDO, REDO } Operation;
+typedef enum Operation { APPLY, APPLY_EMPTY, UNDO, REDO, IMPORT_METADATA } Operation;
+static const char *metadata_html =
+    "<div data-type=\"notelabDocument\" data-citation-profile=\"apa\" data-citation-locale=\"zh-CN\">"
+    "<div data-type=\"zoteroCitationBlock\" citationid=\"c1\" data-library-id=\"9007199254740993\" "
+    "data-csl-json=\"{&quot;id&quot;:&quot;a&quot;}\" data-csl-render-json=\"{&quot;html&quot;:&quot;&lt;em&gt;x&lt;/em&gt;&quot;}\"></div>"
+    "<div data-type=\"zoteroEndnoteSection\" style=\"apa\" entriesjson=\"[]\" data-csl-render-json=\"{}\" data-bibliography-mode=\"citations\"></div></div>";
 static const char *replacement =
     "{\"type\":\"doc\",\"content\":[{\"type\":\"heading\",\"attrs\":{\"level\":2},"
     "\"content\":[{\"type\":\"text\",\"text\":\"Replacement text\",\"marks\":[{\"type\":\"bold\"}]}]},"
@@ -96,6 +101,7 @@ static bool invoke(CeDocument *d, Operation operation) {
         case APPLY_EMPTY: return ce_document_apply_json(d,"{\"doc\":{\"type\":\"doc\"}}");
         case UNDO: return ce_document_undo(d);
         case REDO: return ce_document_redo(d);
+        case IMPORT_METADATA: return ce_document_import(d,metadata_html,CE_FORMAT_HTML,NULL,0);
     }
     return false;
 }
@@ -133,9 +139,47 @@ static void sweep(Operation operation, bool large_undo) {
     printf("document operation %d%s: %zu sticky allocation failures, %zu repeated failures, %zu paths reaching index allocation passed\n",
         operation,large_undo?" (large history)":"",calls,repeated,failed_realloc);
 }
+static void sweep_metadata_export(void) {
+    char error[256]; CeDocument *d=ce_document_new(); assert(d);
+    assert(ce_document_import(d,metadata_html,CE_FORMAT_HTML,error,sizeof(error)));
+    char *before=ce_document_export_json(d); assert(before); const char *text=ce_document_text(d);
+    fault_calls=0; char *expected=ce_document_export_html(d); assert(expected); size_t calls=fault_calls;
+    for(size_t failure=1;failure<=calls;++failure) {
+        size_t live=fault_live,bytes=fault_bytes; fault_calls=fault_rejected=0; fault_at=failure;
+        char *result=ce_document_export_html(d); fault_at=0;
+        assert(!result && fault_rejected && fault_live==live && fault_bytes==bytes);
+        assert(ce_document_text(d)==text && !ce_document_is_modified(d));
+        char *after=ce_document_export_json(d),*html=ce_document_export_html(d);
+        assert(after && html && !strcmp(before,after) && !strcmp(expected,html)); fault_free(after); fault_free(html);
+    }
+    fault_free(before); fault_free(expected); ce_document_free(d); assert(!fault_live && !fault_bytes);
+    printf("document metadata HTML export: %zu sticky allocation failures passed\n",calls);
+}
+static void sweep_exact_json_export(void) {
+    const char *source="{\"type\":\"doc\",\"custom\":4503599627370501,"
+        "\"content\":[{\"type\":\"paragraph\",\"attrs\":{\"custom\":-4503599627370501},"
+        "\"content\":[{\"type\":\"text\",\"text\":\"Original\"}]}]}";
+    CeDocument *d=ce_document_new(); assert(d);
+    assert(ce_document_import(d,source,CE_FORMAT_JSON,NULL,0));
+    fault_calls=0; char *before=ce_document_export_json(d); assert(before);
+    size_t calls=fault_calls; const char *text=ce_document_text(d);
+    assert(strstr(before,"\"custom\":4503599627370501") && strstr(before,"\"custom\":-4503599627370501"));
+    for(size_t failure=1;failure<=calls;++failure) {
+        size_t live=fault_live,bytes=fault_bytes;
+        fault_calls=fault_rejected=0; fault_at=failure;
+        char *result=ce_document_export_json(d); fault_at=0;
+        assert(!result && fault_rejected && fault_live==live && fault_bytes==bytes);
+        assert(ce_document_text(d)==text && !ce_document_is_modified(d));
+        assert(!ce_document_can_undo(d) && !ce_document_can_redo(d));
+        char *after=ce_document_export_json(d); assert(after && !strcmp(before,after)); fault_free(after);
+    }
+    fault_free(before); ce_document_free(d); assert(!fault_live && !fault_bytes);
+    printf("document exact-integer JSON export: %zu sticky allocation failures passed\n",calls);
+}
 int main(void) {
     cJSON_Hooks hooks={fault_malloc,fault_free};cJSON_InitHooks(&hooks);
     sweep(APPLY,false);sweep(APPLY_EMPTY,false);sweep(UNDO,false);sweep(REDO,false);sweep(UNDO,true);
+    sweep(IMPORT_METADATA,false);sweep_metadata_export();sweep_exact_json_export();
     cJSON_InitHooks(NULL);
     puts("document apply/undo/redo retain content, borrowed indexes, histories and savepoint under persistent OOM");return 0;
 }

@@ -1,5 +1,6 @@
 #include "document.h"
 #include "cJSON.h"
+#include "csl_json.h"
 #include <ctype.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -44,7 +45,7 @@ static char *copy_n(const char *s, size_t n) {
 }
 static char *copy(const char *s) { return copy_n(s ? s : "", strlen(s ? s : "")); }
 static char *print_owned(const cJSON *value) {
-    char *printed=cJSON_PrintUnformatted(value);
+    char *printed=ce_csl_json_print_exact_with_limit(value,128u*1024u*1024u);
     char *owned=printed?copy(printed):NULL;
     cJSON_free(printed);
     return owned;
@@ -94,15 +95,22 @@ static void set(cJSON *j, const char *k, cJSON *v) {
 static void setstr(cJSON *j, const char *k, const char *v) { set(j, k, cJSON_CreateString(v)); }
 static cJSON *node(const char *t) {
     cJSON *j = cJSON_CreateObject();
-    if (j)
-        cJSON_AddStringToObject(j, "type", t);
+    if (j && !cJSON_AddStringToObject(j, "type", t)) {
+        cJSON_Delete(j);
+        return NULL;
+    }
     return j;
 }
 static cJSON *array(cJSON *j) {
+    if (!j)
+        return NULL;
     cJSON *a = field(j, "content");
     if (!a) {
         a = cJSON_CreateArray();
-        cJSON_AddItemToObject(j, "content", a);
+        if (!a || !cJSON_AddItemToObject(j, "content", a)) {
+            cJSON_Delete(a);
+            return NULL;
+        }
     }
     return a;
 }
@@ -1287,6 +1295,8 @@ static bool blank(const char *s) {
 static cJSON *html_tree(CeDocument *d, const char *s) {
     cJSON *root = node("html-root"), *stack[CE_DEPTH + 1];
     unsigned depth = 0;
+    if (!root)
+        goto memory;
     stack[0] = root;
     const char *p = s;
     while (*p) {
@@ -1298,9 +1308,13 @@ static cJSON *html_tree(CeDocument *d, const char *s) {
             if (!t)
                 goto memory;
             cJSON *n = node("#text");
-            cJSON_AddStringToObject(n, "text", t);
+            bool ok = n && cJSON_AddStringToObject(n, "text", t) &&
+                cJSON_AddItemToArray(array(stack[depth]), n);
             free(t);
-            cJSON_AddItemToArray(array(stack[depth]), n);
+            if (!ok) {
+                cJSON_Delete(n);
+                goto memory;
+            }
             continue;
         }
         if (!strncmp(p, "<!--", 4)) {
@@ -1334,7 +1348,11 @@ static cJSON *html_tree(CeDocument *d, const char *s) {
         cJSON *n = node(tag);
         free(tag);
         cJSON *attrs = cJSON_CreateObject();
-        cJSON_AddItemToObject(n, "attrs", attrs);
+        if (!n || !attrs || !cJSON_AddItemToObject(n, "attrs", attrs)) {
+            cJSON_Delete(n);
+            cJSON_Delete(attrs);
+            goto memory;
+        }
         bool self = false;
         for (;;) {
             space(&p);
@@ -1349,6 +1367,11 @@ static cJSON *html_tree(CeDocument *d, const char *s) {
             }
             char *key = name_token(&p);
             if (!key) {
+                cJSON_Delete(n);
+                goto malformed;
+            }
+            if (field(attrs, key)) {
+                free(key);
                 cJSON_Delete(n);
                 goto malformed;
             }
@@ -1382,11 +1405,18 @@ static cJSON *html_tree(CeDocument *d, const char *s) {
                 cJSON_Delete(n);
                 goto memory;
             }
-            setstr(attrs, key, v);
+            bool added = cJSON_AddStringToObject(attrs, key, v) != NULL;
             free(key);
             free(v);
+            if (!added) {
+                cJSON_Delete(n);
+                goto memory;
+            }
         }
-        cJSON_AddItemToArray(array(stack[depth]), n);
+        if (!cJSON_AddItemToArray(array(stack[depth]), n)) {
+            cJSON_Delete(n);
+            goto memory;
+        }
         if (!strcmp(type(n), "br"))
             self = true;
         if (!self) {
@@ -1543,6 +1573,50 @@ static bool html_inlines(CeDocument *d, cJSON *h, cJSON *out, cJSON *marks, unsi
 static const char *citation_keys[] = {"citationId", "endnoteNumber", "itemKey", "itemUri",
                                       "pdfUri",     "title",         "author",  "year",
                                       "citeKey",    "page",          "note"};
+static bool keys_supported(cJSON *obj, const char *allowed);
+/* A document wrapper may only occupy the sole meaningful top-level position.
+ * html/body shells and surrounding whitespace are transparent. The full walk
+ * also rejects hidden nested wrappers inside atomic nodes whose content is
+ * otherwise intentionally ignored by the editable exchange importer. */
+static bool html_document_wrapper(CeDocument *d, cJSON *h, bool root_position, cJSON **wrapper) {
+    cJSON *attrs = field(h, "attrs"), *children = field(h, "content"), *child;
+    const char *tag = type(h), *kind = str(attrs, "data-type");
+    bool is_wrapper = !strcmp(kind, "notelabDocument");
+    bool atom = !strcmp(tag, "div") && (!strcmp(kind, "zoteroCitationBlock") || !strcmp(kind, "zoteroEndnoteSection"));
+    if (is_wrapper) {
+        if (!root_position || *wrapper || strcmp(tag, "div") ||
+            !keys_supported(attrs, "data-type|data-citation-profile|data-citation-locale"))
+            return fail(d, "Ambiguous, nested or unsupported HTML document metadata wrapper");
+        *wrapper = h;
+    } else if (field(attrs, "data-citation-profile") || field(attrs, "data-citation-locale"))
+        return fail(d, "Citation profile and locale belong only to the document wrapper");
+    if ((field(attrs, "data-csl-render-json") || field(attrs, "cslrenderjson")) && !atom)
+        return fail(d, "Citation render metadata belongs only to citation or endnote blocks");
+    if (field(attrs, "data-bibliography-mode") &&
+        (strcmp(tag, "div") || strcmp(kind, "zoteroEndnoteSection") ||
+         strcmp(str(attrs, "data-bibliography-mode"), "citations")))
+        return fail(d, "Unsupported bibliography mode or placement; original document was retained");
+    bool transparent = root_position && (!strcmp(tag, "html-root") || !strcmp(tag, "html") || !strcmp(tag, "body"));
+    size_t meaningful = 0;
+    cJSON_ArrayForEach(child, children)
+        if (strcmp(type(child), "#text") || !blank(str(child, "text")))
+            ++meaningful;
+    cJSON_ArrayForEach(child, children)
+        if (!html_document_wrapper(d, child, transparent && meaningful == 1, wrapper))
+            return false;
+    return true;
+}
+static bool optional_html_metadata(CeDocument *d, cJSON *source, cJSON *attrs,
+    const char *key, const char *html_key, const char *legacy_key) {
+    cJSON *value = field(source, html_key), *legacy = field(source, legacy_key);
+    if (value && legacy && !cJSON_Compare(value, legacy, true))
+        return fail(d, "Ambiguous duplicate citation metadata aliases");
+    if (!value)
+        value = legacy;
+    if (value && (!cJSON_IsString(value) || !cJSON_AddStringToObject(attrs, key, value->valuestring)))
+        return fail(d, "Out of memory while importing citation metadata");
+    return true;
+}
 static bool html_blocks(CeDocument *d, cJSON *h, cJSON *out, unsigned depth) {
     if (depth > CE_DEPTH)
         return fail(d, "HTML nesting is too deep");
@@ -1602,6 +1676,19 @@ static bool html_blocks(CeDocument *d, cJSON *h, cJSON *out, unsigned depth) {
                                      !strcmp(str(ha, "data-type"), "zoteroEndnoteSection"))) {
         n = node(str(ha, "data-type"));
         cJSON *attrs = cJSON_CreateObject();
+        if (!n || !attrs) {
+            cJSON_Delete(n); cJSON_Delete(attrs);
+            return fail(d, "Out of memory while importing citation metadata");
+        }
+        const char *allowed = istype(n, "zoteroCitationBlock") ?
+            "data-type|citationid|endnotenumber|itemkey|itemuri|pdfuri|title|author|year|citekey|page|note|"
+            "data-citation-id|data-endnote-number|sourceid|libraryid|csljson|data-source-id|data-library-id|data-csl-json|"
+            "data-csl-render-json|cslrenderjson" : "data-type|style|entriesjson|data-csl-render-json|cslrenderjson|data-bibliography-mode";
+        if (!keys_supported(ha, allowed)) {
+            cJSON_Delete(attrs); cJSON_Delete(n);
+            return fail(d, "Unknown citation HTML metadata requires JSON to avoid data loss");
+        }
+        bool metadata_ok = true;
         if (istype(n, "zoteroCitationBlock")) {
             for (size_t i = 0; i < sizeof citation_keys / sizeof *citation_keys; i++) {
                 char lowerkey[32];
@@ -1609,14 +1696,22 @@ static bool html_blocks(CeDocument *d, cJSON *h, cJSON *out, unsigned depth) {
                 for (char *p = lowerkey; *p; p++)
                     *p = (char)lower((unsigned char)*p);
                 const char *v = str(ha, lowerkey);
-                if (!strcmp(citation_keys[i], "citationId") && !*v)
-                    v = str(ha, "data-citation-id");
+                if (!strcmp(citation_keys[i], "citationId")) {
+                    if (field(ha, lowerkey) && field(ha, "data-citation-id") &&
+                        strcmp(str(ha, lowerkey), str(ha, "data-citation-id")))
+                        metadata_ok = false;
+                    if (!*v)
+                        v = str(ha, "data-citation-id");
+                }
                 if (!strcmp(citation_keys[i], "endnoteNumber")) {
+                    if (field(ha, lowerkey) && field(ha, "data-endnote-number") &&
+                        strcmp(str(ha, lowerkey), str(ha, "data-endnote-number")))
+                        metadata_ok = false;
                     if (!*v)
                         v = str(ha, "data-endnote-number");
-                    cJSON_AddNumberToObject(attrs, citation_keys[i], strtol(v, NULL, 10));
+                    metadata_ok = cJSON_AddNumberToObject(attrs, citation_keys[i], strtol(v, NULL, 10)) && metadata_ok;
                 } else
-                    cJSON_AddStringToObject(attrs, citation_keys[i], v);
+                    metadata_ok = cJSON_AddStringToObject(attrs, citation_keys[i], v) && metadata_ok;
             }
             /* Optional metadata stays absent when unknown. String IDs retain
              * all digits; cslJson retains the original bibliographic snapshot. */
@@ -1624,25 +1719,29 @@ static bool html_blocks(CeDocument *d, cJSON *h, cJSON *out, unsigned depth) {
             const char *html_keys[] = {"data-source-id", "data-library-id", "data-csl-json"};
             const char *legacy_keys[] = {"sourceid", "libraryid", "csljson"};
             for (size_t i = 0; i < sizeof identity_keys / sizeof *identity_keys; i++) {
-                cJSON *value = field(ha, html_keys[i]);
-                if (!value)
-                    value = field(ha, legacy_keys[i]);
-                if (cJSON_IsString(value) &&
-                    !cJSON_AddStringToObject(attrs, identity_keys[i], value->valuestring)) {
-                    cJSON_Delete(attrs);
-                    cJSON_Delete(n);
-                    return fail(d, "Out of memory while importing citation metadata");
-                }
+                if (!optional_html_metadata(d, ha, attrs, identity_keys[i], html_keys[i], legacy_keys[i]))
+                    metadata_ok = false;
             }
         } else {
-            cJSON_AddStringToObject(attrs, "style", *str(ha, "style") ? str(ha, "style") : "apa");
-            cJSON_AddStringToObject(attrs, "entriesJson",
-                                    *str(ha, "entriesjson") ? str(ha, "entriesjson") : "[]");
+            metadata_ok = cJSON_AddStringToObject(attrs, "style", *str(ha, "style") ? str(ha, "style") : "apa") &&
+                cJSON_AddStringToObject(attrs, "entriesJson", *str(ha, "entriesjson") ? str(ha, "entriesjson") : "[]");
+            if (field(ha, "data-bibliography-mode"))
+                metadata_ok = cJSON_AddStringToObject(attrs, "bibliographyMode", str(ha, "data-bibliography-mode")) && metadata_ok;
         }
-        cJSON_AddItemToObject(n, "attrs", attrs);
+        metadata_ok = optional_html_metadata(d, ha, attrs, "cslRenderJson", "data-csl-render-json", "cslrenderjson") && metadata_ok;
+        if (!metadata_ok || !cJSON_AddItemToObject(n, "attrs", attrs)) {
+            cJSON_Delete(attrs); cJSON_Delete(n);
+            if (!*d->error)
+                fail(d, "Invalid, ambiguous or unallocatable citation HTML metadata");
+            return false;
+        }
     } else
         return fail(d, "Unsupported block HTML tag; original document was retained");
-    return cJSON_AddItemToArray(out, n);
+    if (!cJSON_AddItemToArray(out, n)) {
+        cJSON_Delete(n);
+        return fail(d, "Out of memory importing HTML block");
+    }
+    return true;
 }
 static cJSON *plain_doc(const char *s) {
     cJSON *r = node("doc");
@@ -1715,11 +1814,36 @@ bool ce_document_import(CeDocument *d, const char *data, CeFormat f, char *error
         if (!html)
             goto bad;
         r = node("doc");
-        bool ok = html_blocks(d, html, array(r), 0);
+        cJSON *wrapper = NULL;
+        bool ok = r && html_document_wrapper(d, html, true, &wrapper);
+        if (ok && wrapper) {
+            cJSON *attrs = cJSON_CreateObject(), *source = field(wrapper, "attrs");
+            const char *keys[] = {"citationProfile", "citationLocale"};
+            const char *html_keys[] = {"data-citation-profile", "data-citation-locale"};
+            ok = attrs != NULL;
+            for (size_t i = 0; i < 2 && ok; ++i)
+                if (field(source, html_keys[i]))
+                    ok = cJSON_AddStringToObject(attrs, keys[i], str(source, html_keys[i])) != NULL;
+            if (ok && attrs->child) {
+                ok = cJSON_AddItemToObject(r, "attrs", attrs);
+                if (ok) attrs = NULL;
+            }
+            cJSON_Delete(attrs);
+        }
+        cJSON *out = ok ? array(r) : NULL;
+        ok = ok && out;
+        if (ok && wrapper) {
+            cJSON *child;
+            cJSON_ArrayForEach(child, field(wrapper, "content"))
+                if (ok) ok = html_blocks(d, child, out, 0);
+        } else if (ok)
+            ok = html_blocks(d, html, out, 0);
         cJSON_Delete(html);
         if (!ok) {
             cJSON_Delete(r);
             r = NULL;
+            if (!*d->error)
+                fail(d, "Out of memory importing document HTML metadata");
             goto bad;
         }
     } else {
@@ -1761,6 +1885,13 @@ bool ce_document_import(CeDocument *d, const char *data, CeFormat f, char *error
         fail(d, "Unable to build document index");
         goto bad;
     }
+    char *saved = print_owned(r);
+    if (!saved) {
+        cJSON_Delete(r);
+        free(temp.text.p); free(temp.spans); free(temp.blocks);
+        fail(d, "Unable to prepare imported document savepoint");
+        goto bad;
+    }
     cJSON_Delete(d->root);
     free(d->text.p);
     free(d->spans);
@@ -1775,7 +1906,8 @@ bool ce_document_import(CeDocument *d, const char *data, CeFormat f, char *error
     d->cblocks = temp.cblocks;
     clear_stack(d->undo, &d->nundo);
     clear_stack(d->redo, &d->nredo);
-    ce_document_mark_saved(d);
+    free(d->saved);
+    d->saved = saved;
     if (error && cap)
         *error = 0;
     return true;
@@ -1819,6 +1951,9 @@ static bool keys_supported(cJSON *obj, const char *allowed) {
     cJSON_ArrayForEach (x, obj) {
         if (!x->string)
             return false;
+        for (cJSON *previous = obj->child; previous != x; previous = previous->next)
+            if (!strcmp(previous->string, x->string))
+                return false;
         size_t n = strlen(x->string);
         const char *p = allowed;
         bool found = false;
@@ -1846,15 +1981,16 @@ static bool html_export(CeDocument *d, cJSON *n, Buffer *b, unsigned depth) {
     if (!keys_supported(n, "type|content|text|marks|attrs"))
         return fail(d, "Additional JSON fields require JSON export to avoid data loss");
     bool atom = !strcmp(t, "zoteroCitationBlock") || !strcmp(t, "zoteroEndnoteSection");
-    const char *known = !strcmp(t, "paragraph")     ? "textAlign"
+    const char *known = !strcmp(t, "doc")           ? "citationProfile|citationLocale"
+                        : !strcmp(t, "paragraph")     ? "textAlign"
                         : !strcmp(t, "heading")     ? "level|textAlign"
                         : !strcmp(t, "orderedList") ? "start"
                                                     : "";
     if (atom)
         known = !strcmp(t, "zoteroCitationBlock") ? "citationId|endnoteNumber|itemKey|itemUri|"
                                                     "pdfUri|title|author|year|citeKey|page|note|"
-                                                    "sourceId|libraryId|cslJson"
-                                                  : "style|entriesJson";
+                                                    "sourceId|libraryId|cslJson|cslRenderJson"
+                                                  : "style|entriesJson|cslRenderJson|bibliographyMode";
     if (!keys_supported(attrs, known))
         return fail(d, "Additional node attributes require JSON export to avoid data loss");
     if (!strcmp(t, "text")) {
@@ -1912,6 +2048,21 @@ static bool html_export(CeDocument *d, cJSON *n, Buffer *b, unsigned depth) {
     }
     char tag[16] = "";
     if (!strcmp(t, "doc")) {
+        if (depth)
+            return fail(d, "Nested document roots require JSON export to preserve their structure");
+        if (field(attrs, "citationProfile") || field(attrs, "citationLocale")) {
+            const char *keys[] = {"citationProfile", "citationLocale"};
+            const char *html_keys[] = {"data-citation-profile", "data-citation-locale"};
+            adds(b, "<div"); attribute(b, "data-type", "notelabDocument");
+            for (size_t i = 0; i < 2; ++i) {
+                cJSON *value = field(attrs, keys[i]);
+                if (value && !cJSON_IsString(value))
+                    return fail(d, "Non-string document citation settings require JSON export");
+                if (value)
+                    attribute(b, html_keys[i], value->valuestring);
+            }
+            adds(b, ">");
+        }
     } else if (!strcmp(t, "paragraph"))
         strcpy(tag, "p");
     else if (!strcmp(t, "heading")) {
@@ -1932,11 +2083,16 @@ static bool html_export(CeDocument *d, cJSON *n, Buffer *b, unsigned depth) {
         cJSON *a;
         cJSON_ArrayForEach (a, attrs) {
             const char *key = a->string;
-            if (!strcmp(t, "zoteroCitationBlock") &&
-                (!strcmp(key, "sourceId") || !strcmp(key, "libraryId") || !strcmp(key,"cslJson"))) {
+            if (!strcmp(t, "zoteroEndnoteSection") && !strcmp(key, "bibliographyMode")) {
+                if (!cJSON_IsString(a) || strcmp(a->valuestring, "citations"))
+                    return fail(d, "Unsupported bibliography mode requires JSON export to preserve its value");
+                key = "data-bibliography-mode";
+            }
+            if (!strcmp(key, "cslRenderJson") || (!strcmp(t, "zoteroCitationBlock") &&
+                (!strcmp(key, "sourceId") || !strcmp(key, "libraryId") || !strcmp(key,"cslJson")))) {
                 if (!cJSON_IsString(a))
                     return fail(d, "Non-string citation metadata requires JSON export to preserve its type");
-                key = !strcmp(key, "sourceId") ? "data-source-id"
+                key = !strcmp(key, "cslRenderJson") ? "data-csl-render-json" : !strcmp(key, "sourceId") ? "data-source-id"
                     : !strcmp(key,"libraryId") ? "data-library-id" : "data-csl-json";
             }
             if (cJSON_IsString(a))
@@ -1977,6 +2133,8 @@ static bool html_export(CeDocument *d, cJSON *n, Buffer *b, unsigned depth) {
         adds(b, tag);
         adds(b, ">");
     }
+    if (!strcmp(t, "doc") && (field(attrs, "citationProfile") || field(attrs, "citationLocale")))
+        adds(b, "</div>");
     return !b->failed;
 }
 char *ce_document_export_html(CeDocument *d) {

@@ -24,14 +24,33 @@ option(EDITOR_BUILD_APP "Build the SDL desktop/mobile/browser application" ON)
 option(EDITOR_SANITIZERS "Enable address and undefined-behavior sanitizers" OFF)
 include(CTest)
 include(cmake/Dependencies.cmake)
+set(CSL_SANITIZERS ${EDITOR_SANITIZERS})
+set(CSL_BUILD_TESTING OFF)
+add_subdirectory(csl)
+find_package(Python3 3.8 REQUIRED COMPONENTS Interpreter)
+set(EDITOR_CSL_RESOURCES "${CMAKE_CURRENT_SOURCE_DIR}/csl/resources")
+set(EDITOR_CSL_DATA "${CMAKE_CURRENT_BINARY_DIR}/generated/citation_styles_data.inc")
+set(EDITOR_CSL_RESOURCE_FILES
+  "${EDITOR_CSL_RESOURCES}/SOURCES.json" "${EDITOR_CSL_RESOURCES}/LICENSE.txt"
+  "${EDITOR_CSL_RESOURCES}/apa.csl" "${EDITOR_CSL_RESOURCES}/ieee.csl"
+  "${EDITOR_CSL_RESOURCES}/china-national-standard-gb-t-7714-2015-numeric.csl"
+  "${EDITOR_CSL_RESOURCES}/locales-en-US.xml" "${EDITOR_CSL_RESOURCES}/locales-zh-CN.xml")
+add_custom_command(OUTPUT "${EDITOR_CSL_DATA}"
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_citation_styles.py"
+    --resources "${EDITOR_CSL_RESOURCES}" --output "${EDITOR_CSL_DATA}"
+  DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_citation_styles.py" ${EDITOR_CSL_RESOURCE_FILES}
+  VERBATIM)
 include(cmake/EmojiFont.cmake)
 include(cmake/SQLite.cmake)
 include(cmake/Notices.cmake)
 
-add_library(editor_core STATIC src/document.c src/note_store.c src/zotero.c src/citations.c src/library_panel.c)
-set_target_properties(editor_core PROPERTIES C_EXTENSIONS OFF)
+add_library(editor_core STATIC src/document.c src/note_store.c src/zotero.c src/citations.c src/library_panel.c
+  src/citation_styles.c src/citation_digest.c src/citation_cache.c
+  src/citation_process.c src/citation_session.c "${EDITOR_CSL_DATA}")
+set_target_properties(editor_core PROPERTIES C_EXTENSIONS OFF POSITION_INDEPENDENT_CODE ON)
 target_include_directories(editor_core PUBLIC include)
-target_link_libraries(editor_core PUBLIC cjson editor_sqlite)
+target_include_directories(editor_core PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+target_link_libraries(editor_core PUBLIC cjson editor_sqlite notelab_csl)
 if(MSVC)
   target_compile_options(editor_core PRIVATE /W4)
 else()
@@ -48,7 +67,7 @@ if(BUILD_TESTING AND NOT ANDROID AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
   add_test(NAME document COMMAND test_document)
   add_executable(test_document_faults tests/test_document_faults.c)
   target_include_directories(test_document_faults PRIVATE include)
-  target_link_libraries(test_document_faults PRIVATE cjson)
+  target_link_libraries(test_document_faults PRIVATE notelab_csl cjson)
   add_test(NAME document_faults COMMAND test_document_faults)
   add_executable(test_note_store tests/test_note_store.c)
   target_link_libraries(test_note_store PRIVATE editor_core)
@@ -68,6 +87,16 @@ if(BUILD_TESTING AND NOT ANDROID AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
   add_executable(test_citations tests/test_citations.c)
   target_link_libraries(test_citations PRIVATE editor_core)
   add_test(NAME citations COMMAND test_citations)
+  add_executable(test_citation_styles tests/test_citation_styles.c)
+  target_link_libraries(test_citation_styles PRIVATE editor_core)
+  add_test(NAME citation_styles COMMAND test_citation_styles)
+  add_test(NAME citation_style_embedding COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_citation_style_embedding.py")
+  foreach(module citation_digest citation_cache citation_process citation_session)
+    add_executable(test_${module} tests/test_${module}.c)
+    target_link_libraries(test_${module} PRIVATE editor_core)
+    add_test(NAME ${module} COMMAND test_${module})
+  endforeach()
   add_executable(test_library_panel tests/test_library_panel.c)
   target_link_libraries(test_library_panel PRIVATE editor_core)
   add_test(NAME library_panel COMMAND test_library_panel)
@@ -85,7 +114,7 @@ if(BUILD_TESTING AND NOT ANDROID AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
       add_test(NAME import_bridge COMMAND "${EDITOR_NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_import_bridge.mjs")
     endif()
   endif()
-  foreach(test_target test_document test_document_faults test_note_store test_zotero test_citations test_library_panel test_persistence_native test_persistence_queue)
+  foreach(test_target test_document test_document_faults test_note_store test_zotero test_citations test_citation_styles test_citation_digest test_citation_cache test_citation_process test_citation_session test_library_panel test_persistence_native test_persistence_queue)
     if(NOT TARGET ${test_target})
       continue()
     endif()
@@ -97,6 +126,10 @@ if(BUILD_TESTING AND NOT ANDROID AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
         target_compile_options(${test_target} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
         target_link_options(${test_target} PRIVATE -fsanitize=address,undefined)
       endif()
+    endif()
+    if(EMSCRIPTEN)
+      target_link_options(${test_target} PRIVATE -sALLOW_MEMORY_GROWTH=1
+        -sMAXIMUM_MEMORY=536870912 -sABORTING_MALLOC=0 -sSTACK_SIZE=1048576)
     endif()
   endforeach()
 endif()
@@ -180,6 +213,17 @@ if(EDITOR_BUILD_APP)
       target_compile_options(test_rich_layout PRIVATE -UNDEBUG -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME rich_layout COMMAND test_rich_layout "${EDITOR_FONT_PATH}" "${EDITOR_EMOJI_FONT_PATH}")
+    add_executable(test_rich_citations tests/test_rich_citations.c)
+    target_link_libraries(test_rich_citations PRIVATE editor_core SDL3::SDL3 SDL3_ttf::SDL3_ttf)
+    if(MSVC)
+      target_compile_options(test_rich_citations PRIVATE /UNDEBUG)
+    else()
+      target_compile_options(test_rich_citations PRIVATE -UNDEBUG -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME rich_citations COMMAND test_rich_citations "${EDITOR_FONT_PATH}" "${EDITOR_EMOJI_FONT_PATH}"
+      "${EDITOR_CSL_RESOURCES}/apa.csl" "${EDITOR_CSL_RESOURCES}/ieee.csl"
+      "${EDITOR_CSL_RESOURCES}/china-national-standard-gb-t-7714-2015-numeric.csl"
+      "${EDITOR_CSL_RESOURCES}/locales-en-US.xml" "${EDITOR_CSL_RESOURCES}/locales-zh-CN.xml")
     add_test(NAME app_smoke COMMAND notelab --smoke-test --notes "${CMAKE_CURRENT_BINARY_DIR}/smoke-notes")
     set_tests_properties(app_smoke PROPERTIES ENVIRONMENT "SDL_VIDEODRIVER=dummy")
   endif()
@@ -188,7 +232,8 @@ if(EDITOR_BUILD_APP)
     set_property(TARGET notelab APPEND PROPERTY LINK_DEPENDS
       "${CMAKE_CURRENT_SOURCE_DIR}/platform/web/shell.html")
     target_link_options(notelab PRIVATE
-      "-sALLOW_MEMORY_GROWTH=1" "-sFORCE_FILESYSTEM=1" "-lidbfs.js"
+      "-sALLOW_MEMORY_GROWTH=1" "-sMAXIMUM_MEMORY=536870912" "-sABORTING_MALLOC=0"
+      "-sSTACK_SIZE=1048576" "-sFORCE_FILESYSTEM=1" "-lidbfs.js"
       "SHELL:--preload-file ${EDITOR_FONT_PATH}@/assets/font.otf"
       "SHELL:--preload-file ${EDITOR_EMOJI_FONT_PATH}@/assets/emoji.ttf"
       "SHELL:--preload-file ${EDITOR_ASSETS_DIR}/OFL.txt@/assets/OFL.txt"

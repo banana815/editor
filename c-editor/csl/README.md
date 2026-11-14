@@ -1,9 +1,10 @@
 # C citation processor — development module
 
-This is an original, bounded C implementation of CSL document processing. It is
-not connected to the editor yet. The existing
-editor continues to label its output as approximate. No JavaScript interpreter
-or third-party JavaScript formatter will be part of this implementation.
+This is an original, bounded C implementation of CSL document processing. The
+editor integrates it through immutable source snapshots, controlled output
+caches and atomic document transactions. Unsupported processing fails explicitly;
+the editor does not fall back to approximate APA/IEEE/GB formatting. No JavaScript
+interpreter or third-party JavaScript formatter runs citation logic.
 
 The current modules provide:
 

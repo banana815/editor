@@ -1,5 +1,8 @@
 #include "zotero.h"
 #include "cJSON.h"
+#include "citation_styles.h"
+#include "csl_document.h"
+#include "csl_json.h"
 #include <sqlite3.h>
 #include <assert.h>
 #include <stdio.h>
@@ -318,6 +321,115 @@ static const char *json_text(cJSON *object, const char *key) {
     const char *value = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(object,key));
     assert(value); return value;
 }
+static void test_multipart_processor(const cJSON *metadata, bool interval) {
+    cJSON *root = cJSON_Parse("{\"items\":[],\"citations\":[{\"citationID\":\"c1\","
+                             "\"citationItems\":[{\"id\":\"a\"}]}]}");
+    cJSON *item = cJSON_Duplicate(metadata,true); assert(root && item);
+    cJSON_DeleteItemFromObjectCaseSensitive(item,"id");
+    assert(cJSON_AddStringToObject(item,"id","a"));
+    assert(cJSON_AddItemToArray(cJSON_GetObjectItemCaseSensitive(root,"items"),item));
+    char *json = ce_csl_json_print_exact(root); assert(json);
+    CeCslInput *input = NULL; char error[512];
+    assert(ce_csl_input_load(&input,json,strlen(json),error,sizeof error));
+    cJSON_free(json); cJSON_Delete(root);
+    const char *expected_bib[] = {
+        "Doe, J. (2024). Date precision.",
+        "[1] J. Doe, Date precision. 2024.",
+        "[1] DOE J. Date precision[M]. 2024."
+    };
+    const char *expected_range[] = {
+        "Doe, J. (2020–2021). Date precision.",
+        "[1] J. Doe, Date precision. 2020–2021.",
+        "[1] DOE J. Date precision[M]. 2020/2021."
+    };
+    for (int profile = 0; profile < 3; ++profile) {
+        CeCitationStyle *style = NULL; CeCslDocument *document = NULL;
+        assert(ce_citation_style_load((CeCitationProfile)profile,NULL,NULL,&style,error,sizeof error));
+        bool ok = ce_csl_document_build(ce_citation_style_style(style),ce_citation_style_locale(style),
+                                       input,NULL,NULL,&document,error,sizeof error);
+        if (!ok) fprintf(stderr,"Multipart SQLite date profile %d: %s\n",profile,error);
+        assert(ok && ce_csl_document_citation_count(document)==1 &&
+               ce_csl_document_bibliography_count(document)==1);
+        CeCslOutputString citation = {0}, bibliography = {0};
+        assert(ce_csl_document_citation_plain(document,0,NULL,&citation,error,sizeof error));
+        assert(!strcmp(citation.data,profile == 0 ?
+                       (interval ? "(Doe, 2020–2021)" : "(Doe, 2024)") : "[1]"));
+        const CeCslBibliographyEntry *entries[] = {ce_csl_document_bibliography(document,0)->entry};
+        assert(ce_csl_bibliography_plain(entries,1,CE_CSL_BIBLIOGRAPHY_PLAIN_COMPACT,NULL,
+                                         &bibliography,error,sizeof error));
+        assert(!strcmp(bibliography.data,interval ? expected_range[profile] : expected_bib[profile]));
+        ce_csl_output_string_free(&citation); ce_csl_output_string_free(&bibliography);
+        ce_csl_document_free(document); ce_citation_style_free(style);
+    }
+    ce_csl_input_free(input);
+}
+static void test_multipart_dates(const char *path) {
+    /* Original fixtures follow the pinned official Zotero multipart storage
+     * contract, including missing month/day precision and invalid combinations.
+     * The user-entered field is retained exactly under custom.zotero.fields. */
+    static const struct { const char *value; int parts,month,day; } cases[] = {
+        {"2024-00-00 2024",1,0,0},
+        {"2024-03-00 March 2024",2,3,0},
+        {"2024-02-29 February 29, 2024",3,2,29},
+        {"2024",1,0,0}, {"2024-03",2,3,0}, {"2024-03-14",3,3,14},
+        {"2024-03-14T12:30:00",3,3,14}, {"2024-03-14 12:30:00",3,3,14},
+        {"2024-00-12 Invalid zero month",0,0,0},
+        {"0000-00-00 No date",0,0,0}, {"2024-13-00 Invalid month",0,0,0},
+        {"2024-02-30 Invalid day",0,0,0}, {"2023-02-29 Invalid leap day",0,0,0},
+        {"2024-00-00",0,0,0}, {"2024-03-00",0,0,0},
+        {"2024-00-00T12:30:00",0,0,0}, {"March 2024",0,0,0},
+        {"2020-00-00 2020/2021",-1,0,0},
+        {"2020-01-01 2020-01-01/2021-12-31",-1,0,0},
+        {"2020-01-01 2020-01-01/2021-02-30",0,0,0},
+        {"2020-00-00 2020/2021-12",0,0,0},
+        {"2020-01-01 2020-01-01/nonsense",0,0,0},
+        {"2024-03-14 3/14/2024",3,3,14},
+        {"2020-00-12 2020/2021",0,0,0}, {"nonsensexx 2020/2021",0,0,0},
+        {"2020-01-00 2020-21/2021-22",0,0,0}
+    };
+    sqlite3 *db = create_db(path); modern_fixture(db);
+    execute(db,"UPDATE itemDataValues SET value='Date precision' WHERE valueID=1;"
+               "UPDATE creators SET firstName='Jane',lastName='Doe' WHERE creatorID=1;"
+               "DELETE FROM itemCreators WHERE creatorID=2;");
+    assert(sqlite3_close(db)==SQLITE_OK);
+    for (size_t i = 0; i < sizeof cases/sizeof *cases; ++i) {
+        assert(sqlite3_open_v2(path,&db,SQLITE_OPEN_READWRITE,NULL)==SQLITE_OK);
+        sqlite3_stmt *statement = NULL;
+        assert(sqlite3_prepare_v2(db,"UPDATE itemDataValues SET value=? WHERE valueID=2",-1,
+                                  &statement,NULL)==SQLITE_OK);
+        assert(sqlite3_bind_text(statement,1,cases[i].value,-1,SQLITE_STATIC)==SQLITE_OK);
+        assert(sqlite3_step(statement)==SQLITE_DONE);
+        sqlite3_finalize(statement); assert(sqlite3_close(db)==SQLITE_OK);
+        CeZoteroLibrary library = {0}; char error[512];
+        assert(ce_zotero_load_sqlite(path,&library,error,sizeof error));
+        cJSON *item = metadata_for(&library,1);
+        cJSON *issued = cJSON_GetObjectItemCaseSensitive(item,"issued"); assert(issued);
+        cJSON *custom = cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(item,"custom"),"zotero");
+        assert(!strcmp(json_text(cJSON_GetObjectItemCaseSensitive(custom,"fields"),"date"),cases[i].value));
+        if (cases[i].parts>0) {
+            cJSON *parts = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(issued,"date-parts"),0);
+            assert(cJSON_GetArraySize(parts)==cases[i].parts && cJSON_GetArrayItem(parts,0)->valueint==2024);
+            if (cases[i].parts>1) assert(cJSON_GetArrayItem(parts,1)->valueint==cases[i].month);
+            if (cases[i].parts>2) assert(cJSON_GetArrayItem(parts,2)->valueint==cases[i].day);
+            assert(!cJSON_GetObjectItemCaseSensitive(issued,"raw"));
+            if (i<3) test_multipart_processor(item,false);
+        } else {
+            const char *expected = cases[i].parts==-1 ? cases[i].value+11 : cases[i].value;
+            if (strcmp(json_text(issued,"raw"),expected))
+                fprintf(stderr,"Multipart date <%s> expected raw <%s>, got <%s>\n",
+                        cases[i].value,expected,json_text(issued,"raw"));
+            assert(!strcmp(json_text(issued,"raw"),expected));
+            assert(!cJSON_GetObjectItemCaseSensitive(issued,"date-parts"));
+            if (cases[i].parts==-1) test_multipart_processor(item,true);
+            else {
+                CeCslDateValueView view;
+                assert(!ce_csl_date_value_view(issued,&view,error,sizeof error) && *error);
+            }
+        }
+        cJSON_Delete(item); ce_zotero_library_free(&library);
+    }
+    remove_path(path);
+}
 static void test_metadata(const char *path) {
     sqlite3 *db = create_db(path);
     modern_fixture(db);
@@ -494,15 +606,27 @@ static void test_cache_allocator_contract(const char *path) {
     cJSON_InitHooks(NULL); remove_path(path);
 }
 
+static void test_csl_number_precision(void) {
+    CeZoteroLibrary library={0},restored={0}; char error[256];
+    assert(ce_zotero_import_csl("[{\"id\":\"exact\",\"type\":\"book\",\"title\":\"Metadata\",\"custom\":{\"integer\":4503599627370501,\"negative\":-4503599627370501}}]",&library,error,sizeof error));
+    assert(library.item_count==1 && strstr(library.items[0].csl_json,"4503599627370501"));
+    char *json=ce_zotero_cache_export(&library,error,sizeof error); assert(json);
+    assert(ce_zotero_cache_import(json,&restored,error,sizeof error));
+    assert(restored.item_count==1 && !strcmp(library.items[0].csl_json,restored.items[0].csl_json));
+    assert(strstr(restored.items[0].csl_json,"-4503599627370501"));
+    free(json); ce_zotero_library_free(&library); ce_zotero_library_free(&restored);
+}
 static int run_tests(const char *directory) {
     char path[2048], unicode_path[2048];
     assert(snprintf(path, sizeof path, "%s/test-zotero.sqlite", directory) < (int)sizeof path);
     assert(snprintf(unicode_path, sizeof unicode_path, "%s/test-zotero-中文.sqlite", directory) < (int)sizeof unicode_path);
     test_csl();
     test_cache_integer_precision();
+    test_csl_number_precision();
     test_cache_allocator_contract(path);
     test_sqlite(path);
     test_metadata(path);
+    test_multipart_dates(path);
     test_unicode_path(unicode_path);
     puts("Zotero CSL, modern/legacy SQLite, read-only, atomic replacement and collections passed");
     return 0;

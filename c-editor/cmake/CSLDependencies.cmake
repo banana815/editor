@@ -37,6 +37,7 @@ FetchContent_Declare(editor_utf8proc
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   TIMEOUT 180 INACTIVITY_TIMEOUT 30 TLS_VERIFY ON)
 FetchContent_MakeAvailable(editor_utf8proc)
+set_target_properties(utf8proc PROPERTIES POSITION_INDEPENDENT_CODE ON)
 set(BUILD_SHARED_LIBS "${_csl_previous_shared}")
 
 # Compile the verified C-only collation dependency closure. The upstream demo

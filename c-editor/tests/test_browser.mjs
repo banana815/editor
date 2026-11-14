@@ -9,6 +9,50 @@ import {tmpdir} from 'node:os';
 import {join, extname, resolve, sep} from 'node:path';
 
 const build = resolve(process.argv[2] || 'c-editor/build-web');
+const cslSources = JSON.parse(await readFile(new URL('../csl/resources/SOURCES.json', import.meta.url),'utf8'));
+const styleFiles = {apa:'apa.csl',ieee:'ieee.csl','gbt-7714-2015-numeric':'china-national-standard-gb-t-7714-2015-numeric.csl'};
+const controlledRuns = runs => {
+    assert.ok(Array.isArray(runs));
+    for (const run of runs) {
+        assert.deepEqual(Object.keys(run).sort(),run.href === undefined ? ['format','text'] : ['format','href','text']);
+        assert.equal(typeof run.text,'string'); assert.ok(Number.isInteger(run.format) && run.format >= 0 && run.format <= 255);
+        if (run.href !== undefined) assert.match(run.href,/^https?:\/\//);
+    }
+    return runs.map(run=>run.text).join('');
+};
+function formalCache(attrs,kind,profile) {
+    assert.equal(typeof attrs?.['data-csl-render-json'],'string',`${kind} controlled cache must be saved`);
+    const cache=JSON.parse(attrs['data-csl-render-json']);
+    assert.equal(cache.version,1); assert.equal(cache.kind,kind); assert.equal(cache.processorProfile,'notelab-csl/1');
+    assert.match(cache.sourceDigest,/^[a-f0-9]{64}$/); assert.equal(cache.style.profile,profile);
+    const pin=cslSources.resources.find(resource=>resource.file===styleFiles[profile]); assert.ok(pin);
+    assert.equal(cache.style.id,pin.id); assert.equal(cache.style.sha256,pin.sha256); assert.equal(cache.style.commit,pin.commit);
+    assert.match(cache.style.locale,/^(en-us|zh-cn)$/);
+    assert.equal(cache.style.localeCommit,cslSources.resources.find(resource=>resource.file==='locales-en-US.xml').commit);
+    if(kind==='citation') {
+        assert.equal(cache.citationId,attrs.citationid); controlledRuns(cache.runs);
+    } else {
+        assert.ok(Array.isArray(cache.entries));
+        for(const entry of cache.entries) {
+            assert.equal(typeof entry.sourceItemId,'string'); assert.ok(Number.isSafeInteger(entry.number) && entry.number>0);
+            assert.equal(typeof entry.visible,'boolean'); assert.ok(Array.isArray(entry.rows));
+            for(const row of entry.rows) {
+                assert.ok(['flow','block','indent','two-columns'].includes(row.kind)); controlledRuns(row.body);
+                if(row.left) controlledRuns(row.left);
+            }
+        }
+    }
+    return cache;
+}
+function formalState(state,profile) {
+    assert.equal(state.settings?.['data-citation-profile'],profile);
+    assert.equal(state.cites.length,1); assert.equal(state.tails.length,1);
+    assert.equal(state.tail['data-bibliography-mode'],'citations');
+    const citation=formalCache(state.cite,'citation',profile),bibliography=formalCache(state.tail,'bibliography',profile);
+    assert.equal(citation.sourceDigest,bibliography.sourceDigest); assert.equal(bibliography.entries.length,1);
+    assert.equal(bibliography.entries[0].number,1); assert.equal(bibliography.entries[0].visible,true);
+    return {citation,bibliography};
+}
 const executable = process.argv[3] || process.env.CHROME_BIN ||
     (process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : 'chromium');
 const profile = await mkdtemp(join(tmpdir(), 'notelab-browser-'));
@@ -396,9 +440,11 @@ try {
         const html=${citationRead}, doc=new DOMParser().parseFromString(html,'text/html');
         const cite=doc.querySelector('[data-type="zoteroCitationBlock"]');
         const tail=doc.querySelector('[data-type="zoteroEndnoteSection"]');
+        const attrs=node=>node?Object.fromEntries(Array.from(node.attributes).map(a=>[a.name,a.value])):null;
         return {html,title:document.title,saved:!Module.editorUnsaved&&!Module.editorPersistencePending,
-            cite:cite?Object.fromEntries(Array.from(cite.attributes).map(a=>[a.name,a.value])):null,
-            tail:tail?Object.fromEntries(Array.from(tail.attributes).map(a=>[a.name,a.value])):null};
+            cite:attrs(cite),tail:attrs(tail),settings:attrs(doc.querySelector('[data-type="notelabDocument"]')),
+            cites:Array.from(doc.querySelectorAll('[data-type="zoteroCitationBlock"]')).map(attrs),
+            tails:Array.from(doc.querySelectorAll('[data-type="zoteroEndnoteSection"]')).map(attrs)};
     })()`);
     await until(async () => { const s=await citationState(); return s.saved && s.cite; }, 'citation durable insertion');
     let cited = await citationState();
@@ -406,22 +452,46 @@ try {
     assert.equal(cited.cite.note,quotation); assert.equal(cited.cite['data-source-id'],importedItem.id);
     assert.deepEqual(JSON.parse(cited.cite['data-csl-json']),importedItem);
     assert.match(cited.html,/<p>Before <\/p>/); assert.match(cited.html,/<p>After<\/p>/);
+    let formal=formalState(cited,'apa');
+    assert.match(controlledRuns(formal.citation.runs),/2024/); assert.match(controlledRuns(formal.citation.runs),/12[–-]13/);
+    const firstBibliography=formal.bibliography.entries[0].rows.map(row=>controlledRuns(row.body)).join('\n');
+    assert.ok(firstBibliography.includes(importedItem.title)); assert.ok(firstBibliography.includes(importedItem['container-title']));
+    assert.ok(!controlledRuns(formal.citation.runs).includes(quotation),'quotation is separate from the CSL locator');
+    const apaDigest=formal.citation.sourceDigest;
+    await key('z','KeyZ',90,2);
+    await until(async()=>{const s=await citationState();return s.saved && !s.cite && !s.tail && s.html==='<p>Before After</p>';},'one undo removes citation and automatic bibliography');
+    await key('y','KeyY',89,2);
+    await until(async()=>{const s=await citationState();return s.saved && s.cite && s.tail;},'one redo restores citation and automatic bibliography');
+    cited=await citationState(); formal=formalState(cited,'apa'); assert.equal(formal.citation.sourceDigest,apaDigest);
     console.log('PASS: real file import preserves Unicode/CSL metadata; cancel, read errors, oversized and invalid files retain the library');
-    await click(1047,24); await click(700,697); await click(970,697);
-    await until(async () => { const s=await citationState(); return s.saved && s.tail?.style === 'ieee'; }, 'IEEE approximate bibliography');
+    console.log('PASS: formal C citation and automatic structured bibliography share pinned provenance; one undo/redo covers both');
+    await click(1047,24); await click(700,697);
+    await until(async () => { const s=await citationState(); return s.saved && s.settings?.['data-citation-profile'] === 'ieee'; }, 'IEEE formal style change');
     cited = await citationState();
-    const entries = JSON.parse(cited.tail.entriesjson);
-    assert.equal(entries.length,1); assert.equal(entries[0].formatting,'approximate');
+    formal=formalState(cited,'ieee'); assert.equal(controlledRuns(formal.citation.runs),'[1, pp. 12–13]');
+    const ieeeDigest=formal.citation.sourceDigest; assert.notEqual(ieeeDigest,apaDigest);
     assert.equal(cited.cite.endnotenumber,'1');
     const citationId = cited.cite.citationid;
+    await key('Escape','Escape',27); await key('z','KeyZ',90,2);
+    await until(async()=>{const s=await citationState();return s.saved && s.settings?.['data-citation-profile']==='apa';},'one undo restores APA style and output');
+    assert.equal(formalState(await citationState(),'apa').citation.sourceDigest,apaDigest);
+    await key('y','KeyY',89,2);
+    await until(async()=>{const s=await citationState();return s.saved && s.settings?.['data-citation-profile']==='ieee';},'one redo restores IEEE style and output');
+    assert.equal(formalState(await citationState(),'ieee').citation.sourceDigest,ieeeDigest);
+    await click(1047,24); await click(970,697);
+    await until(async()=>{const s=await citationState();return s.saved && s.cite?.citationid===citationId;},'explicit synchronization retains formal citation identity');
     await click(700,576); await key('a','KeyA',65,2);
     await cdp('Input.insertText',{text:'44'}); await key('Enter','Enter',13); await click(700,627);
     await until(async () => { const s=await citationState(); return s.saved && s.cite?.page === '44'; }, 'edit existing citation');
     cited = await citationState(); assert.equal(cited.cite.citationid,citationId); assert.equal(cited.cite.note,quotation);
+    formal=formalState(cited,'ieee'); assert.equal(controlledRuns(formal.citation.runs),'[1, p. 44]');
+    const page44Digest=formal.citation.sourceDigest; assert.notEqual(page44Digest,ieeeDigest);
     await key('z','KeyZ',90,2);
     await until(async () => { const s=await citationState(); return s.saved && s.cite?.page === '12–13'; }, 'undo citation metadata edit');
+    assert.equal(formalState(await citationState(),'ieee').citation.sourceDigest,ieeeDigest);
     await key('y','KeyY',89,2);
     await until(async () => { const s=await citationState(); return s.saved && s.cite?.page === '44'; }, 'redo citation metadata edit');
+    assert.equal(formalState(await citationState(),'ieee').citation.sourceDigest,page44Digest);
     await click(1047,24);
     await writeFile(join(build,'browser-citation-validation.png'),Buffer.from((await cdp('Page.captureScreenshot')).data,'base64'));
     await click(1060,30); // Close the panel before checking reload serialization.
@@ -429,6 +499,34 @@ try {
     await cdp('Page.reload'); await ready(); await cdp('Page.bringToFront');
     await until(() => evaluate('document.title.includes("000References")'), 'reloaded citation document');
     assert.equal(await evaluate(citationRead),citationHTML);
+    formal=formalState(await citationState(),'ieee'); assert.equal(formal.citation.sourceDigest,page44Digest);
+    // A syntactically valid cache with matching pins/digest is still untrusted
+    // on import. Regeneration must replace forged controlled text, not merely
+    // accept its version or claim to authenticate it using an unkeyed hash.
+    await evaluate(`new Promise((resolve,reject)=>{
+        const doc=new DOMParser().parseFromString(${citationRead},'text/html');
+        for(const atom of doc.querySelectorAll('[data-csl-render-json]')) {
+            const cache=JSON.parse(atom.getAttribute('data-csl-render-json'));
+            if(cache.kind==='citation')cache.runs=[{text:'FORGED-CACHE-TEXT',format:0}];
+            else cache.entries[0].rows[0].body=[{text:'FORGED-CACHE-TEXT',format:0}];
+            atom.setAttribute('data-csl-render-json',JSON.stringify(cache));
+        }
+        FS.writeFile(${JSON.stringify(citationFile)},doc.body.innerHTML);FS.syncfs(false,e=>e?reject(e):resolve());
+    })`);
+    assert.ok((await evaluate(citationRead)).includes('FORGED-CACHE-TEXT'));
+    await cdp('Page.reload'); await ready(); await cdp('Page.bringToFront');
+    await until(async()=>{const s=await citationState();return s.saved && s.cite && !s.html.includes('FORGED-CACHE-TEXT');},'untrusted cache is freshly regenerated and durably replaced');
+    formal=formalState(await citationState(),'ieee'); assert.equal(formal.citation.sourceDigest,page44Digest);
+    assert.equal(controlledRuns(formal.citation.runs),'[1, p. 44]');
+    await writeFile(join(build,'browser-citation-rebuilt-cache.png'),Buffer.from((await cdp('Page.captureScreenshot')).data,'base64'));
+    // Advancing the actual toolbar after reload must start from persisted IEEE,
+    // so its next profile is GB/T rather than resetting silently to APA.
+    await click(1047,24); await click(700,697);
+    await until(async()=>{const s=await citationState();return s.saved && s.settings?.['data-citation-profile']==='gbt-7714-2015-numeric';},'reloaded toolbar retains the chosen citation profile');
+    formalState(await citationState(),'gbt-7714-2015-numeric');
+    await key('Escape','Escape',27); await key('z','KeyZ',90,2);
+    await until(async()=>{const s=await citationState();return s.saved && s.settings?.['data-citation-profile']==='ieee';},'undo restored-profile toolbar change');
+    assert.equal(formalState(await citationState(),'ieee').citation.sourceDigest,page44Digest);
     for (const name of await readdir(downloads)) await rm(join(downloads,name),{force:true});
     await click(360,106);
     const citationDownload = await until(async () => (await readdir(downloads)).find(name => name.endsWith('.json')), 'reloaded citation JSON download');
@@ -438,8 +536,12 @@ try {
     const roundtrip = nodes.find(node => node.type === 'zoteroCitationBlock');
     assert.ok(roundtrip); assert.equal(roundtrip.attrs.page,'44'); assert.equal(roundtrip.attrs.note,quotation);
     assert.deepEqual(JSON.parse(roundtrip.attrs.cslJson),importedItem);
+    assert.equal(citationJSON.attrs.citationProfile,'ieee');
+    assert.equal(citationJSON.attrs.citationLocale,undefined,'an implicit default locale must remain implicit');
+    assert.equal(formalCache({'data-csl-render-json':roundtrip.attrs.cslRenderJson,citationid:roundtrip.attrs.citationId},'citation','ieee').sourceDigest,page44Digest);
+    assert.equal(formalCache({'data-csl-render-json':nodes.find(node=>node.type==='zoteroEndnoteSection').attrs.cslRenderJson},'bibliography','ieee').sourceDigest,page44Digest);
     assert.equal(nodes.find(node => node.type === 'zoteroEndnoteSection').attrs.style,'ieee');
-    console.log('PASS: search, citation page/multiline quotation, edit/undo/redo, approximate style/sync and reload → JSON roundtrip');
+    console.log('PASS: formal styles/page edits are atomic, persist across reload, rebuild forged caches and preserve controlled JSON output');
 
     const cachePath = '/notes/.notelab-library/library.json';
     await until(() => evaluate(`FS.analyzePath(${JSON.stringify(cachePath)}).exists && !Module.editorPersistencePending`), 'private library cache');
@@ -452,6 +554,10 @@ try {
     await click(700,263); await click(700,627);
     const citationCount = () => evaluate(`new DOMParser().parseFromString(${citationRead},'text/html').querySelectorAll('[data-type="zoteroCitationBlock"]').length`);
     await until(async () => (await citationCount()) === 2 && await evaluate('!Module.editorUnsaved && !Module.editorPersistencePending'), 'insert from restored cache');
+    const repeated=await citationState(), repeatedBibliography=formalCache(repeated.tail,'bibliography','ieee');
+    assert.equal(repeatedBibliography.entries.length,1,'two cites of one identity produce one bibliography entry');
+    assert.equal(new Set(repeated.cites.map(cite=>cite.citationid)).size,2);
+    for(const cite of repeated.cites) assert.equal(formalCache(cite,'citation','ieee').sourceDigest,repeatedBibliography.sourceDigest);
     const beforeBadCache = await evaluate(citationRead);
     async function replaceCache(text) {
         await evaluate(`new Promise((resolve,reject)=>{FS.writeFile(${JSON.stringify(cachePath)},${JSON.stringify(text)});FS.syncfs(false,e=>e?reject(e):resolve());})`);
@@ -486,6 +592,7 @@ try {
     // Typed metadata requires JSON storage; the import must not flatten it to
     // HTML or discard the original CSL snapshot embedded in its citation.
     const legacyJSON = structuredClone(citationJSON);
+    legacyJSON.attrs.citationLocale='en-US';
     descendants(legacyJSON).find(n=>n.type==='zoteroCitationBlock').attrs.customData={keep:'原始信息🙂',enabled:true};
     const legacyJSONPath = join(profile,'Legacy JSON🙂.json');
     const legacyJSONText = JSON.stringify(legacyJSON); await writeFile(legacyJSONPath,legacyJSONText);
@@ -494,6 +601,7 @@ try {
     await until(() => evaluate(`FS.analyzePath(${JSON.stringify(importedDocumentPath)}).exists && !Module.editorPersistencePending`), 'legacy JSON note creation');
     const firstImported = await evaluate(`FS.readFile(${JSON.stringify(importedDocumentPath)},{encoding:'utf8'})`);
     assert.deepEqual(JSON.parse(firstImported),legacyJSON);
+    assert.equal(JSON.parse(firstImported).attrs.citationLocale,'en-US','explicit locale survives document import and reprocessing');
     assert.equal((await documentChooser(legacyJSONPath)).status,1);
     await until(() => evaluate("FS.analyzePath('/notes/Legacy JSON🙂 (2).json').exists && !Module.editorPersistencePending"), 'duplicate source creates a distinct note');
     assert.equal(await evaluate(`FS.readFile(${JSON.stringify(importedDocumentPath)},{encoding:'utf8'})`),firstImported);
@@ -526,6 +634,67 @@ try {
     assert.equal(await noteSnapshot(),notesBefore); assert.equal(await evaluate('document.title'),titleBefore);
     await writeFile(join(build,'browser-document-import-validation.png'),Buffer.from((await cdp('Page.captureScreenshot')).data,'base64'));
     console.log('PASS: actual JSON/legacy HTML/TXT note chooser, typed metadata, duplicate names and rejected/canceled imports');
+    // Old Tauri could store an independently maintained bibliography without
+    // any citation atoms. Its ordinary fields are not proof of derived data.
+    const standalonePath='/notes/0000Standalone Legacy.json';
+    const standaloneEntries=[{citationId:'legacy-bibliography-only',number:1,key:'Legacy2020',
+        itemUri:'zotero://select/library/items/OLDENTRY',pdfUri:'',formatting:'approximate',
+        entryHtml:'<em>Standalone legacy work &amp; source</em>. Old Author (2020).'}];
+    const standaloneDoc={type:'doc',content:[
+        {type:'paragraph',content:[{type:'text',text:'Standalone bibliography'}]},
+        {type:'zoteroEndnoteSection',attrs:{style:'apa',entriesJson:JSON.stringify(standaloneEntries)}}]};
+    const standaloneRead=()=>evaluate(`JSON.parse(FS.readFile(${JSON.stringify(standalonePath)},{encoding:'utf8'}))`);
+    function standalonePreserved(doc) {
+        const nodes=descendants(doc),sections=nodes.filter(node=>node.type==='zoteroEndnoteSection');
+        assert.equal(nodes.filter(node=>node.type==='zoteroCitationBlock').length,0);
+        assert.equal(sections.length,1); assert.equal(sections[0].attrs.style,'apa');
+        assert.equal(sections[0].attrs.entriesJson,JSON.stringify(standaloneEntries));
+        assert.deepEqual(JSON.parse(sections[0].attrs.entriesJson),standaloneEntries);
+        assert.equal(Object.hasOwn(sections[0].attrs,'bibliographyMode'),false);
+        assert.equal(Object.hasOwn(sections[0].attrs,'cslRenderJson'),false);
+        assert.equal(Object.hasOwn(doc.attrs||{},'citationProfile'),false);
+    }
+    await until(()=>evaluate('!Module.editorUnsaved && !Module.editorPersistencePending'),'idle before standalone bibliography fixture');
+    await evaluate(`new Promise((resolve,reject)=>{FS.writeFile(${JSON.stringify(standalonePath)},${JSON.stringify(JSON.stringify(standaloneDoc))});FS.syncfs(false,e=>e?reject(e):resolve());})`);
+    await cdp('Page.reload'); await ready(); await cdp('Page.bringToFront');
+    await until(()=>evaluate('document.title.includes("0000Standalone Legacy")'),'startup opens independent legacy bibliography');
+    standalonePreserved(await standaloneRead());
+    await click(400,185); await key('Home','Home',36); await cdp('Input.insertText',{text:'Edited '});
+    await until(async()=>descendants(await standaloneRead()).filter(node=>node.type==='text').map(node=>node.text).join('')==='Edited Standalone bibliography' &&
+        await evaluate('!Module.editorUnsaved && !Module.editorPersistencePending'),'save ordinary edit without deleting legacy bibliography');
+    standalonePreserved(await standaloneRead());
+    await cdp('Page.reload'); await ready(); await cdp('Page.bringToFront');
+    await until(()=>evaluate('document.title.includes("0000Standalone Legacy")'),'reload independent legacy bibliography from IndexedDB');
+    const restoredStandalone=await standaloneRead(); standalonePreserved(restoredStandalone);
+    assert.equal(descendants(restoredStandalone).filter(node=>node.type==='text').map(node=>node.text).join(''),'Edited Standalone bibliography');
+    await writeFile(join(build,'browser-standalone-bibliography-preserved.png'),Buffer.from((await cdp('Page.captureScreenshot')).data,'base64'));
+    console.log('PASS: standalone legacy bibliography survives ordinary editing, IndexedDB save and reload without derived-mode relabeling');
+    // Seed a legacy note without a snapshot directly in durable storage so its
+    // first processing really happens at startup, before any manual library
+    // action. The restored private library is its sole complete CSL source.
+    const cachedLegacyPath='/notes/0000Cached Legacy.json';
+    const cachedLegacy={type:'doc',attrs:{citationProfile:'apa',citationLocale:'en-US'},content:[
+        {type:'paragraph',content:[{type:'text',text:'Restored library source'}]},
+        {type:'zoteroCitationBlock',attrs:{citationId:'restored-legacy-source',sourceId:importedItem.id,page:'5',note:'保留摘录'}}]};
+    await until(()=>evaluate('!Module.editorUnsaved && !Module.editorPersistencePending'),'idle before startup fallback fixture');
+    await evaluate(`new Promise((resolve,reject)=>{FS.writeFile(${JSON.stringify(cachedLegacyPath)},${JSON.stringify(JSON.stringify(cachedLegacy))});FS.syncfs(false,e=>e?reject(e):resolve());})`);
+    await cdp('Page.reload'); await ready(); await cdp('Page.bringToFront');
+    await until(()=>evaluate('document.title.includes("0000Cached Legacy")'),'startup opens first-sorted legacy citation');
+    const readCachedLegacy=()=>evaluate(`JSON.parse(FS.readFile(${JSON.stringify(cachedLegacyPath)},{encoding:'utf8'}))`);
+    await until(async()=>{
+        const doc=await readCachedLegacy(),cite=descendants(doc).find(node=>node.type==='zoteroCitationBlock');
+        return cite?.attrs?.cslJson && cite?.attrs?.cslRenderJson && await evaluate('!Module.editorUnsaved && !Module.editorPersistencePending');
+    },'startup restores library before resolving a missing embedded snapshot');
+    const recoveredLegacy=await readCachedLegacy(),recoveredNodes=descendants(recoveredLegacy);
+    const recoveredCite=recoveredNodes.find(node=>node.type==='zoteroCitationBlock'),recoveredBib=recoveredNodes.find(node=>node.type==='zoteroEndnoteSection');
+    assert.deepEqual(JSON.parse(recoveredCite.attrs.cslJson),importedItem); assert.equal(recoveredCite.attrs.note,'保留摘录');
+    assert.equal(recoveredLegacy.attrs.citationLocale,'en-US');
+    const recoveredCache=formalCache({'data-csl-render-json':recoveredCite.attrs.cslRenderJson,citationid:recoveredCite.attrs.citationId},'citation','apa');
+    assert.match(controlledRuns(recoveredCache.runs),/2024/);
+    assert.equal(formalCache({'data-csl-render-json':recoveredBib.attrs.cslRenderJson},'bibliography','apa').sourceDigest,recoveredCache.sourceDigest);
+    assert.equal(await evaluate(`FS.readFile(${JSON.stringify(cachePath)},{encoding:'utf8'})`),validCache);
+    await writeFile(join(build,'browser-citation-cached-legacy.png'),Buffer.from((await cdp('Page.captureScreenshot')).data,'base64'));
+    console.log('PASS: startup restores persisted library before resolving a legacy citation without an embedded snapshot');
     assert.deepEqual(exceptions, []);
     console.log('PASS: initial storage read failure blocks editor; data survives recovery');
     await Promise.all([rm(join(build,'browser-failure.json'),{force:true}),rm(join(build,'browser-failure.png'),{force:true})]);

@@ -222,7 +222,10 @@ PY
 notes_dir=$(cat "$work_dir/notes-dir")
 screenshot="$notes_dir/smoke.bmp"
 launch_status=0
-run_limited 90 xcrun simctl launch --console --terminate-running-process "$device_uuid" "$bundle_id" \
+# A newly migrated hosted runtime can defer SpringBoard's first launch beyond
+# 90 seconds even after bootstatus succeeds. Allow that cold launch to finish;
+# a timeout still fails, even if diagnostics later contain a successful frame.
+run_limited 180 xcrun simctl launch --console --terminate-running-process "$device_uuid" "$bundle_id" \
     --smoke-test --notes "$notes_dir" --screenshot "$screenshot" > "$output/app.log" 2>&1 || launch_status=$?
 cat "$output/app.log"
 # SDL's UIKit logger uses NSLog, which may go only to the unified log instead

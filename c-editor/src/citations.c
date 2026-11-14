@@ -1,5 +1,6 @@
 #include "citations.h"
 #include "cJSON.h"
+#include "csl_json.h"
 #include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -22,7 +23,7 @@ static char *copy(const char *value) {
     char *result=malloc(size); if(result) memcpy(result,s,size); return result;
 }
 static char *print_owned(const cJSON *value) {
-    char *printed=cJSON_PrintUnformatted(value);
+    char *printed=ce_csl_json_print_exact_with_limit(value,128u*1024u*1024u);
     char *owned=printed?copy(printed):NULL;
     cJSON_free(printed); return owned;
 }

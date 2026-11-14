@@ -12,6 +12,10 @@ The new application does not depend on React, TypeScript, Node or Rust at runtim
 
 ## Build and run on the development machine
 
+Install CMake 3.24 or newer, a C/C++ toolchain and Python 3.8 or newer. Python
+verifies and embeds the pinned citation styles during the build; the installed
+application does not need Python.
+
 ```sh
 cmake -S c-editor -B c-editor/build -DCMAKE_BUILD_TYPE=Debug
 cmake --build c-editor/build --parallel 4
@@ -90,7 +94,7 @@ tests cover stale selections, IME cancellation/commit and clipboard edge cases.
 | Windows / Linux | Full desktop builds, C tests and dummy-video application startup pass in GitHub Actions. Interactive OS-specific input and install-package validation remain. |
 | Android | Release/debug APKs, two native ABIs and font resources pass CI. The C application actually launches and renders on an Android emulator. Physical-device input, lifecycle and file-provider interaction still need validation. |
 | iOS | Unsigned simulator/device bundles compile; the C app actually launches and renders on a GitHub-hosted iPhone simulator. New UIKit import/export bridges also link in complete local device/simulator builds. Actual file-picker/provider interactions and hardware validation remain. |
-| Zotero | CSL JSON and read-only modern/legacy SQLite import, structured bibliographic fields, collection queries, cross-library identities, citation insertion/editing and undo are tested. Citation blocks retain their CSL metadata snapshot. Explicitly approximate APA/IEEE/GB/T bibliography synchronization is available; a full CSL processor is still required. |
+| Zotero and citations | CSL JSON and read-only modern/legacy SQLite import, collection queries and cross-library identities are supported. The C processor is connected to citation insertion/editing, numbering, bibliography generation, style changes and undo. Pinned APA 7, IEEE 2023 and GB/T 7714-2015 numeric profiles produce controlled formatting; unsupported constructs fail explicitly. Source snapshots and unknown metadata are preserved. See the processing limits below. |
 | Distribution | Desktop preview archives include fonts and notices; the extracted macOS arm64 bundle passes startup independently of the build directory. Windows/Linux archive checks are in CI. Mobile artifacts remain unsigned, and signing, update behavior and accessibility remain to be completed and verified. |
 
 The six-platform objective is not satisfied by compilation on one host. Final
@@ -120,8 +124,49 @@ single-file SQLite imports use a bounded, read-only memory snapshot and reject
 WAL-mode main files because their separate journal may contain newer data;
 export CSL JSON or a standalone SQLite backup in that case. Failed imports
 retain the current library and note. Select a document, set page/excerpt, then
-insert; use the current-citation view to edit it. Bibliography buttons explicitly
-say **近似** until a standards processor is integrated.
+insert; use the current-citation view to edit it. Insertion and citation edits
+update the bibliography in the same undo transaction. Deleting or moving a
+citation recalculates numbering and disambiguation. The style button cycles
+**APA 7**, **IEEE 2023** and **GB/T 7714-2015** and persists that choice in the
+note, including undo/redo. **更新参考文献** explicitly rebuilds the revision.
+
+The processing implementation and profile resources are C and embedded data;
+no JavaScript processor or interpreter runs citation logic. Native and browser
+builds use the same pipeline. Formatting retains italic/bold/underline,
+superscript/subscript, bibliography columns, hanging indentation and spacing.
+Rendered cards remain atomic editor selections. User quotations are displayed
+separately and do not become CSL locators or note numbers.
+
+An embedded `cslJson` snapshot is authoritative. A legacy citation without one
+may use a unique exact match from the imported library; author/year display
+strings are never turned into invented structured metadata. Conflicting
+snapshots for one source cause a visible error and leave the document unchanged.
+Ordinary prose in an unprocessable legacy note remains editable. The startup
+sequence restores the library before processing the first note.
+
+Legacy reference lists can contain independently selected items with no body
+citation. Such unmatched entries are retained, and automatic processing reports
+that the original list needs migration. Only a section explicitly marked
+`bibliographyMode: "citations"` declares that its ordinary entries are derived
+from the current body citations and may be removed when those citations are
+deleted. Opening a legacy note does not silently opt it into that declaration.
+
+`cslRenderJson` stores versioned controlled runs and bibliography rows, bound to
+the complete source order, style/locale pins and a SHA-256 consistency digest.
+The digest is not authentication: opening a document always regenerates output
+from source data. Current prose is included in each save/export snapshot.
+HTML interchange preserves those strings and root profile settings as escaped
+attributes; it is editable interchange, not a promise of a print-ready HTML
+publication. JSON preserves additional metadata that HTML cannot represent.
+
+The [C processor documentation](csl/README.md) and
+[document support boundaries](csl/DOCUMENT.md) describe the supported subset.
+These fixed profiles and representative tests do not establish full CSL or
+APA/IEEE/GB conformance. Unsupported active constructs produce explicit errors,
+with no approximate formatter fallback. Default Unicode collation has no CLDR
+language tailoring. Rich display currently reports unsupported small caps,
+light/oblique styles and bidirectional citation text rather than dropping those
+format flags. SQLite metadata interpretation limits below also remain.
 
 The imported library is cached only in the application's own
 `.notelab-library/library.json` beneath its notes directory. Restart restores
@@ -136,6 +181,10 @@ regenerates the C lookup data from that schema. Raw fields/creator metadata are
 retained in the generated CSL object's `custom.zotero` property. Advanced date
 interpretation, name particles and CSL overrides in Zotero's Extra field still
 need compatibility work.
+
+Zotero's multipart date prefixes preserve year-only and year/month precision;
+explicit ISO date intervals in the original date text retain both endpoints.
+The importer keeps the original SQLite field alongside the structured date.
 
 The SQLite importer is also tested as actual WebAssembly code, including
 modern/legacy database fixtures and failure rollback:

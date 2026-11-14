@@ -6,6 +6,7 @@
 #include "document.h"
 #include "rich_layout.h"
 #include "citations.h"
+#include "citation_session.h"
 #include "library_panel.h"
 #include "platform_import.h"
 #include "cJSON.h"
@@ -53,7 +54,11 @@ typedef struct {
     bool library_open, library_citation_mode, library_dragging, library_drag_moved;
     float library_drag_y, library_drag_origin, library_outer_scroll, library_content_height;
     size_t library_insert_offset, library_pressed_row;
-    CeZoteroApproximateStyle citation_style;
+    CeCitationProfile citation_style;
+    CeCitationSession *citation_session;
+    uint64_t citation_revision;
+    bool citation_normalized_pending;
+    char citation_warning[512], edit_error[512];
     char *citation_id, *citation_title, *citation_page, *citation_note;
     char *citation_item_uri, *citation_pdf_uri, *insert_page, *insert_note;
     SDL_FRect library_button, library_area, library_rows, library_buttons[LIB_BUTTON_COUNT];
@@ -103,6 +108,127 @@ static char *copy_string(const char *s) {
     return out;
 }
 static void message(App *a, const char *s) { SDL_strlcpy(a->status, s, sizeof(a->status)); }
+static void citation_diagnostics(App *a) {
+    const CeCitationProcessStats *stats=ce_citation_prepared_stats(ce_citation_session_prepared(a->citation_session));
+    if(!stats) return;
+    const char *warning=stats->missing_term?"引用样式缺少所需术语，请检查格式结果":
+        stats->malformed_markup?"文献字段含未闭合格式标记，已按原文保留，请检查":
+        stats->literal_markup?"文献字段含不支持的格式标记，已按原文保留，请检查":"";
+    SDL_strlcpy(a->citation_warning,warning,sizeof a->citation_warning);
+}
+static CeDocument *edit_candidate(App *a) {
+    char *json=ce_document_export_json(a->doc);
+    CeDocument *candidate=ce_document_new();
+    SDL_strlcpy(a->edit_error,"内存不足，原文保持不变",sizeof a->edit_error);
+    bool ok=json && candidate && ce_document_import(candidate,json,CE_FORMAT_JSON,a->edit_error,sizeof a->edit_error);
+    free(json);
+    if(!ok) { ce_document_free(candidate); return NULL; }
+    return candidate;
+}
+static bool edit_commit(App *a,CeDocument *candidate,bool changed,
+    const CeCitationProfile *override,bool force) {
+    if(!candidate) return false;
+    if(!changed) SDL_strlcpy(a->edit_error,ce_document_error(candidate),sizeof a->edit_error);
+    bool ok=changed && ce_citation_session_apply(&a->citation_session,a->doc,candidate,
+        &a->library.library,override,force,a->edit_error,sizeof a->edit_error);
+    ce_document_free(candidate);
+    if(ok) {
+        ++a->citation_revision;
+        if(a->citation_session) {
+            a->citation_style=ce_citation_session_profile(a->citation_session);
+            citation_diagnostics(a);
+        }
+    }
+    return ok;
+}
+static bool edit_replace(App *a,size_t start,size_t end,const char *text) {
+    CeDocument *candidate=edit_candidate(a);
+    return edit_commit(a,candidate,candidate && ce_document_replace(candidate,start,end,text),NULL,false);
+}
+static bool edit_style(App *a,size_t start,size_t end,CeMark mark,const char *value,bool enabled) {
+    CeDocument *candidate=edit_candidate(a);
+    return edit_commit(a,candidate,candidate && ce_document_style(candidate,start,end,mark,value,enabled),NULL,false);
+}
+static bool edit_clear(App *a,size_t start,size_t end) {
+    CeDocument *candidate=edit_candidate(a);
+    return edit_commit(a,candidate,candidate && ce_document_clear_formatting(candidate,start,end),NULL,false);
+}
+static bool edit_alignment(App *a,size_t start,size_t end,const char *alignment) {
+    CeDocument *candidate=edit_candidate(a);
+    return edit_commit(a,candidate,candidate && ce_document_set_alignment(candidate,start,end,alignment),NULL,false);
+}
+static bool edit_block(App *a,size_t start,size_t end,CeBlockKind kind,unsigned level) {
+    CeDocument *candidate=edit_candidate(a);
+    return edit_commit(a,candidate,candidate && ce_document_set_block(candidate,start,end,kind,level),NULL,false);
+}
+static bool edit_move(App *a,size_t from,size_t to,size_t *offset) {
+    CeDocument *candidate=edit_candidate(a); size_t position=0;
+    bool ok=candidate && ce_document_move_block_ex(candidate,from,to,&position);
+    size_t ordinal=0; bool anchored=false;
+    for(size_t i=0;ok && i<ce_document_block_count(candidate);i++) {
+        CeBlockInfo block;
+        if(!ce_document_block_info(candidate,i,&block) || block.kind==CE_BLOCK_ENDNOTES) continue;
+        if(block.start==position) { anchored=true; break; }
+        ++ordinal;
+    }
+    ok=edit_commit(a,candidate,ok,NULL,false);
+    if(ok && anchored) {
+        size_t current=0;
+        for(size_t i=0;i<ce_document_block_count(a->doc);i++) {
+            CeBlockInfo block;
+            if(!ce_document_block_info(a->doc,i,&block) || block.kind==CE_BLOCK_ENDNOTES) continue;
+            if(current++==ordinal) { position=block.start; break; }
+        }
+    }
+    if(ok && offset) *offset=position;
+    return ok;
+}
+static void citation_refresh(App *a) {
+    CeCitationSession *next=NULL;
+    bool ok=ce_citation_session_build(a->doc,&a->library.library,NULL,&next,
+        a->citation_warning,sizeof a->citation_warning);
+    ce_citation_session_free(a->citation_session); a->citation_session=next;
+    if(ok) { a->citation_style=ce_citation_session_profile(next); citation_diagnostics(a); }
+    ++a->citation_revision;
+    if(!ok) message(a,a->citation_warning);
+}
+/* Only freshly evaluated C output is a display authority. Imported JSON cache
+ * fields remain document data until the whole source revision is processed. */
+static CeRichCitationStatus citation_resolve(void *context,const cJSON *atom,
+    const CeCitationCache **cache,char *error,size_t capacity) {
+    App *a=context; (void)error; (void)capacity;
+    const CeCitationPrepared *prepared=ce_citation_session_prepared(a->citation_session);
+    if(!prepared) return CE_RICH_CITATION_UNSUPPORTED;
+    const cJSON *type=cJSON_GetObjectItemCaseSensitive(atom,"type");
+    if(cJSON_IsString(type) && !strcmp(type->valuestring,"zoteroEndnoteSection"))
+        *cache=ce_citation_prepared_bibliography(prepared);
+    else {
+        const cJSON *attrs=cJSON_GetObjectItemCaseSensitive(atom,"attrs");
+        const cJSON *id=cJSON_GetObjectItemCaseSensitive(attrs,"citationId");
+        *cache=cJSON_IsString(id)?ce_citation_prepared_citation(prepared,id->valuestring):NULL;
+    }
+    return *cache?CE_RICH_CITATION_VALID:CE_RICH_CITATION_ABSENT;
+}
+static char *citation_export(App *a,bool html) {
+    a->edit_error[0]='\0';
+    if(!a->citation_session)
+        return html?ce_document_export_html(a->doc):ce_document_export_json(a->doc);
+    CeCitationPrepared *snapshot=NULL;
+    if(!ce_citation_session_snapshot(a->citation_session,a->doc,&a->library.library,
+        &snapshot,a->edit_error,sizeof a->edit_error)) return NULL;
+    char *result=NULL;
+    if(!html) result=copy_string(ce_citation_prepared_json(snapshot));
+    else {
+        CeDocument *temporary=ce_document_new();
+        if(temporary && ce_document_import(temporary,ce_citation_prepared_json(snapshot),CE_FORMAT_JSON,
+            a->edit_error,sizeof a->edit_error)) result=ce_document_export_html(temporary);
+        if(temporary && !result) SDL_strlcpy(a->edit_error,ce_document_error(temporary),sizeof a->edit_error);
+        ce_document_free(temporary);
+    }
+    ce_citation_prepared_free(snapshot);
+    if(!result && !*a->edit_error) SDL_strlcpy(a->edit_error,"内存不足，未导出",sizeof a->edit_error);
+    return result;
+}
 static SDL_Color ink(App *a) { return a->dark ? (SDL_Color){225,229,234,255} : (SDL_Color){35,44,52,255}; }
 static SDL_Color paper(App *a) { return a->dark ? (SDL_Color){27,32,38,255} : (SDL_Color){255,255,253,255}; }
 static void fill(App *a, SDL_FRect box, SDL_Color color) {
@@ -121,10 +247,10 @@ static void label(App *a, const char *str, float x, float y, SDL_Color color) {
 }
 static void update_title(App *a) {
     char title[512];
-    SDL_snprintf(title, sizeof(title), "%s%s — Note Lab", ce_document_is_modified(a->doc) ? "* " : "", a->active ? a->active : "C Editor");
+    SDL_snprintf(title, sizeof(title), "%s%s — Note Lab", (ce_document_is_modified(a->doc) || a->citation_normalized_pending) ? "* " : "", a->active ? a->active : "C Editor");
     SDL_SetWindowTitle(a->window, title);
 #ifdef __EMSCRIPTEN__
-    EM_ASM({ Module.editorUnsaved = !!$0; }, ce_document_is_modified(a->doc) || a->persistence_error || a->library_unsaved);
+    EM_ASM({ Module.editorUnsaved = !!$0; }, ce_document_is_modified(a->doc) || a->citation_normalized_pending || a->persistence_error || a->library_unsaved);
 #endif
 }
 static bool refresh_files(App *a) {
@@ -152,7 +278,9 @@ static void persistence_complete(bool success, const char *error, void *userdata
     message(a, success ? (*a->library_warning ? a->library_warning : "已保存到持久存储") : error);
     if (success && a->saving_snapshot && a->active && a->saving_name && !strcmp(a->active, a->saving_name)) {
         char *current = ce_document_export_json(a->doc);
-        if (current && !strcmp(current, a->saving_snapshot)) ce_document_mark_saved(a->doc);
+        if (current && !strcmp(current, a->saving_snapshot)) {
+            ce_document_mark_saved(a->doc); a->citation_normalized_pending=false;
+        }
         free(current);
     }
     free(a->saving_name); free(a->saving_snapshot);
@@ -168,14 +296,13 @@ static void structure_persisted(bool success, const char *error, void *userdata)
 }
 static bool save_document(App *a) {
     if (a->saving) { message(a, "正在保存，请稍候"); return false; }
-    if (!a->active || !ce_document_is_modified(a->doc)) {
+    if (!a->active || (!ce_document_is_modified(a->doc) && !a->citation_normalized_pending)) {
         if (a->persistence_error) platform_persist(structure_persisted, a);
         return !platform_persist_pending() && !a->persistence_error;
     }
     /* Preedit text belongs to the IME, not to the saved document. */
-    char *data = SDL_strcasecmp(strrchr(a->active, '.'), ".json") == 0
-        ? ce_document_export_json(a->doc) : ce_document_export_html(a->doc);
-    if (!data) { message(a, ce_document_error(a->doc)); return false; }
+    char *data = citation_export(a,SDL_strcasecmp(strrchr(a->active, '.'), ".json") != 0);
+    if (!data) { message(a, *a->edit_error?a->edit_error:ce_document_error(a->doc)); return false; }
     char *snapshot = ce_document_export_json(a->doc);
     char *name = copy_string(a->active);
     if (!snapshot || !name) { free(data); free(snapshot); free(name); message(a, "内存不足，未保存"); return false; }
@@ -199,10 +326,26 @@ static void open_note(App *a, const char *name) {
     }
     char *next_name = copy_string(name);
     if (!next_name) { note_store_free(data); message(a, "内存不足"); return; }
-    char error[256];
-    bool ok = ce_document_import(a->doc, data, CE_FORMAT_AUTO, error, sizeof(error));
+    char error[512]="内存不足";
+    CeDocument *candidate=ce_document_new();
+    bool ok = candidate && ce_document_import(candidate, data, CE_FORMAT_AUTO, error, sizeof(error));
     note_store_free(data);
-    if (!ok) { free(next_name); message(a, error); return; }
+    char *original=ok?ce_document_export_json(candidate):NULL;
+    if(ok && !original) SDL_strlcpy(error,"内存不足，未打开笔记",sizeof error);
+    CeCitationSession *next_session=NULL;
+    char citation_warning[512]="";
+    bool processed=ok && original && ce_citation_session_build(candidate,&a->library.library,NULL,
+        &next_session,citation_warning,sizeof citation_warning);
+    const char *replacement=processed?ce_citation_prepared_json(ce_citation_session_prepared(next_session)):original;
+    ok=ok && original && replacement && ce_document_import(a->doc,replacement,CE_FORMAT_JSON,error,sizeof error);
+    bool normalized=ok && processed && strcmp(original,replacement)!=0;
+    free(original); ce_document_free(candidate);
+    if (!ok) { ce_citation_session_free(next_session); free(next_name); message(a, error); return; }
+    ce_citation_session_free(a->citation_session); a->citation_session=next_session;
+    a->citation_normalized_pending=normalized;
+    SDL_strlcpy(a->citation_warning,citation_warning,sizeof a->citation_warning);
+    a->citation_style=ce_citation_session_profile(next_session); ++a->citation_revision;
+    if(processed) citation_diagnostics(a);
     free(a->active); a->active = next_name;
     ce_document_mark_saved(a->doc);
     a->scroll = 0;
@@ -211,7 +354,8 @@ static void open_note(App *a, const char *name) {
     sync_view(a);
     EditBox_SetFocus(a->edit, true);
     if (a->width < 700) a->sidebar = false;
-    message(a, *a->library_warning ? a->library_warning : "已打开 · 自动保存开启");
+    a->edited_at=SDL_GetTicks();
+    message(a, *a->citation_warning?a->citation_warning:*a->library_warning ? a->library_warning : "已打开 · 自动保存开启");
 }
 static void get_selection(App *a, size_t *start, size_t *end) {
     if (a->edit->highlight1 >= 0 && a->edit->highlight2 >= 0) {
@@ -269,12 +413,14 @@ static void accept_prompt(App *a) {
             message(a, "已选中匹配文本");
         } else message(a, "没有找到匹配文本");
     } else if (a->prompt_mode == PROMPT_LINK) {
-        if (!ce_document_style(a->doc, a->selection_start, a->selection_end, CE_MARK_LINK, value, *value != '\0'))
-            message(a, ce_document_error(a->doc));
+        if (!edit_style(a, a->selection_start, a->selection_end, CE_MARK_LINK, value, *value != '\0'))
+            message(a, a->edit_error);
         else mark_changed(a);
     } else if (a->prompt_mode == PROMPT_DELETE && a->active) {
         if (note_store_delete(&a->store, a->active) != NOTE_OK) { message(a, a->store.error); return; }
         free(a->active); a->active = NULL;
+        ce_citation_session_free(a->citation_session); a->citation_session=NULL;
+        a->citation_normalized_pending=false; a->citation_warning[0]='\0'; ++a->citation_revision;
         char error[256];
         ce_document_import(a->doc, "", CE_FORMAT_TEXT, error, sizeof(error));
         ce_document_mark_saved(a->doc); sync_view(a); refresh_files(a); platform_persist(structure_persisted,a); message(a, "已删除笔记");
@@ -309,7 +455,7 @@ static bool browser_clipboard_cut(const char *expected, void *state) {
     if (!matches || !edit) return false;
     if (edit == a->prompt) return EditBox_DeleteHighlight(edit);
     size_t from, to; get_selection(a, &from, &to);
-    if (!ce_document_delete(a->doc, from, to)) { message(a, ce_document_error(a->doc)); return false; }
+    if (!edit_replace(a, from, to, "")) { message(a, a->edit_error); return false; }
     edit->cursor = (int)from; sync_view(a); mark_changed(a); reveal_cursor(a);
     return true;
 }
@@ -320,8 +466,8 @@ static void format_selection(App *a, CeMark mark, const char *value) {
     size_t start, end; get_selection(a, &start, &end);
     if (start == end) { message(a, "请先选择要设置格式的文字"); return; }
     CeStyle style = ce_document_style_at(a->doc, start);
-    if (!ce_document_style(a->doc, start, end, mark, value, !(style.marks & mark)))
-        message(a, ce_document_error(a->doc));
+    if (!edit_style(a, start, end, mark, value, !(style.marks & mark)))
+        message(a, a->edit_error);
     else mark_changed(a);
 }
 static void action(App *a, Action which) {
@@ -334,8 +480,8 @@ static void action(App *a, Action which) {
     if (!a->active) { message(a, "请先新建或打开笔记"); return; }
     switch (which) {
         case ACT_SAVE: save_document(a); break;
-        case ACT_UNDO: if (ce_document_undo(a->doc)) { sync_view(a); mark_changed(a); } break;
-        case ACT_REDO: if (ce_document_redo(a->doc)) { sync_view(a); mark_changed(a); } break;
+        case ACT_UNDO: if (ce_document_undo(a->doc)) { citation_refresh(a); sync_view(a); mark_changed(a); } break;
+        case ACT_REDO: if (ce_document_redo(a->doc)) { citation_refresh(a); sync_view(a); mark_changed(a); } break;
         case ACT_BOLD: format_selection(a, CE_MARK_BOLD, NULL); break;
         case ACT_ITALIC: format_selection(a, CE_MARK_ITALIC, NULL); break;
         case ACT_UNDERLINE: format_selection(a, CE_MARK_UNDERLINE, NULL); break;
@@ -356,15 +502,15 @@ static void action(App *a, Action which) {
         case ACT_CLEAR: {
             size_t start, end; get_selection(a, &start, &end);
             if (start == end) { message(a, "请先选择要清除格式的文字"); break; }
-            if (ce_document_clear_formatting(a->doc, start, end)) mark_changed(a);
-            else message(a, ce_document_error(a->doc));
+            if (edit_clear(a, start, end)) mark_changed(a);
+            else message(a, a->edit_error);
             break;
         }
         case ACT_LEFT: case ACT_CENTER: case ACT_RIGHT: case ACT_JUSTIFY: {
             const char *alignment = which == ACT_LEFT ? "left" : which == ACT_CENTER ? "center" : which == ACT_RIGHT ? "right" : "justify";
             size_t start, end; get_selection(a, &start, &end);
-            if (ce_document_set_alignment(a->doc, start, end, alignment)) mark_changed(a);
-            else message(a, ce_document_error(a->doc));
+            if (edit_alignment(a, start, end, alignment)) mark_changed(a);
+            else message(a, a->edit_error);
             break;
         }
         case ACT_MOVE_UP: case ACT_MOVE_DOWN: {
@@ -377,25 +523,25 @@ static void action(App *a, Action which) {
             if (index == count || (which == ACT_MOVE_UP && !index) || (which == ACT_MOVE_DOWN && index + 1 == count)) break;
             size_t target = which == ACT_MOVE_UP ? index - 1 : index + 1;
             size_t relative = (size_t)a->edit->cursor-block.start, offset;
-            if (ce_document_move_block_ex(a->doc, index, target, &offset)) {
+            if (edit_move(a, index, target, &offset)) {
                 sync_view(a);
                 a->edit->cursor = (int)(offset+relative);
                 mark_changed(a); reveal_cursor(a);
-            } else message(a, ce_document_error(a->doc));
+            } else message(a, a->edit_error);
             break;
         }
         case ACT_DELETE: show_prompt(a, PROMPT_DELETE); break;
         case ACT_BULLETS: case ACT_NUMBERS: case ACT_HEADING: case ACT_PARAGRAPH: {
             size_t start, end; get_selection(a, &start, &end);
             CeBlockKind kind = which == ACT_BULLETS ? CE_BLOCK_BULLET : which == ACT_NUMBERS ? CE_BLOCK_ORDERED : which == ACT_PARAGRAPH ? CE_BLOCK_PARAGRAPH : CE_BLOCK_HEADING;
-            if (ce_document_set_block(a->doc, start, end, kind, 2)) { sync_view(a); mark_changed(a); }
-            else message(a, ce_document_error(a->doc));
+            if (edit_block(a, start, end, kind, 2)) { sync_view(a); mark_changed(a); }
+            else message(a, a->edit_error);
             break;
         }
         case ACT_JSON: {
             if (a->export_job) { message(a, "正在导出，请先完成文件选择"); break; }
-            char *json = ce_document_export_json(a->doc);
-            if (!json) { message(a, ce_document_error(a->doc)); break; }
+            char *json = citation_export(a,false);
+            if (!json) { message(a, a->edit_error); break; }
             const char *extension = strrchr(a->active, '.');
             size_t stem = extension ? (size_t)(extension - a->active) : strlen(a->active);
             char *filename = malloc(stem + sizeof(".json"));
@@ -428,9 +574,9 @@ static void reconcile_input(App *a) {
     char *insert = malloc(new_end - prefix + 1);
     if (!insert) { message(a, "内存不足"); sync_view(a); return; }
     memcpy(insert, next + prefix, new_end - prefix); insert[new_end-prefix] = '\0';
-    bool ok = ce_document_replace(a->doc, prefix, old_end, insert);
+    bool ok = edit_replace(a, prefix, old_end, insert);
     free(insert);
-    if (!ok) { message(a, ce_document_error(a->doc)); sync_view(a); }
+    if (!ok) { message(a, a->edit_error); sync_view(a); }
     else {
         /* Structural editing (for example leaving an empty list item or typing
          * next to a citation) may normalize block separators. Keep the input
@@ -495,7 +641,8 @@ static bool rich_prepare(void *userdata, EditBox *edit) {
         model = preview;
     }
     CeRichTheme theme = ce_rich_theme_default(a->dark);
-    a->rich_valid = ce_rich_layout_update(a->rich,model,width,&theme);
+    CeRichCitationSource citations={a->citation_revision,a,citation_resolve};
+    a->rich_valid = ce_rich_layout_update_citations(a->rich,model,width,&theme,&citations);
     ce_document_free(preview);
     return a->rich_valid;
 }
@@ -592,8 +739,8 @@ static bool library_prompt_accept(App *a,const char *value) {
     }
     return true;
 }
-static const char *approximate_style(App *a) {
-    return a->citation_style==CE_ZOTERO_APPROXIMATE_IEEE?"IEEE":a->citation_style==CE_ZOTERO_APPROXIMATE_GBT_7714?"GB/T 7714":"APA";
+static const char *citation_style_label(App *a) {
+    return a->citation_style==CE_CITATION_PROFILE_IEEE?"IEEE 2023":a->citation_style==CE_CITATION_PROFILE_GBT?"GB/T 7714-2015":"APA 7";
 }
 /* Footer synchronization changes offsets if an old footer was in the middle
  * of the document. Non-footer block order is stable, including duplicate-ID
@@ -640,7 +787,6 @@ static void library_action(App *a,LibraryAction action) {
     if(action==LIB_ALL) { if(!ce_library_panel_collection(&a->library,SIZE_MAX)) message(a,"无法更新条目列表"); return; }
     if(action==LIB_DESCENDANTS) { if(!ce_library_panel_descendants(&a->library,!a->library.include_descendants)) message(a,"无法更新子分类"); return; }
     if(action==LIB_PAGE || action==LIB_NOTE) { library_prompt(a,action==LIB_PAGE?PROMPT_CITATION_PAGE:PROMPT_CITATION_NOTE); return; }
-    if(action==LIB_STYLE) { a->citation_style=(CeZoteroApproximateStyle)((a->citation_style+1)%3); return; }
     if(action==LIB_RETRY) {
         if(a->library_cache_saving) message(a,"正在保存文献库，请稍候");
         else if(a->library_restore_failed) library_cache_load(a,false);
@@ -657,31 +803,48 @@ static void library_action(App *a,LibraryAction action) {
     }
     if(!a->active) { message(a,"请先新建或打开笔记，再插入引用或同步尾注"); return; }
     char error[256];
+    if(action==LIB_STYLE) {
+        CeCitationProfile profile=(CeCitationProfile)((a->citation_style+1)%3);
+        CeDocument *candidate=edit_candidate(a);
+        if(!edit_commit(a,candidate,true,&profile,true)) { message(a,a->edit_error); return; }
+        sync_view(a); mark_changed(a); message(a,"引用格式已更新，可撤销"); return;
+    }
     if(action==LIB_SYNC) {
         size_t ordinal=0,relative=0; bool anchored=library_anchor(a,&ordinal,&relative);
-        CeCitationSyncResult result;
-        if(!ce_citations_sync_approximate(a->doc,a->citation_style,&result,error,sizeof error)) { message(a,error); return; }
+        CeDocument *candidate=edit_candidate(a);
+        if(!edit_commit(a,candidate,true,NULL,true)) { message(a,a->edit_error); return; }
+        const CeCitationProcessStats *result=ce_citation_prepared_stats(ce_citation_session_prepared(a->citation_session));
         sync_view(a); mark_changed(a);
         if(anchored) library_restore_anchor(a,ordinal,relative);
         a->library_insert_offset=(size_t)a->edit->cursor;
         citation_context_capture(a);
-        char status[256]; SDL_snprintf(status,sizeof status,"已同步 %zu 条引用 / %zu 条文献 · %s 近似格式",result.citation_count,result.reference_count,approximate_style(a));
+        char status[256]; SDL_snprintf(status,sizeof status,"已更新 %zu 条引用 / %zu 条文献 · %s",result->citation_count,result->reference_count,citation_style_label(a));
         message(a,status); return;
     }
     if(action==LIB_INSERT) {
         if(a->library_citation_mode) {
             if(!a->citation_id || !*a->citation_id) { message(a,"未选中有效引用；缺少 ID 的旧引用可先同步尾注修复"); return; }
-            if(!ce_citation_update(a->doc,a->citation_id,a->citation_page,a->citation_note,error,sizeof error)) { message(a,error); return; }
+            CeDocument *candidate=edit_candidate(a);
+            if(!candidate) { message(a,a->edit_error); return; }
+            if(!ce_citation_update(candidate,a->citation_id,a->citation_page,a->citation_note,error,sizeof error)) {
+                ce_document_free(candidate); message(a,error); return;
+            }
+            if(!edit_commit(a,candidate,true,NULL,true)) { message(a,a->edit_error); return; }
             sync_view(a); mark_changed(a); library_close(a); reveal_cursor(a); message(a,"引用页码和摘录已更新，可撤销");
         } else {
             const CeZoteroItem *item=ce_library_panel_selected(&a->library);
             if(!item) { message(a,"请先在文献列表中选择一条文献"); return; }
             char *id=NULL;
-            if(!ce_citation_insert(a->doc,a->library_insert_offset,item,a->insert_page,a->insert_note,&id,error,sizeof error)) { message(a,error); return; }
+            CeDocument *candidate=edit_candidate(a);
+            if(!candidate) { message(a,a->edit_error); return; }
+            if(!ce_citation_insert(candidate,a->library_insert_offset,item,a->insert_page,a->insert_note,&id,error,sizeof error)) {
+                ce_document_free(candidate); message(a,error); return;
+            }
+            if(!edit_commit(a,candidate,true,NULL,true)) { free(id); message(a,a->edit_error); return; }
             sync_view(a); size_t end;
             if(citation_position(a,id,&end)) a->edit->cursor=(int)end;
             free(id); mark_changed(a); library_close(a); reveal_cursor(a);
-            message(a,"已插入引用，可撤销 · 在文献面板同步近似格式尾注");
+            message(a,"已插入引用并更新参考文献，可撤销");
         }
     }
 }
@@ -888,7 +1051,7 @@ static void library_draw(App *a) {
     SDL_SetRenderDrawBlendMode(a->renderer,SDL_BLENDMODE_NONE);
     SDL_Color bg=paper(a),text=ink(a),surface=a->dark?(SDL_Color){42,49,57,255}:(SDL_Color){234,240,236,255};
     fill(a,a->library_area,bg);
-    const char *names[LIB_BUTTON_COUNT]={"关闭","导入文件","文献库","当前引用","搜索","分类列表","全部条目","含子分类","页码","摘录","插入引用","原条目","PDF","APA · 近似","同步近似尾注","操作 ↓","重试保存"};
+    const char *names[LIB_BUTTON_COUNT]={"关闭","导入文件","文献库","当前引用","搜索","分类列表","全部条目","含子分类","页码","摘录","插入引用","原条目","PDF","APA 7","更新参考文献","操作 ↓","重试保存"};
     names[LIB_VIEW]=a->library_outer_scroll>0?"列表 ↑":"操作 ↓";
     names[LIB_RETRY]=a->library_restore_failed?"重试恢复":"重试保存";
     char search[512],page[256],note[256],style[64];
@@ -900,7 +1063,7 @@ static void library_draw(App *a) {
     SDL_snprintf(page,sizeof page,"页码：%s",page_value?page_value:""); names[LIB_PAGE]=page;
     SDL_snprintf(note,sizeof note,"摘录：%s",note_value?note_value:""); names[LIB_NOTE]=note;
     names[LIB_INSERT]=a->library_citation_mode?"保存引用":"插入引用";
-    SDL_snprintf(style,sizeof style,"%s · 近似",approximate_style(a)); names[LIB_STYLE]=style;
+    SDL_snprintf(style,sizeof style,"%s",citation_style_label(a)); names[LIB_STYLE]=style;
     for(size_t i=0;i<LIB_BUTTON_COUNT;i++) if(a->library_buttons[i].w && i!=LIB_CLOSE && i!=LIB_VIEW) {
         SDL_FRect button=a->library_buttons[i];
         fill(a,button,surface); clipped_label(a,names[i],(SDL_FRect){button.x+8,button.y+10,button.w-16,24},text);
@@ -944,7 +1107,7 @@ static void library_draw(App *a) {
     const char *title=a->library_citation_mode?a->citation_title:selected?selected->title:NULL;
     if(*a->library_warning) clipped_label(a,a->library_warning,(SDL_FRect){x,bottom+8,w-114,30},(SDL_Color){190,55,45,255});
     else clipped_label(a,title && *title?title:"选择文献后插入到正文光标处",(SDL_FRect){x,bottom+8,w,30},text);
-    clipped_label(a,"尾注采用近似格式，尚未使用完整 CSL 引擎。",(SDL_FRect){x,bottom+142,w,22},text);
+    clipped_label(a,*a->citation_warning?a->citation_warning:"引用和参考文献随编辑自动更新。",(SDL_FRect){x,bottom+142,w,22},text);
     fill(a,(SDL_FRect){a->library_area.x,0,a->library_area.w,56},bg);
     clipped_label(a,"Zotero 文献",(SDL_FRect){x+4,16,a->library_buttons[LIB_VIEW].w?140:w-72,30},text);
     const LibraryAction fixed[]={LIB_CLOSE,LIB_VIEW};
@@ -1251,8 +1414,8 @@ SDL_AppResult SDL_AppInit(void **state, int argc, char **argv) {
     platform_web_input_clipboard(browser_clipboard_read, browser_clipboard_cut, browser_clipboard_error, SDL_AppEvent, a);
     refresh_files(a); layout(a);
     message(a,"就绪 · Ctrl/Cmd+N 新建 · Ctrl/Cmd+S 保存");
-    if(a->files.count) open_note(a,a->files.names[0]);
     library_cache_load(a,true);
+    if(a->files.count) open_note(a,a->files.names[0]);
     return SDL_APP_CONTINUE;
 }
 SDL_AppResult SDL_AppEvent(void *state, SDL_Event *event) {
@@ -1361,7 +1524,7 @@ SDL_AppResult SDL_AppIterate(void *state) {
             message(a, result); platform_export_free(a->export_job); a->export_job = NULL;
         }
     }
-    if(a->active && !a->saving && ce_document_is_modified(a->doc) && !a->edit->composition_length && SDL_GetTicks()-a->edited_at>=1000) {
+    if(a->active && !a->saving && (ce_document_is_modified(a->doc) || a->citation_normalized_pending) && !a->edit->composition_length && SDL_GetTicks()-a->edited_at>=1000) {
         if(!save_document(a)) a->edited_at=SDL_GetTicks();
     }
     draw(a); ++a->frames;
@@ -1373,6 +1536,7 @@ void SDL_AppQuit(void *state, SDL_AppResult result) {
     platform_web_input_destroy();
     EditBox_Destroy(a->prompt); EditBox_Destroy(a->edit);
     ce_rich_layout_destroy(a->rich); free(a->rich_text);
+    ce_citation_session_free(a->citation_session);
     ce_document_free(a->doc); note_store_list_free(&a->files); note_store_destroy(&a->store);
     note_store_destroy(&a->library_store); free(a->notes_root);
     free(a->active); free(a->search_keyword);

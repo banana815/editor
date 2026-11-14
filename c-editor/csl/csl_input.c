@@ -1,6 +1,8 @@
 #include "csl_input.h"
+#include "csl_json.h"
 #include "csl_unicode.h"
 #include <inttypes.h>
+#include <locale.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -269,6 +271,124 @@ static bool prepare(CeCslInput *input,Reader *r) {
         free(sorted); if(!unique) return false;
     }
     return true;
+}
+bool ce_csl_json_parse_strict_with_numbers(const char *text,size_t size,cJSON **out,
+    bool *all_numbers_exact,char *error,size_t capacity) {
+    if(error && capacity) *error=0;
+    if(!out || !text || !size || size>CE_CSL_INPUT_MAX_BYTES || memchr(text,0,size) ||
+       ce_csl_unicode_validate(text,size,NULL)!=CE_CSL_UNICODE_OK)
+        return fail(error,capacity,"Invalid or oversized strict JSON input");
+    Reader reader={0}; reader.source=text; reader.size=size;
+    bool valid=value(&reader,0); whitespace(&reader);
+    if(!valid || reader.at!=size) {
+        free(reader.numbers);
+        return fail(error,capacity,"Malformed, excessive or unallocatable strict JSON");
+    }
+    const char *end=NULL;
+    cJSON *root=cJSON_ParseWithLengthOpts(text,size,&end,0);
+    size_t number_index=0;
+    valid=root && verify_tree(root,&reader,&number_index) && number_index==reader.number_count;
+    bool exact=true;
+    for(size_t i=0;i<reader.number_count;i++) if(!reader.numbers[i].exact) exact=false;
+    free(reader.numbers);
+    if(!valid) {
+        cJSON_Delete(root);
+        return fail(error,capacity,"Invalid strict JSON keys, finite values or allocation failure");
+    }
+    cJSON *old=*out; *out=root;
+    if(all_numbers_exact) *all_numbers_exact=exact;
+    cJSON_Delete(old); return true;
+}
+bool ce_csl_json_parse_strict(const char *text,size_t size,cJSON **out,char *error,size_t capacity) {
+    return ce_csl_json_parse_strict_with_numbers(text,size,out,NULL,error,capacity);
+}
+typedef struct ExactJson {
+    char *buffer;
+    size_t used, limit, nodes;
+} ExactJson;
+static bool exact_bytes(ExactJson *writer,const char *text,size_t size) {
+    if(size>writer->limit-writer->used) return false;
+    if(writer->buffer) memcpy(writer->buffer+writer->used,text,size);
+    writer->used+=size; return true;
+}
+static bool exact_string(ExactJson *writer,const char *text) {
+    if(!text) return false;
+    size_t size=strlen(text);
+    if(size>writer->limit-writer->used ||
+       ce_csl_unicode_validate(text,size,NULL)!=CE_CSL_UNICODE_OK ||
+       !exact_bytes(writer,"\"",1)) return false;
+    const char *start=text;
+    for(const unsigned char *p=(const unsigned char *)text;*p;p++) {
+        const char *escape=NULL; char control[7];
+        switch(*p) {
+        case '"': escape="\\\""; break;
+        case '\\': escape="\\\\"; break;
+        case '\b': escape="\\b"; break;
+        case '\f': escape="\\f"; break;
+        case '\n': escape="\\n"; break;
+        case '\r': escape="\\r"; break;
+        case '\t': escape="\\t"; break;
+        default:
+            if(*p<0x20) { snprintf(control,sizeof control,"\\u%04x",(unsigned)*p); escape=control; }
+            break;
+        }
+        if(escape) {
+            if(!exact_bytes(writer,start,(size_t)((const char *)p-start)) ||
+               !exact_bytes(writer,escape,strlen(escape))) return false;
+            start=(const char *)p+1;
+        }
+    }
+    return exact_bytes(writer,start,strlen(start)) && exact_bytes(writer,"\"",1);
+}
+static bool exact_number(ExactJson *writer,double number) {
+    if(!isfinite(number)) return false;
+    char text[128]; int count;
+    if(number==0 && signbit(number)) return exact_bytes(writer,"-0",2);
+    if(number>=-9007199254740991.0 && number<=9007199254740991.0 && floor(number)==number)
+        count=snprintf(text,sizeof text,"%" PRId64,(int64_t)number);
+    else count=snprintf(text,sizeof text,"%.17g",number);
+    if(count<=0 || (size_t)count>=sizeof text) return false;
+    /* printf follows LC_NUMERIC; JSON always requires a literal dot. */
+    const struct lconv *locale=localeconv();
+    const char *decimal=locale?locale->decimal_point:NULL;
+    if(decimal && *decimal && strcmp(decimal,".")) {
+        char *at=strstr(text,decimal);
+        if(at) {
+            size_t width=strlen(decimal);
+            *at='.'; memmove(at+1,at+width,strlen(at+width)+1);
+            count-=(int)(width-1);
+        }
+    }
+    return exact_bytes(writer,text,(size_t)count);
+}
+static bool exact_value(ExactJson *writer,const cJSON *value,unsigned depth) {
+    if(!value || ++writer->nodes>writer->limit) return false;
+    if(cJSON_IsNull(value)) return exact_bytes(writer,"null",4);
+    if(cJSON_IsTrue(value)) return exact_bytes(writer,"true",4);
+    if(cJSON_IsFalse(value)) return exact_bytes(writer,"false",5);
+    if(cJSON_IsString(value)) return exact_string(writer,value->valuestring);
+    if(cJSON_IsNumber(value)) return exact_number(writer,value->valuedouble);
+    bool object=cJSON_IsObject(value);
+    if((!object && !cJSON_IsArray(value)) || depth>=CJSON_NESTING_LIMIT ||
+       !exact_bytes(writer,object?"{":"[",1)) return false;
+    for(const cJSON *child=value->child;child;child=child->next) {
+        if(child!=value->child && !exact_bytes(writer,",",1)) return false;
+        if(object && (!exact_string(writer,child->string) || !exact_bytes(writer,":",1))) return false;
+        if(!exact_value(writer,child,depth+1)) return false;
+    }
+    return exact_bytes(writer,object?"}":"]",1);
+}
+char *ce_csl_json_print_exact_with_limit(const cJSON *value,size_t max_bytes) {
+    if(!max_bytes || max_bytes==SIZE_MAX) return NULL;
+    ExactJson measure={NULL,0,max_bytes,0};
+    if(!exact_value(&measure,value,0)) return NULL;
+    char *result=cJSON_malloc(measure.used+1); if(!result) return NULL;
+    ExactJson writer={result,0,measure.used,0};
+    if(!exact_value(&writer,value,0) || writer.used!=measure.used) { cJSON_free(result); return NULL; }
+    result[writer.used]=0; return result;
+}
+char *ce_csl_json_print_exact(const cJSON *value) {
+    return ce_csl_json_print_exact_with_limit(value,CE_CSL_INPUT_MAX_BYTES);
 }
 bool ce_csl_input_load(CeCslInput **slot,const char *json,size_t size,char *error,size_t capacity) {
     if(error && capacity) *error=0;
