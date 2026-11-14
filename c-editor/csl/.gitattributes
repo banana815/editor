@@ -1,0 +1,4 @@
+# Retain verified upstream data/license bytes and reproducible generated tables.
+data/** -text
+licenses/** -text
+resources/** -text

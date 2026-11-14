@@ -3,9 +3,9 @@ name: C editor
 on:
   push:
     branches: [main]
-    paths: ['c-editor/**', '.github/workflows/c-editor.yml']
+    paths: ['c-editor/**', '!c-editor/csl/**', '!c-editor/cmake/CSLDependencies.cmake', '.github/workflows/c-editor.yml']
   pull_request:
-    paths: ['c-editor/**', '.github/workflows/c-editor.yml']
+    paths: ['c-editor/**', '!c-editor/csl/**', '!c-editor/cmake/CSLDependencies.cmake', '.github/workflows/c-editor.yml']
   workflow_dispatch:
 
 permissions:
