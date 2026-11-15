@@ -1,0 +1,112 @@
+name: C citation processor
+
+on:
+  push:
+    branches: [main]
+    paths: ['c-editor/csl/**', 'c-editor/cmake/CSLDependencies.cmake', 'c-editor/cmake/Dependencies.cmake', '.github/workflows/csl.yml']
+  pull_request:
+    paths: ['c-editor/csl/**', 'c-editor/cmake/CSLDependencies.cmake', 'c-editor/cmake/Dependencies.cmake', '.github/workflows/csl.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: csl-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure the independent C module with release optimizations
+        run: cmake -S c-editor/csl -B c-editor/build-csl -DCMAKE_BUILD_TYPE=Release
+      - name: Compile and test
+        run: |
+          cmake --build c-editor/build-csl --config Release --parallel 4
+          ctest --test-dir c-editor/build-csl -C Release --output-on-failure
+      - name: Preserve test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: csl-tests-${{ runner.os }}
+          path: c-editor/build-csl/Testing/Temporary/LastTest.log
+          retention-days: 7
+
+  sanitizers:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Compile and run with memory and undefined-behavior checks
+        run: |
+          cmake -S c-editor/csl -B c-editor/build-csl-sanitized -DCSL_SANITIZERS=ON -DCMAKE_BUILD_TYPE=Debug
+          cmake --build c-editor/build-csl-sanitized --parallel 4
+          ctest --test-dir c-editor/build-csl-sanitized --output-on-failure
+
+  wasm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install pinned Emscripten SDK
+        run: |
+          git clone --depth 1 --branch 4.0.14 https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
+          "$RUNNER_TEMP/emsdk/emsdk" install 4.0.14
+          "$RUNNER_TEMP/emsdk/emsdk" activate 4.0.14
+      - name: Run the same C fixtures as WebAssembly
+        run: |
+          source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
+          emcmake cmake -S c-editor/csl -B c-editor/build-csl-wasm -DCMAKE_BUILD_TYPE=Debug
+          cmake --build c-editor/build-csl-wasm --parallel 4
+          ctest --test-dir c-editor/build-csl-wasm --output-on-failure
+
+  ios:
+    runs-on: macos-15
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk: [iphoneos, iphonesimulator]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Cross-compile the C library for iOS
+        run: |
+          cmake -S c-editor/csl -B c-editor/build-csl-ios -G Xcode \
+            -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=${{ matrix.sdk }} \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO -DBUILD_TESTING=OFF
+          cmake --build c-editor/build-csl-ios --config Release --parallel 4
+
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, x86_64]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - name: Install the pinned native toolchain
+        run: sdkmanager 'ndk;28.2.13676358'
+      - name: Cross-compile the C library for Android
+        run: |
+          cmake -S c-editor/csl -B c-editor/build-csl-android \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_HOME/ndk/28.2.13676358/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=${{ matrix.abi }} -DANDROID_PLATFORM=android-24 \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+          cmake --build c-editor/build-csl-android --parallel 4

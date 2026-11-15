@@ -1,0 +1,8 @@
+/build*/
+/dist/
+/notelab-ios-*-unsigned.tar.gz
+/.toolchains/
+*.log
+.DS_Store
+__pycache__/
+*.pyc

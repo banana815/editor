@@ -1,0 +1,71 @@
+include_guard(GLOBAL)
+if(NOT EDITOR_BUILD_APP)
+  return()
+endif()
+
+# Noto Emoji 3.002, official Google Fonts distribution (SIL OFL 1.1).
+# This monochrome outline font works with the existing FreeType/HarfBuzz build;
+# it does not require platform fonts, PNG color strikes, SVG or COLRv1 support.
+# Source: https://github.com/google/fonts/tree/29b4ec6df2522a8aee279414b78a07910b065874/ofl/notoemoji
+set(_editor_emoji_commit "29b4ec6df2522a8aee279414b78a07910b065874")
+set(_editor_emoji_sha256 "de6c18832938afc99caf132b39d6a30a19bac7f2e812e28db2535b4608d27551")
+set(_editor_emoji_default "${EDITOR_ASSETS_DIR}/NotoEmoji-Variable.ttf")
+set(EDITOR_EMOJI_FONT_PATH "${_editor_emoji_default}" CACHE FILEPATH
+  "Bundled Noto Emoji font, or an existing licensed local font for offline builds")
+file(MAKE_DIRECTORY "${EDITOR_ASSETS_DIR}")
+
+if("${EDITOR_EMOJI_FONT_PATH}" STREQUAL "${_editor_emoji_default}")
+  set(_editor_emoji_valid FALSE)
+  if(EXISTS "${_editor_emoji_default}" AND NOT IS_DIRECTORY "${_editor_emoji_default}")
+    file(SHA256 "${_editor_emoji_default}" _editor_emoji_existing_sha256)
+    if("${_editor_emoji_existing_sha256}" STREQUAL "${_editor_emoji_sha256}")
+      set(_editor_emoji_valid TRUE)
+    endif()
+  endif()
+  if(NOT _editor_emoji_valid)
+    set(_editor_emoji_partial "${_editor_emoji_default}.part")
+    set(_editor_emoji_sources
+      "https://raw.githubusercontent.com/google/fonts/${_editor_emoji_commit}/ofl/notoemoji/NotoEmoji%5Bwght%5D.ttf"
+      "https://api.github.com/repos/google/fonts/contents/ofl/notoemoji/NotoEmoji%5Bwght%5D.ttf?ref=${_editor_emoji_commit}"
+    )
+    set(_editor_emoji_errors "")
+    message(STATUS "Downloading Noto Emoji 3.002 (2 MB, SIL Open Font License)")
+    foreach(_editor_emoji_source IN LISTS _editor_emoji_sources)
+      file(REMOVE "${_editor_emoji_partial}")
+      set(_editor_emoji_headers)
+      if(_editor_emoji_source MATCHES "^https://api\\.github\\.com/")
+        set(_editor_emoji_headers HTTPHEADER "Accept: application/vnd.github.raw+json")
+      endif()
+      file(DOWNLOAD "${_editor_emoji_source}" "${_editor_emoji_partial}"
+        ${_editor_emoji_headers}
+        TLS_VERIFY ON TIMEOUT 180 INACTIVITY_TIMEOUT 20 STATUS _editor_emoji_status)
+      list(GET _editor_emoji_status 0 _editor_emoji_code)
+      if(_editor_emoji_code EQUAL 0)
+        file(SHA256 "${_editor_emoji_partial}" _editor_emoji_download_sha256)
+        if("${_editor_emoji_download_sha256}" STREQUAL "${_editor_emoji_sha256}")
+          set(_editor_emoji_valid TRUE)
+          break()
+        endif()
+        string(APPEND _editor_emoji_errors "\n${_editor_emoji_source}: SHA256 mismatch")
+      else()
+        string(APPEND _editor_emoji_errors "\n${_editor_emoji_source}: ${_editor_emoji_status}")
+      endif()
+      file(REMOVE "${_editor_emoji_partial}")
+    endforeach()
+    if(NOT _editor_emoji_valid)
+      message(FATAL_ERROR "Noto Emoji download failed:${_editor_emoji_errors}\nRetry or provide EDITOR_EMOJI_FONT_PATH for an offline build.")
+    endif()
+    file(RENAME "${_editor_emoji_partial}" "${_editor_emoji_default}" RESULT _editor_emoji_rename)
+    if(NOT "${_editor_emoji_rename}" STREQUAL "0")
+      file(REMOVE "${_editor_emoji_partial}")
+      message(FATAL_ERROR "Cannot install verified Noto Emoji: ${_editor_emoji_rename}")
+    endif()
+  endif()
+elseif(NOT EXISTS "${EDITOR_EMOJI_FONT_PATH}" OR IS_DIRECTORY "${EDITOR_EMOJI_FONT_PATH}")
+  message(FATAL_ERROR "EDITOR_EMOJI_FONT_PATH must name an existing licensed font file")
+endif()
+
+set(EDITOR_EMOJI_BUNDLED_PATH "${EDITOR_ASSETS_DIR}/emoji.ttf")
+set(EDITOR_EMOJI_LICENSE_PATH "${EDITOR_ASSETS_DIR}/OFL-Emoji.txt")
+configure_file("${EDITOR_EMOJI_FONT_PATH}" "${EDITOR_EMOJI_BUNDLED_PATH}" COPYONLY)
+configure_file("${CMAKE_CURRENT_LIST_DIR}/../assets/OFL-Emoji.txt" "${EDITOR_EMOJI_LICENSE_PATH}" COPYONLY)

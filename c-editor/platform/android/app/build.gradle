@@ -1,0 +1,46 @@
+plugins { id 'com.android.application' }
+
+def sdlSource = file(findProperty('sdlSource') ?: '../../../build-android-deps/SDL')
+if (!new File(sdlSource, 'android-project/app/src/main/java/org/libsdl/app/SDLActivity.java').isFile()) {
+    throw new GradleException('Run python3 prepare.py before Gradle, or pass -PsdlSource=/absolute/path/to/matching/SDL')
+}
+def architectures = (findProperty('abis') ?: 'arm64-v8a,x86_64').split(',') as List
+def nativeAssets = layout.buildDirectory.dir('generated/native-assets').get().asFile
+
+android {
+    namespace 'org.notelab.editor'
+    compileSdk 35
+    ndkVersion '28.2.13676358'
+    defaultConfig {
+        applicationId 'org.notelab.editor'
+        minSdk 24
+        targetSdk 35
+        versionCode 2
+        versionName '0.2.0'
+        ndk { abiFilters.addAll(architectures) }
+        externalNativeBuild {
+            cmake {
+                arguments '-DBUILD_TESTING=OFF', '-DANDROID_STL=c++_shared',
+                    "-DFETCHCONTENT_SOURCE_DIR_EDITOR_SDL=${sdlSource.absolutePath}",
+                    "-DNOTELAB_ANDROID_ASSETS_DIR=${nativeAssets.absolutePath}"
+                targets 'notelab'
+            }
+        }
+    }
+    externalNativeBuild {
+        cmake { path file('CMakeLists.txt'); version '3.31.6' }
+    }
+    sourceSets {
+        main {
+            java.srcDir new File(sdlSource, 'android-project/app/src/main/java')
+            assets.srcDir new File(nativeAssets, architectures.first())
+        }
+    }
+    // Match SDL's template: the CMake target stages its font before asset packaging.
+    applicationVariants.all { variant ->
+        tasks.named("merge${variant.name.capitalize()}Assets").configure {
+            dependsOn "externalNativeBuild${variant.name.capitalize()}"
+        }
+    }
+    buildTypes { release { minifyEnabled false } }
+}

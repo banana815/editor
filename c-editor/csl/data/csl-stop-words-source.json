@@ -1,0 +1,8 @@
+{
+  "repository": "citation-style-language/schema",
+  "commit": "e3ce254a72c4470a5ed3b9d23b428017d25674e9",
+  "path": "schemas/styles/stop-words.json",
+  "sha256": "e00a7ab53a61368740003b5a7169d1887c2ed12a6800574bf4f6b789e5bde1e5",
+  "license": "MIT",
+  "license_sha256": "6d77b80c6b2412a010e22ee5b5d0a92689f402ddb8766dea2346b525db6a7c6d"
+}

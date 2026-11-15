@@ -1,0 +1,724 @@
+{
+  "format": 1,
+  "scope": "Pinned NoteLab C dependencies and platform-runtime license sources; see ../THIRD_PARTY.md for conditional dependencies and unresolved Zotero schema provenance.",
+  "licenses": [
+    {
+      "file": "cJSON.txt",
+      "sha256": "a36dda207c36db5818729c54e7ad4e8b0c6fba847491ba64f372c1a2037b6d5c",
+      "method": "Verbatim upstream license file",
+      "sources": [
+        {
+          "source": "https://github.com/DaveGamble/cJSON/blob/v1.7.19/LICENSE",
+          "source_sha256": "a36dda207c36db5818729c54e7ad4e8b0c6fba847491ba64f372c1a2037b6d5c"
+        }
+      ]
+    },
+    {
+      "file": "SDL.txt",
+      "sha256": "1c040b8271b37e5076359f8fd54240e371114112924d2df81ef87c7d6a1dfdfd",
+      "method": "Verbatim upstream license file",
+      "sources": [
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/LICENSE.txt",
+          "source_sha256": "1c040b8271b37e5076359f8fd54240e371114112924d2df81ef87c7d6a1dfdfd"
+        }
+      ]
+    },
+    {
+      "file": "SDL-hidapi-BSD.txt",
+      "sha256": "30eb1bef29b46f8ba7ab8b416035dbd93cb034a45481dd97815b944284582cd2",
+      "method": "Verbatim upstream license file",
+      "sources": [
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/hidapi/LICENSE-bsd.txt",
+          "source_sha256": "30eb1bef29b46f8ba7ab8b416035dbd93cb034a45481dd97815b944284582cd2"
+        }
+      ]
+    },
+    {
+      "file": "SDL-hidapi-license-choice.txt",
+      "sha256": "7d3b087c34f35d4d538e3bcddd1ff8f66e92f9ef336881999482800ddf840913",
+      "method": "Verbatim upstream license file",
+      "sources": [
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/hidapi/LICENSE.txt",
+          "source_sha256": "7d3b087c34f35d4d538e3bcddd1ff8f66e92f9ef336881999482800ddf840913"
+        }
+      ]
+    },
+    {
+      "file": "SDL-yuv2rgb.txt",
+      "sha256": "f7d74004cc75778cae46c5f0139f244d67c07ef64cf51937e8272352197dcb18",
+      "method": "Verbatim upstream license file",
+      "sources": [
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/video/yuv2rgb/LICENSE",
+          "source_sha256": "f7d74004cc75778cae46c5f0139f244d67c07ef64cf51937e8272352197dcb18"
+        }
+      ]
+    },
+    {
+      "file": "SDL-additional.txt",
+      "sha256": "60237ecf0517384076372a8897881fd7ba7ba5e3b33299c24348d6ae002c7363",
+      "method": "Verbatim source notice comments, deduplicated; conditional platform code included. dlmalloc notice ends before its technical Quickstart.",
+      "sources": [
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/events/imKStoUCS.c",
+          "source_sha256": "af7b4ebf300d3c38c93196f00e9da5a9c91bf66d8bb017639c21f8a52e7a3387"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/filesystem/unix/SDL_sysfilesystem.c",
+          "source_sha256": "4ca1e828a11d1283b8b3a440760a07d140d29b9a435acd651fde4483d9974f16"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/haptic/hidapi/SDL_hidapihaptic.c",
+          "source_sha256": "c899aa46a71282b5dd5bb0b7efbd4f8945b043b451beac5e0dc9fffff04b711c"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/haptic/hidapi/SDL_hidapihaptic_lg4ff.c",
+          "source_sha256": "bfa9bd7b54b8903e32ca4a6378933cbf620f4c8850b71d960c281cce572382ab"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/hidapi/android/hid.cpp",
+          "source_sha256": "6219fc250e50a0dc7a73f45b35618a5335084e47179879b4466f62ebc83a395d"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/hidapi/hidapi/hidapi.h",
+          "source_sha256": "eb0dab071c8398a0f0187b64cf83b686dcd2d395d65c738a1825090c40d415dd"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/hidapi/ios/hid.m",
+          "source_sha256": "9f702396c6d043e56a4b3f528edc8da85de16017208f762cd81de25771e25faa"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/hidapi/libusb/hid.c",
+          "source_sha256": "8ed97d4710100397ca4ed03ce49cb6211922e9f3f5ccc3a89b81dc382a9ccbce"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/hidapi/libusb/hidapi_libusb.h",
+          "source_sha256": "cadaca939f9538da3a931b559aee3998c1245404caae222a553171bf8942c859"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/hidapi/mac/hidapi_darwin.h",
+          "source_sha256": "49ccf766295b46737d9a9a355449534111160dcd50c769d1cdeca7d40442f55e"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/joystick/controller_list.h",
+          "source_sha256": "ae8261715ef03346d13f6d9d1d0b837d21fe82fcc8d9c6c5104721b248362b40"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/joystick/hidapi/SDL_hidapi_lg4ff.c",
+          "source_sha256": "1d76f4c204ca8335d258340d12cec6083d1a0401149fea204351121401a4b189"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/joystick/hidapi/SDL_hidapi_sinput.c",
+          "source_sha256": "c76565e40adc6bc074720dcc439d48c463b0c027ed722bc6c1e203a09b02839f"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/joystick/hidapi/SDL_hidapi_steamdeck.c",
+          "source_sha256": "fc746697ff17feefafea773104c866c573d743d856095b556a9d1edb5956ee72"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/joystick/hidapi/steam/controller_structs.h",
+          "source_sha256": "6217267bfa7e2b446edd6c45ac78e7603ac937960e7585831423d94d2a10c3b8"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/libm/e_atan2.c",
+          "source_sha256": "8a2d246e2090ba5b64a5cc146a6615c2ed13ec8414eb3070503a21c83dfb63fe"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/libm/s_isinf.c",
+          "source_sha256": "7041710018b47bcbe82c92346ebcb368fadb9a81689e5eafc9e4244500ccc90e"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/libm/s_isinff.c",
+          "source_sha256": "74603b1fb8cf0a2f865286882cb71eaa703962b49881fbac74380dc1291c2cbc"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/render/SDL_render_debug_font.h",
+          "source_sha256": "0c96157b6397485698ac07d20d33858e086c2752403f4d2f57a70acc26fa45df"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/stdlib/SDL_crc16.c",
+          "source_sha256": "2a426a77ebac0b20d03900da84907b0883d059d29f10454489466c9b9f00d297"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/stdlib/SDL_crc32.c",
+          "source_sha256": "e1b1f3cad38c5cf3899b3023e2ddf74d822790828b559e3d6f0730dc721085b5"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/stdlib/SDL_qsort.c",
+          "source_sha256": "edfdd99506d8e71ed7d53ba485daf9240b7669786755f086c58a25245c122760"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/stdlib/SDL_strtokr.c",
+          "source_sha256": "2d2129b5b92f2abce59f8b87656de0f74094a1614051e458e696fd4f8f216d7d"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/time/SDL_time.c",
+          "source_sha256": "952be26467cf335c92901ae22e2286101384025be2682323cf1d336e019dc89c"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/video/SDL_blit_slow.c",
+          "source_sha256": "60eba79d79128053aa68d50a94db83656d8dfef1853802f635d52c5949e33464"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/video/SDL_blit_slow.c",
+          "source_sha256": "60eba79d79128053aa68d50a94db83656d8dfef1853802f635d52c5949e33464"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/video/SDL_rotate.c",
+          "source_sha256": "5cfd02459d7bbc384564331dc2883a3ee67525c58a55c7eccd340440e283d10d"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/video/directx/d3d12.h",
+          "source_sha256": "62b1d69279dfca89bb33ce45b6dfc3dc9c6c3a1b3b9e703ef20baa9fe648086b"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/video/khronos/EGL/egl.h",
+          "source_sha256": "f5f41711f5d7517eb50d63726d786d471a3e84a52b94fd9aca9b6262b629347c"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/video/khronos/EGL/eglplatform.h",
+          "source_sha256": "25b5391655effcf363a38fa00c3154f356a3eab3d35dc067847875513cf1e441"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/video/khronos/GLES2/gl2.h",
+          "source_sha256": "3a2855122942ddc6bed5195cae901a8468e7c633ac999e3f3d70b98949a28652"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/video/khronos/GLES2/gl2platform.h",
+          "source_sha256": "f5da0747540a50be5f44aad264aae45bdf157a192c40f17487dd9a2f99c71b6c"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/video/khronos/KHR/khrplatform.h",
+          "source_sha256": "7b1e01aaa7ad8f6fc34b5c7bdf79ebf5189bb09e2c4d2e79fc5d350623d11e83"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/video/khronos/vk_video/vulkan_video_codec_av1std.h",
+          "source_sha256": "f3ab53dbfdeb36a349f674656d50bd507f2e4b3c883343da74aace0df4f02a02"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/video/khronos/vulkan/vk_icd.h",
+          "source_sha256": "6c80200a7fcc4c7da3170ef9dc674eab142c92767bfc9733c98649bce78aecb9"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/video/khronos/vulkan/vk_platform.h",
+          "source_sha256": "c4cabbcf699c90cde344095ae54da9435d117951aad114ba3a540c5997d7906f"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/video/miniz.h",
+          "source_sha256": "caedfea041a85a868245f044cb9c17b3d3c69e3d92242e62757f6c120bb2d3fc"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/video/stb_image.h",
+          "source_sha256": "6741ecbd17740f45aa2fac0c9dc82d3079fe28860630a2755fe001827cc06ba5"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/video/x11/SDL_x11settings.c",
+          "source_sha256": "f732ace9fb193037093dcaf6354b7a9bac1da37ad1d1f5bf6cd163fa6bc7af6e"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/video/x11/edid-parse.c",
+          "source_sha256": "5d85f9160e7bc1ecb320603aacb1a020acf61f9b6bc1c729bbcec6294bda03a1"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/video/x11/xsettings-client.c",
+          "source_sha256": "cabb80e4b4fb95da92e1d60619e0cc0c9b3c13e48ad2086d5284120e02a50c71"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/src/stdlib/SDL_malloc.c",
+          "source_sha256": "9101ca62e3274c03306b1930b33c6b5496f51b34dca906fadd2c94802142cc9a"
+        }
+      ]
+    },
+    {
+      "file": "SDL-Wayland-protocols.txt",
+      "sha256": "d414eb6b9ac0321d9c5154d92a03aa1a19decf533a34a1824d3faccbde89e720",
+      "method": "Verbatim copyright element text from bundled Wayland protocol XML files",
+      "sources": [
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/wayland-protocols/alpha-modifier-v1.xml",
+          "source_sha256": "1c1db85489a85c43ce086f7113c6794b8fc7888da07b2ade525a236169e44060"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/wayland-protocols/color-management-v1.xml",
+          "source_sha256": "853f4d31ad95fd062fde22d91ab96ea445e5c48518ffb634f3f445e695654e58"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/wayland-protocols/cursor-shape-v1.xml",
+          "source_sha256": "a7f107be277de61f08b6094e918e18bca205eb0c3b20328b11cb520cfe8a2344"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/wayland-protocols/fractional-scale-v1.xml",
+          "source_sha256": "5941de5d28f427ecdadddc8623a6f6af0a30b0ab4726847236ba7a7652b81316"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/wayland-protocols/frog-color-management-v1.xml",
+          "source_sha256": "5b7e983e4407a7db98e45804dcd1f9ff81f9169ad6d1d6d4605fd7a54c54e973"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/wayland-protocols/idle-inhibit-unstable-v1.xml",
+          "source_sha256": "c2ac9f002c6669ca6c02eb9b587b8e9108e3ce6deab4a2de58b576f4f864ca38"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/wayland-protocols/input-timestamps-unstable-v1.xml",
+          "source_sha256": "92d9911f070407d470458f59ffdee5406ce3b6368270a93e6ecd9f4f71368bb0"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/wayland-protocols/keyboard-shortcuts-inhibit-unstable-v1.xml",
+          "source_sha256": "9117d9e8ec02e9a3c3c55803b41e1227e76986f555f7c12eeb29f796fa63e69b"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/wayland-protocols/pointer-constraints-unstable-v1.xml",
+          "source_sha256": "b40a5fe19883efef0a274ef82dea47b6a8af4647af58950ab7c6da3058f3a949"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/wayland-protocols/pointer-warp-v1.xml",
+          "source_sha256": "1389e89c68c6f6d231fd2dcda57fa9c75c5230d0ac1deffa8d80a7648e197e66"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/wayland-protocols/primary-selection-unstable-v1.xml",
+          "source_sha256": "d568482ba84df6e531698b1f531810860995ca24d69495427fe43aee6017f52c"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/wayland-protocols/relative-pointer-unstable-v1.xml",
+          "source_sha256": "ab4930dd3084f732b6fdd12ee6dbd0a112a758ed8a57b170366391dbeb1a22ff"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/wayland-protocols/tablet-v2.xml",
+          "source_sha256": "5d258e4f1fb10e4163521f57110d8085462f79ecf0a36ed53142ff4c2b64f3cc"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/wayland-protocols/text-input-unstable-v3.xml",
+          "source_sha256": "b29ccbec77433f988b72cc37fc94cf6567f7a65053b0890611b444cfdf4523ed"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/wayland-protocols/viewporter.xml",
+          "source_sha256": "d5da5c61107c53062c7a73093bd72676a0d643fa04eb1867411126600a75fc54"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/wayland-protocols/wayland.xml",
+          "source_sha256": "cc860987e54f8d85c940e97fa1270c69b6e4ad31fbcf5a7f00107ce1157f5e07"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/wayland-protocols/xdg-activation-v1.xml",
+          "source_sha256": "d960c1deaf44540aeef9d65e57298bcd16850f5522b6ae2ab7ae313fc9c7e4ca"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/wayland-protocols/xdg-decoration-unstable-v1.xml",
+          "source_sha256": "4c52b8e737ade1a08da98d6d88329b8f76f2d3933732a5c13a454b5ea0e9ec03"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/wayland-protocols/xdg-dialog-v1.xml",
+          "source_sha256": "2822956bdf13d51848ff4b5e29c509028c1204c6e06262ee926b001f43a42dbb"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/wayland-protocols/xdg-foreign-unstable-v2.xml",
+          "source_sha256": "625d83fbb068f48e69e739eafde507f10cdfe7480146f3ac10af9a2ddf551c80"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/wayland-protocols/xdg-output-unstable-v1.xml",
+          "source_sha256": "bfa8b1b5c4d1dab96f317c52b218cb09f59caf747ff59c87d1870c7feeadcecb"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/wayland-protocols/xdg-shell.xml",
+          "source_sha256": "9d9e27038ca722f159a361293f8c6cd270dab907ab52de5b8ecfbb8d6b9651c2"
+        },
+        {
+          "source": "https://github.com/libsdl-org/SDL/blob/f00dc919ca35b9756316e86c4777392de442f9b2/wayland-protocols/xdg-toplevel-icon-v1.xml",
+          "source_sha256": "c1553209039726be7641a97329beef4a22807a08cc3e8373c6da49c36abb290c"
+        }
+      ]
+    },
+    {
+      "file": "SDL_ttf.txt",
+      "sha256": "7826eca0a0f7e591f38dd844e207a200aac81a59b20d8a30c3af8c6282af13e6",
+      "method": "Verbatim upstream license file",
+      "sources": [
+        {
+          "source": "https://github.com/libsdl-org/SDL_ttf/blob/a1ce3670aec736ecbf0936c43f2f0cc53aa61e5b/LICENSE.txt",
+          "source_sha256": "7826eca0a0f7e591f38dd844e207a200aac81a59b20d8a30c3af8c6282af13e6"
+        }
+      ]
+    },
+    {
+      "file": "SDL_ttf-editbox.txt",
+      "sha256": "739b5ee94b17e15249f0b756ffaf1e7eb448bf094ccb0ebfc2b1cc9d53404730",
+      "method": "Verbatim retained example-source license comment",
+      "sources": [
+        {
+          "source": "vendor/editbox.c",
+          "source_sha256": "5bb643bd979391039755bc11a8b8d07ced110757a1bdbe5e90104437e282a164"
+        }
+      ]
+    },
+    {
+      "file": "FreeType.txt",
+      "sha256": "08c135755dd589039470f1fdbb400daaabaaa50d0b366d19cebff4d22986baa1",
+      "method": "Verbatim upstream license file",
+      "sources": [
+        {
+          "source": "https://github.com/freetype/freetype/blob/9973564cfa63763a3e4ac67c09147899539b1e07/docs/FTL.TXT",
+          "source_sha256": "08c135755dd589039470f1fdbb400daaabaaa50d0b366d19cebff4d22986baa1"
+        }
+      ]
+    },
+    {
+      "file": "FreeType-license-choice.txt",
+      "sha256": "2e3bbb7d7c5c396368dd0853a790ec29ce5b8647163dde42a0493fb0d6556b2b",
+      "method": "Verbatim upstream license file",
+      "sources": [
+        {
+          "source": "https://github.com/freetype/freetype/blob/9973564cfa63763a3e4ac67c09147899539b1e07/LICENSE.TXT",
+          "source_sha256": "2e3bbb7d7c5c396368dd0853a790ec29ce5b8647163dde42a0493fb0d6556b2b"
+        }
+      ]
+    },
+    {
+      "file": "FreeType-additional.txt",
+      "sha256": "6a389a4473b898f9ad03e781bcb5d04f7fbd22f750a04e3e230c5393030b42b4",
+      "method": "Verbatim license sections/comments for BDF, PCF, hash, HarfBuzz glue, and bundled zlib 1.3",
+      "sources": [
+        {
+          "source": "https://github.com/freetype/freetype/blob/9973564cfa63763a3e4ac67c09147899539b1e07/src/bdf/README",
+          "source_sha256": "7984455e7e5a9faba3797c8bf095fbe10cc846316b7320aff8c58402e22b82fe"
+        },
+        {
+          "source": "https://github.com/freetype/freetype/blob/9973564cfa63763a3e4ac67c09147899539b1e07/src/pcf/README",
+          "source_sha256": "18d9782898d9eac04476e2f744678137b2a889689ed3e923e052fc396a86f86b"
+        },
+        {
+          "source": "https://github.com/freetype/freetype/blob/9973564cfa63763a3e4ac67c09147899539b1e07/src/base/fthash.c",
+          "source_sha256": "73fca7e875ea7bfc7496dc9eb84abe9f16844ebd7589f0e4eafd9b1d1df137e3"
+        },
+        {
+          "source": "https://github.com/freetype/freetype/blob/9973564cfa63763a3e4ac67c09147899539b1e07/src/autofit/ft-hb.c",
+          "source_sha256": "65c23597427a2954bed2145191d2f129fe26b6f290d371b900628ac0c6b5af37"
+        },
+        {
+          "source": "https://github.com/freetype/freetype/blob/9973564cfa63763a3e4ac67c09147899539b1e07/src/gzip/zlib.h",
+          "source_sha256": "611f309346ae31781d4cf8f795f8c79092eee6c8a0c273c8ba81c6beeb0ecf92"
+        }
+      ]
+    },
+    {
+      "file": "HarfBuzz.txt",
+      "sha256": "ba8f810f2455c2f08e2d56bb49b72f37fcf68f1f4fade38977cfd7372050ad64",
+      "method": "Verbatim upstream license file",
+      "sources": [
+        {
+          "source": "https://github.com/harfbuzz/harfbuzz/blob/564bf9818a18709776856533829c0c04950773d6/COPYING",
+          "source_sha256": "ba8f810f2455c2f08e2d56bb49b72f37fcf68f1f4fade38977cfd7372050ad64"
+        }
+      ]
+    },
+    {
+      "file": "HarfBuzz-Microsoft-USE.txt",
+      "sha256": "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383",
+      "method": "Verbatim upstream license file",
+      "sources": [
+        {
+          "source": "https://github.com/harfbuzz/harfbuzz/blob/564bf9818a18709776856533829c0c04950773d6/src/ms-use/COPYING",
+          "source_sha256": "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+        }
+      ]
+    },
+    {
+      "file": "HarfBuzz-additional.txt",
+      "sha256": "867f39c162f668db2496c611edc22098d2443c1ba8e562f05e66b2742ec3bde2",
+      "method": "Verbatim source notice comments (including embedded hash implementation)",
+      "sources": [
+        {
+          "source": "https://github.com/harfbuzz/harfbuzz/blob/564bf9818a18709776856533829c0c04950773d6/src/hb-algs.hh",
+          "source_sha256": "587496a03384dd2d612975b50348545dc64c3af43328ada71bbf6803bc47ee00"
+        },
+        {
+          "source": "https://github.com/harfbuzz/harfbuzz/blob/564bf9818a18709776856533829c0c04950773d6/src/hb-algs.hh",
+          "source_sha256": "587496a03384dd2d612975b50348545dc64c3af43328ada71bbf6803bc47ee00"
+        }
+      ]
+    },
+    {
+      "file": "SQLite.txt",
+      "sha256": "49cf7bcb103eb3244150a23bb23d840370a4762914faf1b450072a4b03c14670",
+      "method": "Verbatim public-domain notice in the SQLite 3.54.1 amalgamation; source archive: https://sqlite.org/2026/sqlite-amalgamation-3540100.zip",
+      "sources": [
+        {
+          "source": "build/_deps/editor_sqlite_source-src/sqlite3.c",
+          "source_sha256": "0c657666d819f261cc4007526ad57e1669de9949df7a8ea847aa284a2bf0ee52"
+        }
+      ]
+    },
+    {
+      "file": "NotoSansCJK-OFL.txt",
+      "sha256": "6dbf52c0242314144dd6a942e69eccb031358677a291722f3c896c2b3c9374ad",
+      "method": "Upstream OFL text prefixed with copyright/version read from the pinned font name table",
+      "sources": [
+        {
+          "source": "assets/OFL.txt",
+          "source_sha256": "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2"
+        }
+      ],
+      "font": {
+        "source": "https://github.com/notofonts/noto-cjk/blob/523d033d6cb47f4a80c58a35753646f5c3608a78/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf",
+        "sha256": "2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b",
+        "license_source": "https://github.com/notofonts/noto-cjk/blob/523d033d6cb47f4a80c58a35753646f5c3608a78/LICENSE"
+      }
+    },
+    {
+      "file": "NotoEmoji-OFL.txt",
+      "sha256": "d7d9b7661c484a62bbe7b4a5c3dc7789af1712bb20dcd92d2c1a6c87d56d6b37",
+      "method": "Verbatim upstream license file",
+      "sources": [
+        {
+          "source": "assets/OFL-Emoji.txt",
+          "source_sha256": "d7d9b7661c484a62bbe7b4a5c3dc7789af1712bb20dcd92d2c1a6c87d56d6b37"
+        }
+      ],
+      "font": {
+        "source": "https://github.com/google/fonts/blob/29b4ec6df2522a8aee279414b78a07910b065874/ofl/notoemoji/NotoEmoji%5Bwght%5D.ttf",
+        "sha256": "de6c18832938afc99caf132b39d6a30a19bac7f2e812e28db2535b4608d27551",
+        "license_source": "https://github.com/google/fonts/blob/29b4ec6df2522a8aee279414b78a07910b065874/ofl/notoemoji/OFL.txt"
+      }
+    },
+    {
+      "file": "Emscripten.txt",
+      "sha256": "620a78084fc7ca97c0b5dea9abf891f3ffcadfdbf305276f099c9c4e12fc1d86",
+      "method": "Verbatim upstream license file",
+      "sources": [
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/LICENSE",
+          "source_sha256": "620a78084fc7ca97c0b5dea9abf891f3ffcadfdbf305276f099c9c4e12fc1d86"
+        }
+      ]
+    },
+    {
+      "file": "Emscripten-musl.txt",
+      "sha256": "f9bc4423732350eb0b3f7ed7e91d530298476f8fec0c6c427a1c04ade22655af",
+      "method": "Verbatim upstream license file",
+      "sources": [
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libc/musl/COPYRIGHT",
+          "source_sha256": "f9bc4423732350eb0b3f7ed7e91d530298476f8fec0c6c427a1c04ade22655af"
+        }
+      ]
+    },
+    {
+      "file": "Emscripten-runtime-additional.txt",
+      "sha256": "35f2965cc0541e44add2cde5dac3eb477269496bdb178ca431a91dfc6ca69dd3",
+      "method": "Verbatim embedded musl source notices, deduplicated; conditional source files included. dlmalloc notice ends before Quickstart.",
+      "sources": [
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libc/musl/src/complex/__cexp.c",
+          "source_sha256": "ffcf569466b0ac3defff943c989b6b181c7c41dc4f9538c32944459a5272203b"
+        },
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libc/musl/src/complex/catan.c",
+          "source_sha256": "056cc1842d173fe90297adb4c088745cb3bcb37c95b56d72c246ae505e470eb5"
+        },
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libc/musl/src/complex/ccosh.c",
+          "source_sha256": "9997abb272468781bc9b6b61a1550e95d1f956df109e0a646d578a3dc2c3aef9"
+        },
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libc/musl/src/complex/csqrt.c",
+          "source_sha256": "4f6cfa6aec61754c1ee2ea683ec00e7837eaa1993edafbc516c6c4978e3567b4"
+        },
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libc/musl/src/complex/ctanh.c",
+          "source_sha256": "7daa31e0831e9805934bd0e6a33816daf16c0bf1076babeb9799fe6e185ac045"
+        },
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libc/musl/src/crypt/crypt_blowfish.c",
+          "source_sha256": "0f9054739e295e3e981e7aa29c8f287a190aef065b84a82a4c6817120d5da05d"
+        },
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libc/musl/src/crypt/crypt_des.c",
+          "source_sha256": "546b4ee35446fb2a551d7414779395789f81d53aefbabd8914375686af5d228e"
+        },
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libc/musl/src/crypt/crypt_md5.c",
+          "source_sha256": "85d1d364c100fc982e99adb0d176e1d4475d175fc5c12bba696cda9c62d62c6b"
+        },
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libc/musl/src/crypt/crypt_md5.c",
+          "source_sha256": "85d1d364c100fc982e99adb0d176e1d4475d175fc5c12bba696cda9c62d62c6b"
+        },
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libc/musl/src/crypt/crypt_sha256.c",
+          "source_sha256": "26f3ae83a89a52640f3979df81eb50a431e75c83d5c18f1487325a39ee84fb73"
+        },
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libc/musl/src/crypt/crypt_sha256.c",
+          "source_sha256": "26f3ae83a89a52640f3979df81eb50a431e75c83d5c18f1487325a39ee84fb73"
+        },
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libc/musl/src/crypt/crypt_sha512.c",
+          "source_sha256": "7148156d195d9bef7eb57a1b2108439679a02372d0fac418004722513bd7b95c"
+        },
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libc/musl/src/crypt/crypt_sha512.c",
+          "source_sha256": "7148156d195d9bef7eb57a1b2108439679a02372d0fac418004722513bd7b95c"
+        },
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libc/musl/src/math/__cos.c",
+          "source_sha256": "3f0f774aab60a18d7ef935ffdf121bcda17cbadabff14096c614da22e31a42c1"
+        },
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libc/musl/src/math/__cosdf.c",
+          "source_sha256": "0ba872cc7e26b93bb9784d19fee84b263e1fa3543a76ec3c0893aea47453a2a7"
+        },
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libc/musl/src/math/__cosl.c",
+          "source_sha256": "fd644ce4ab8797b1220e2197b284212094a3b299bdf2c4faf66ead81b0fc620d"
+        },
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libc/musl/src/math/__rem_pio2.c",
+          "source_sha256": "938329e0939cd83ee2185a52154b41242f618d4a6df1b08395f344da33d4f1e6"
+        },
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libc/musl/src/math/__rem_pio2l.c",
+          "source_sha256": "70f1c69285c0d211d696d5c048e269d46000e5d75fc6a80623ef45e861447a94"
+        },
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libc/musl/src/math/__tan.c",
+          "source_sha256": "e18b65b69fced8dbb2d3ed1a3dc6daea0e9f857f2762f274380bd89a6f89d2c4"
+        },
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libc/musl/src/math/__tanl.c",
+          "source_sha256": "3788db7251d2e14b17e761bc2eccd0d8faa3c72c16eef7a56ca2ca75eca177df"
+        },
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libc/musl/src/math/atan2.c",
+          "source_sha256": "a5f94b09b10b4e72bb15d94ae403c9dfd27d7ad881ecd729000004429acfca63"
+        },
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libc/musl/src/math/cbrt.c",
+          "source_sha256": "af442893d4048c0eb485b93b5628792fb796d45ffc0f88c682041366c7da611d"
+        },
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libc/musl/src/math/cbrtl.c",
+          "source_sha256": "ee82c17b1a24681dfd7de0161088b45ecbd2d0346ddeda9d4594b48e4da0d3e5"
+        },
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libc/musl/src/math/exp2l.c",
+          "source_sha256": "0eeba2725b540b0d5dd84b732d4c496d8e8d9492cf863dbb5c83fe102771352c"
+        },
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libc/musl/src/math/fmaf.c",
+          "source_sha256": "8cef4678e7e82d5be0775e51ac11bbcb680f39005482470f5cfb3ed201cd3620"
+        },
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libc/musl/src/math/pow_small.c",
+          "source_sha256": "2a1a2469efafd354c3acc689a14e0c498c94d3577c7bd746462e1b644e3c379d"
+        },
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libc/musl/src/misc/fmtmsg.c",
+          "source_sha256": "27354c57b1827561585a73dbe9f2d7f97cd73563d4043cf2907912c8faaebb6e"
+        },
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libc/musl/src/regex/regcomp.c",
+          "source_sha256": "56b0a765e084a5cd3ed7113a893b50d259265ba76b6bea98889c45d7aec302a0"
+        },
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libc/musl/src/regex/regexec.c",
+          "source_sha256": "072e8a1092c98830b48e784fb74ce486f7c39e27207f79f1dd161e2c5d86ba77"
+        },
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libc/musl/src/regex/tre-mem.c",
+          "source_sha256": "4721979ce365a395fd7644335c847a8a97913e87f14348641f7f199b57b93e28"
+        },
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libc/musl/src/regex/tre.h",
+          "source_sha256": "e734e68decc33b5ee983db12cabcbdd2589c2d16088677228087b0e5dc365cf3"
+        },
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libc/musl/src/stdlib/qsort.c",
+          "source_sha256": "3a838cc7f83f4746df6063f567be1ebb2f7d204243342122acd43f44d2434ec6"
+        },
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/dlmalloc.c",
+          "source_sha256": "c008dc3c2b005ba822efb1bf6187a9d7a6aecd096826c6f28c6f5ee62885053d"
+        }
+      ]
+    },
+    {
+      "file": "LLVM-libcxx.txt",
+      "sha256": "539dd7aed86e8a4f12cbdd0e6c50c189c7d74847e4fecc64ce2c6ee3a01da38b",
+      "method": "Verbatim upstream license file",
+      "sources": [
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libcxx/LICENSE.TXT",
+          "source_sha256": "539dd7aed86e8a4f12cbdd0e6c50c189c7d74847e4fecc64ce2c6ee3a01da38b"
+        }
+      ]
+    },
+    {
+      "file": "LLVM-libcxxabi.txt",
+      "sha256": "e2b35be49f7284a45b7baca8fc7b3ab7440e7902392b2528a457816b5bb2a15c",
+      "method": "Verbatim upstream license file",
+      "sources": [
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libcxxabi/LICENSE.TXT",
+          "source_sha256": "e2b35be49f7284a45b7baca8fc7b3ab7440e7902392b2528a457816b5bb2a15c"
+        }
+      ]
+    },
+    {
+      "file": "LLVM-libunwind.txt",
+      "sha256": "b5efebcaca80879234098e52d1725e6d9eb8fb96a19fce625d39184b705f7b6d",
+      "method": "Verbatim upstream license file",
+      "sources": [
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/libunwind/LICENSE.TXT",
+          "source_sha256": "b5efebcaca80879234098e52d1725e6d9eb8fb96a19fce625d39184b705f7b6d"
+        }
+      ]
+    },
+    {
+      "file": "LLVM-compiler-rt.txt",
+      "sha256": "1a8f1058753f1ba890de984e48f0242a3a5c29a6a8f2ed9fd813f36985387e8d",
+      "method": "Verbatim upstream license file",
+      "sources": [
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/compiler-rt/LICENSE.TXT",
+          "source_sha256": "1a8f1058753f1ba890de984e48f0242a3a5c29a6a8f2ed9fd813f36985387e8d"
+        }
+      ]
+    },
+    {
+      "file": "LLVM-llvm-libc.txt",
+      "sha256": "ebcd9bbf783a73d05c53ba4d586b8d5813dcdf3bbec50265860ccc885e606f47",
+      "method": "Verbatim upstream license file",
+      "sources": [
+        {
+          "source": "https://github.com/emscripten-core/emscripten/blob/4.0.14/system/lib/llvm-libc/LICENSE.TXT",
+          "source_sha256": "ebcd9bbf783a73d05c53ba4d586b8d5813dcdf3bbec50265860ccc885e606f47"
+        }
+      ]
+    },
+    {
+      "file": "Gradle-Apache-2.0.txt",
+      "sha256": "9536d88ea948603d18e232a13f5958d67807cd80828036b082bff171d2cf0703",
+      "method": "Verbatim upstream license file",
+      "sources": [
+        {
+          "source": "https://github.com/gradle/gradle/blob/v8.12.0/LICENSE",
+          "source_sha256": "9536d88ea948603d18e232a13f5958d67807cd80828036b082bff171d2cf0703"
+        }
+      ]
+    },
+    {
+      "file": "Gradle-wrapper-notice.txt",
+      "sha256": "dd7131edeb7f62a79474821222756d53fd7d00395f748e2b0992bc89842ba2af",
+      "method": "Verbatim copyright/license header from the Gradle wrapper script",
+      "sources": [
+        {
+          "source": "platform/android/gradlew",
+          "source_sha256": "6c8726ff768626b917e23a551e0eb794e1280c544d5362b991f50bae37b8c5f6"
+        }
+      ]
+    }
+  ]
+}

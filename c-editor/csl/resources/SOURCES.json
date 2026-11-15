@@ -1,0 +1,233 @@
+{
+  "format": 1,
+  "scope": "Only the five unchanged CSL style and locale data files listed here; no license grant for the application or C processor source is made by this manifest.",
+  "attribution": {
+    "project": "Citation Style Language (CSL) project",
+    "url": "https://citationstyles.org/",
+    "individual_credits": "Original author, contributor and translator listings are preserved verbatim in each resource XML info element."
+  },
+  "license": {
+    "spdx": "CC-BY-SA-3.0",
+    "name": "Creative Commons Attribution-ShareAlike 3.0 Unported",
+    "url": "https://creativecommons.org/licenses/by-sa/3.0/",
+    "file": "LICENSE.txt",
+    "source_url": "https://creativecommons.org/licenses/by-sa/3.0/legalcode.txt",
+    "sha256": "3f941b3b89cf7b8370ceb83cc76d2120d471b58735d8ca60238a751a48d7f72f",
+    "bytes": 22240
+  },
+  "licensing_evidence": [
+    {
+      "repository": "citation-style-language/styles",
+      "commit": "3c3995baaa0c4fe1e5c6328027ff6d985c07bfde",
+      "source_url": "https://github.com/citation-style-language/styles/blob/3c3995baaa0c4fe1e5c6328027ff6d985c07bfde/README.md#licensing",
+      "readme_sha256": "eeda35e6ab1c71ef74ba98e8d63f3f5c07e1b1c458b92d54cdd7515afcb1b04e",
+      "assertion": "All styles released under CC BY-SA 3.0 Unported; credit CSL project and preserve contributor metadata."
+    },
+    {
+      "repository": "citation-style-language/locales",
+      "commit": "14940e56f7c783e4173cafbd92e0f5856f2caa14",
+      "source_url": "https://github.com/citation-style-language/locales/blob/14940e56f7c783e4173cafbd92e0f5856f2caa14/README.md#licensing",
+      "readme_sha256": "f8e1b34d3e1b66f101b45bc45e5fca0397aa923fe4abeab6f98139c8f731c320",
+      "assertion": "All locale files released under CC BY-SA 3.0 Unported; credit CSL project and preserve contributor metadata."
+    }
+  ],
+  "resources": [
+    {
+      "file": "apa.csl",
+      "kind": "style",
+      "repository": "citation-style-language/styles",
+      "commit": "3c3995baaa0c4fe1e5c6328027ff6d985c07bfde",
+      "source_url": "https://raw.githubusercontent.com/citation-style-language/styles/3c3995baaa0c4fe1e5c6328027ff6d985c07bfde/apa.csl",
+      "browse_url": "https://github.com/citation-style-language/styles/blob/3c3995baaa0c4fe1e5c6328027ff6d985c07bfde/apa.csl",
+      "git_blob_sha1": "d663d1e1b728c5fbc70dea233e1c0d09121e8909",
+      "sha256": "3917def5fc951b104d64216c3373096042368b9704ba269ca83c14ebaba889fc",
+      "bytes": 85817,
+      "modifications": "None. Original UTF-8 bytes, line endings and complete attribution metadata preserved.",
+      "csl_version": "1.0",
+      "updated": "2026-02-07T00:00:00+00:00",
+      "license": "CC-BY-SA-3.0",
+      "credits": [
+        {
+          "role": "author",
+          "name": "Brenton M. Wiernik"
+        },
+        {
+          "role": "author",
+          "name": "Andrew Dunning"
+        },
+        {
+          "role": "contributor",
+          "name": "Jay Pfaffman"
+        }
+      ],
+      "title": "APA Style 7th edition",
+      "id": "http://www.zotero.org/styles/apa"
+    },
+    {
+      "file": "ieee.csl",
+      "kind": "style",
+      "repository": "citation-style-language/styles",
+      "commit": "3c3995baaa0c4fe1e5c6328027ff6d985c07bfde",
+      "source_url": "https://raw.githubusercontent.com/citation-style-language/styles/3c3995baaa0c4fe1e5c6328027ff6d985c07bfde/ieee.csl",
+      "browse_url": "https://github.com/citation-style-language/styles/blob/3c3995baaa0c4fe1e5c6328027ff6d985c07bfde/ieee.csl",
+      "git_blob_sha1": "7612c1512be1c1a5fa7c553b8a47a2170c0e52bd",
+      "sha256": "b4c7619fc16c45a31e4cc3271eab94ffe83192d3b4c7fc729470a3b459448de3",
+      "bytes": 17587,
+      "modifications": "None. Original UTF-8 bytes, line endings and complete attribution metadata preserved.",
+      "csl_version": "1.0",
+      "updated": "2024-03-27T11:41:27+00:00",
+      "license": "CC-BY-SA-3.0",
+      "credits": [
+        {
+          "role": "author",
+          "name": "Michael Berkowitz"
+        },
+        {
+          "role": "contributor",
+          "name": "Julian Onions"
+        },
+        {
+          "role": "contributor",
+          "name": "Rintze Zelle"
+        },
+        {
+          "role": "contributor",
+          "name": "Stephen Frank"
+        },
+        {
+          "role": "contributor",
+          "name": "Sebastian Karcher"
+        },
+        {
+          "role": "contributor",
+          "name": "Giuseppe Silano"
+        },
+        {
+          "role": "contributor",
+          "name": "Patrick O'Brien"
+        },
+        {
+          "role": "contributor",
+          "name": "Brenton M. Wiernik"
+        },
+        {
+          "role": "contributor",
+          "name": "Oliver Couch"
+        },
+        {
+          "role": "contributor",
+          "name": "Andrew Dunning"
+        }
+      ],
+      "title": "IEEE Reference Guide version 11.29.2023",
+      "id": "http://www.zotero.org/styles/ieee"
+    },
+    {
+      "file": "china-national-standard-gb-t-7714-2015-numeric.csl",
+      "kind": "style",
+      "repository": "citation-style-language/styles",
+      "commit": "3c3995baaa0c4fe1e5c6328027ff6d985c07bfde",
+      "source_url": "https://raw.githubusercontent.com/citation-style-language/styles/3c3995baaa0c4fe1e5c6328027ff6d985c07bfde/china-national-standard-gb-t-7714-2015-numeric.csl",
+      "browse_url": "https://github.com/citation-style-language/styles/blob/3c3995baaa0c4fe1e5c6328027ff6d985c07bfde/china-national-standard-gb-t-7714-2015-numeric.csl",
+      "git_blob_sha1": "cc05707d5feaa7cb78df27a8da7f44de6aeb4934",
+      "sha256": "d9cd04f94bc21a99dc320d0a2230d5a1fb47e3634c17c5820cf975c40db3c0c7",
+      "bytes": 15530,
+      "modifications": "None. Original UTF-8 bytes, line endings and complete attribution metadata preserved.",
+      "csl_version": "1.0",
+      "updated": "2024-01-22T22:07:03+08:00",
+      "license": "CC-BY-SA-3.0",
+      "credits": [
+        {
+          "role": "author",
+          "name": "牛耕田"
+        },
+        {
+          "role": "contributor",
+          "name": "Zeping Lee"
+        }
+      ],
+      "title": "China National Standard GB/T 7714-2015 (numeric, 中文)",
+      "id": "http://www.zotero.org/styles/china-national-standard-gb-t-7714-2015-numeric"
+    },
+    {
+      "file": "locales-en-US.xml",
+      "kind": "locale",
+      "repository": "citation-style-language/locales",
+      "commit": "14940e56f7c783e4173cafbd92e0f5856f2caa14",
+      "source_url": "https://raw.githubusercontent.com/citation-style-language/locales/14940e56f7c783e4173cafbd92e0f5856f2caa14/locales-en-US.xml",
+      "browse_url": "https://github.com/citation-style-language/locales/blob/14940e56f7c783e4173cafbd92e0f5856f2caa14/locales-en-US.xml",
+      "git_blob_sha1": "0d74676be4376660f43f2fdb4bf7cade9cf15fe6",
+      "sha256": "ac864c7c21166b4390d82c31792cdc509400727fa0060b43d8aa17e07f9cb079",
+      "bytes": 32649,
+      "modifications": "None. Original UTF-8 bytes, line endings and complete attribution metadata preserved.",
+      "csl_version": "1.0",
+      "updated": "2026-01-10T00:00:00+00:00",
+      "license": "CC-BY-SA-3.0",
+      "credits": [
+        {
+          "role": "translator",
+          "name": "Andrew Dunning"
+        },
+        {
+          "role": "translator",
+          "name": "Sebastian Karcher"
+        },
+        {
+          "role": "translator",
+          "name": "Rintze M. Zelle"
+        },
+        {
+          "role": "translator",
+          "name": "Denis Meier"
+        },
+        {
+          "role": "translator",
+          "name": "Brenton M. Wiernik"
+        }
+      ],
+      "language": "en-US"
+    },
+    {
+      "file": "locales-zh-CN.xml",
+      "kind": "locale",
+      "repository": "citation-style-language/locales",
+      "commit": "14940e56f7c783e4173cafbd92e0f5856f2caa14",
+      "source_url": "https://raw.githubusercontent.com/citation-style-language/locales/14940e56f7c783e4173cafbd92e0f5856f2caa14/locales-zh-CN.xml",
+      "browse_url": "https://github.com/citation-style-language/locales/blob/14940e56f7c783e4173cafbd92e0f5856f2caa14/locales-zh-CN.xml",
+      "git_blob_sha1": "6f2bb7696c69feec60bbd4c1fb929d6822c73f44",
+      "sha256": "95cebc667f2da8fb5b9864e49941e3f867d59f79feba929bc58e8ed6bfd4d582",
+      "bytes": 18641,
+      "modifications": "None. Original UTF-8 bytes, line endings and complete attribution metadata preserved.",
+      "csl_version": "1.0",
+      "updated": "2025-10-16T11:24:00+08:00",
+      "license": "CC-BY-SA-3.0",
+      "credits": [
+        {
+          "role": "translator",
+          "name": "rongls"
+        },
+        {
+          "role": "translator",
+          "name": "sati-bodhi"
+        },
+        {
+          "role": "translator",
+          "name": "Heromyth"
+        },
+        {
+          "role": "translator",
+          "name": "Zeping Lee"
+        },
+        {
+          "role": "translator",
+          "name": "韩小土"
+        },
+        {
+          "role": "translator",
+          "name": "韩敏义"
+        }
+      ],
+      "language": "zh-CN"
+    }
+  ]
+}

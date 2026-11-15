@@ -1,0 +1,258 @@
+name: C editor
+
+on:
+  push:
+    branches: [main]
+    paths: ['c-editor/**', '!c-editor/csl/**', '!c-editor/cmake/CSLDependencies.cmake', '.github/workflows/c-editor.yml']
+  pull_request:
+    paths: ['c-editor/**', '!c-editor/csl/**', '!c-editor/cmake/CSLDependencies.cmake', '.github/workflows/c-editor.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: c-editor-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop:
+    name: Desktop (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - name: Linux window-system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config libx11-dev libxext-dev \
+            libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev \
+            libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev libcurl4-openssl-dev
+      - name: Configure
+        run: cmake -S c-editor -B c-editor/build -DCMAKE_BUILD_TYPE=Release -DEDITOR_DISTRIBUTION=ON
+      - name: Build
+        run: cmake --build c-editor/build --config Release --parallel 4
+      - name: Test
+        run: ctest --test-dir c-editor/build -C Release --output-on-failure
+      - name: Package desktop application
+        run: cpack --config c-editor/build/CPackConfig.cmake -C Release
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Launch the extracted desktop package
+        run: python c-editor/tests/test_distribution.py c-editor/build/packages
+      - name: Upload desktop package
+        uses: actions/upload-artifact@v4
+        with:
+          name: notelab-${{ runner.os }}-${{ runner.arch }}
+          path: c-editor/build/packages/NoteLab-*
+          if-no-files-found: error
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: c-editor-tests-${{ runner.os }}
+          path: c-editor/build/Testing/Temporary/LastTest.log
+          retention-days: 7
+
+  sanitizers:
+    name: C core sanitizers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure
+        run: cmake -S c-editor -B c-editor/build-core -DEDITOR_BUILD_APP=OFF -DEDITOR_SANITIZERS=ON -DCMAKE_BUILD_TYPE=Debug
+      - name: Build and test
+        run: |
+          cmake --build c-editor/build-core --parallel 4
+          ctest --test-dir c-editor/build-core --output-on-failure
+
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Install Android build components
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;28.2.13676358' 'cmake;3.31.6'
+      - name: Prepare matching SDL Java sources
+        run: python3 c-editor/platform/android/prepare.py
+      - name: Test Android startup readiness and screenshot validation
+        run: python3 c-editor/platform/android/test_smoke_checks.py
+      - name: Test Android HTTP bridge with isolated local fixtures
+        run: python3 c-editor/tests/test_library_source_android.py
+      - name: Compile unsigned APK for device and emulator
+        working-directory: c-editor/platform/android
+        run: ./gradlew --no-daemon :app:assembleRelease :app:assembleDebug
+      - name: Verify native code and font packaging
+        run: |
+          python3 - <<'PY'
+          from zipfile import ZipFile
+          path = 'c-editor/platform/android/app/build/outputs/apk/release/app-release-unsigned.apk'
+          with ZipFile(path) as apk:
+              names = set(apk.namelist())
+              for abi in ('arm64-v8a', 'x86_64'):
+                  for name in ('libmain.so', 'libSDL3.so', 'libSDL3_ttf.so', 'libc++_shared.so'):
+                      assert f'lib/{abi}/{name}' in names, (abi, name)
+              assert apk.getinfo('assets/font.otf').file_size > 1_000_000
+              assert apk.getinfo('assets/OFL.txt').file_size > 0
+              assert apk.getinfo('assets/emoji.ttf').file_size > 1_000_000
+              assert apk.getinfo('assets/OFL-Emoji.txt').file_size > 0
+              assert apk.getinfo('assets/THIRD_PARTY.md').file_size > 100
+              assert any(name.startswith('assets/licenses/android-ndk/NOTICE') for name in names)
+          PY
+      - name: Enable emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-notelab-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Launch the C application on Android
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          emulator-port: 5554
+          disable-animations: true
+          script: python3 c-editor/platform/android/smoke_emulator.py --serial emulator-5554 --apk c-editor/platform/android/app/build/outputs/apk/debug/app-debug.apk --output c-editor/build-android-smoke
+      - name: Upload Android startup evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: notelab-android-startup
+          path: c-editor/build-android-smoke
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        with:
+          name: notelab-android-unsigned
+          path: c-editor/platform/android/app/build/outputs/apk/release/app-release-unsigned.apk
+          if-no-files-found: error
+
+  ios:
+    runs-on: macos-15
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [simulator, device]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test simulator launch diagnostics and result validation
+        if: matrix.target == 'simulator'
+        run: python3 c-editor/platform/ios/test_smoke_simulator.py
+      - name: Compile unsigned iOS bundle
+        run: sh c-editor/platform/ios/build.sh '${{ matrix.target }}'
+      - name: Verify app and bundled font
+        env:
+          IOS_TARGET: ${{ matrix.target }}
+        run: |
+          python3 - <<'PY'
+          import os, plistlib
+          from pathlib import Path
+          root = Path('c-editor') / ('build-ios-' + os.environ['IOS_TARGET']) / 'notelab'
+          bundles = list(root.glob('Release-*/notelab.app'))
+          assert len(bundles) == 1, bundles
+          app = bundles[0]
+          assert (app / 'notelab').stat().st_size > 0
+          assert (app / 'assets/font.otf').stat().st_size > 1_000_000
+          assert (app / 'assets/OFL.txt').is_file()
+          assert (app / 'assets/emoji.ttf').stat().st_size > 1_000_000
+          assert (app / 'assets/OFL-Emoji.txt').is_file()
+          assert (app / 'assets/THIRD_PARTY.md').is_file()
+          assert (app / 'assets/licenses/SOURCES.json').is_file()
+          with (app / 'Info.plist').open('rb') as handle:
+              assert plistlib.load(handle)['CFBundleIdentifier'] == 'org.notelab.editor'
+          PY
+      - name: Launch the C application on iOS Simulator
+        if: matrix.target == 'simulator'
+        run: sh c-editor/platform/ios/smoke_simulator.sh
+      - name: Upload iOS startup evidence
+        if: always() && matrix.target == 'simulator'
+        uses: actions/upload-artifact@v4
+        with:
+          name: notelab-ios-startup
+          path: c-editor/build-ios-simulator/smoke-output
+          if-no-files-found: warn
+      - name: Archive unsigned iOS bundle with file permissions
+        env:
+          IOS_TARGET: ${{ matrix.target }}
+        run: |
+          python3 - <<'PY'
+          import os, subprocess
+          from pathlib import Path
+          target = os.environ['IOS_TARGET']
+          root = Path('c-editor') / ('build-ios-' + target) / 'notelab'
+          bundles = list(root.glob('Release-*/notelab.app'))
+          assert len(bundles) == 1, bundles
+          archive = Path('c-editor') / ('notelab-ios-' + target + '-unsigned.tar.gz')
+          subprocess.run(['tar', '-czf', str(archive), '-C', str(bundles[0].parent), bundles[0].name], check=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: notelab-ios-${{ matrix.target }}-unsigned
+          path: c-editor/notelab-ios-${{ matrix.target }}-unsigned.tar.gz
+          if-no-files-found: error
+
+  browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install pinned Emscripten SDK
+        run: |
+          git clone --depth 1 --branch 4.0.14 https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
+          "$RUNNER_TEMP/emsdk/emsdk" install 4.0.14
+          "$RUNNER_TEMP/emsdk/emsdk" activate 4.0.14
+      - name: Build WebAssembly application
+        run: |
+          source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
+          emcmake cmake -S c-editor -B c-editor/build-web -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+          cmake --build c-editor/build-web --parallel 4
+      - name: Browser input, persistence and export integration
+        env:
+          EDITOR_TEST_SYSTEM_CLIPBOARD: '1'
+        run: |
+          node c-editor/tests/test_browser.mjs c-editor/build-web "$(command -v google-chrome)"
+          node c-editor/tests/test_browser_touch.mjs c-editor/build-web "$(command -v google-chrome)"
+          node c-editor/tests/test_library_source_browser.mjs c-editor/build-web/test_library_source_web.cjs "$(command -v google-chrome)"
+          EDITOR_TEST_CPU_THROTTLE=6 node c-editor/tests/test_browser_library.mjs c-editor/build-web "$(command -v google-chrome)"
+      - name: Run C core fixtures in WebAssembly
+        run: |
+          source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
+          ctest --test-dir c-editor/build-web --output-on-failure
+      - name: Upload browser application and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: notelab-browser
+          path: |
+            c-editor/build-web/notelab.html
+            c-editor/build-web/notelab.js
+            c-editor/build-web/notelab.wasm
+            c-editor/build-web/notelab.data
+            c-editor/build-web/THIRD_PARTY.md
+            c-editor/build-web/licenses/
+            c-editor/build-web/*validation.png
+            c-editor/build-web/browser-library-*.png
+            c-editor/build-web/browser-library-*.json
+          if-no-files-found: error
