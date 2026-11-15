@@ -1,8 +1,10 @@
-# Note Lab — C rewrite
+# Note Lab — C editor
 
-The target is the same note editor on **Windows, macOS, Linux, Android, iOS and
-the browser**, with the existing rich-text and Zotero workflows. This directory
-is an ongoing rewrite, not a completed replacement. `../test-app` remains intact.
+This directory is the active implementation of Note Lab for **Windows, macOS,
+Linux, Android, iOS and the browser**, including rich-text notes and Zotero
+workflows. The retired Tauri application is available in Git history. Legacy
+note import remains supported; feature parity and final acceptance work are
+tracked in the project status document.
 
 For the pause checkpoint, verified results and remaining work, see
 [项目状态与交接](PROJECT_STATUS.md). Local validation and remote CI results
@@ -172,9 +174,10 @@ Build details and reproducible platform checks:
 - [Android](platform/android/README.md)
 - [iOS](platform/ios/README.md)
 
-The baseline at commit `20af8839ef7d302c88b50913fef66b343d98db0a` passed all
-desktop, sanitizer, browser, Android and iOS jobs in
-[run 43606135066](https://github.com/banana815/editor/actions/runs/43606135066).
+The checkpoint at commit `8edc978de1dfedb09937dd569417600992444f29` passed all
+eight desktop, sanitizer, browser, Android and iOS jobs in
+[application run 43686573923](https://github.com/banana815/editor/actions/runs/43686573923),
+plus all nine [citation processor jobs](https://github.com/banana815/editor/actions/runs/43686573919).
 Android and iOS results include a success marker from the C application and a
 complete rendered screenshot. This is evidence for that commit's startup;
 later feature changes need their own checks, and startup alone does not verify
