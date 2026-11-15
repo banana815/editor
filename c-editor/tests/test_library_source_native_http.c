@@ -27,7 +27,14 @@ static void succeeds(const char *base,const char *path,const char *body) {
     platform_library_source_free(job);assert(!strcmp((char *)result.data,body));platform_library_source_result_free(&result);
 }
 static void fails(const char *base,const char *path,size_t limit,uint32_t timeout) {
-    PlatformLibrarySource *job=request(base,path,limit,timeout);assert(wait_result(job)==PLATFORM_LIBRARY_SOURCE_FAILED);
+    PlatformLibrarySource *job=request(base,path,limit,timeout);
+    PlatformLibrarySourceStatus status=wait_result(job);
+    if(status!=PLATFORM_LIBRARY_SOURCE_FAILED) {
+        const char *message;platform_library_source_status(job,&message);
+        fprintf(stderr,"Expected failure for %s%s (limit=%zu, timeout=%u), got status %d: %s\n",
+            base,path,limit,(unsigned)timeout,(int)status,message);
+    }
+    assert(status==PLATFORM_LIBRARY_SOURCE_FAILED);
     PlatformLibrarySourceResult result={0};assert(!platform_library_source_take_result(job,&result));assert(!result.data && !result.size);
     platform_library_source_free(job);
 }
