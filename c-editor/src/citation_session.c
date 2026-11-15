@@ -129,7 +129,7 @@ static bool apply_json(CeDocument *live,const char *json,char *error,size_t capa
     if(!ce_document_apply_json(live,json)) return problem(error,capacity,ce_document_error(live));
     return true;
 }
-static bool same_canonical_section(const CeDocument *a,const CeDocument *b,size_t citations) {
+static bool same_canonical_section(const CeDocument *a,const CeDocument *b,bool bibliography) {
     size_t indices[2]={0},counts[2]={0};
     const CeDocument *documents[2]={a,b};
     for(size_t d=0;d<2;d++) {
@@ -139,10 +139,10 @@ static bool same_canonical_section(const CeDocument *a,const CeDocument *b,size_
                 indices[d]=i; ++counts[d];
             }
         }
-        if(counts[d]!=(citations?1u:0u)) return false;
+        if(counts[d]!=(bibliography?1u:0u)) return false;
         if(counts[d] && indices[d]+1!=ce_document_block_count(documents[d])) return false;
     }
-    if(!citations) return true;
+    if(!bibliography) return true;
     char *x=ce_document_block_json(a,indices[0]),*y=ce_document_block_json(b,indices[1]);
     bool same=x && y && !strcmp(x,y);
     free(x); free(y); return same;
@@ -159,7 +159,7 @@ bool ce_citation_session_apply(CeCitationSession **session,CeDocument *live,
             profile==(*session)->profile && !strcmp(locale,(*session)->locale) &&
             ce_citations_source_digest(candidate,(*session)->style,library,digest,error,capacity) &&
             !strcmp(digest,ce_citation_prepared_digest((*session)->prepared)) &&
-            same_canonical_section(live,candidate,ce_citation_prepared_stats((*session)->prepared)->citation_count);
+            same_canonical_section(live,candidate,ce_citation_prepared_bibliography((*session)->prepared)!=NULL);
     }
     if(reuse || (!*session && !force && !override && same_unprocessed_sources(live,candidate))) {
         char *json=ce_document_export_json(candidate);

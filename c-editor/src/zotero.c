@@ -304,6 +304,7 @@ void ce_zotero_library_free(CeZoteroLibrary *library) {
     }
     free(library->collections);
     free(library->roots);
+    free(library->client_state_json);
     memset(library, 0, sizeof *library);
 }
 
@@ -1878,6 +1879,12 @@ static bool cache_integer_read(cJSON *object, const char *name, int64_t *value) 
     if (errno || *end || parsed<INT64_MIN || parsed>INT64_MAX) return false;
     *value=(int64_t)parsed; return true;
 }
+static bool cache_client_state_valid(const char *text) {
+    if (!text || strlen(text)>16384) return false;
+    cJSON *value=NULL;
+    bool valid=ce_csl_json_parse_strict(text,strlen(text),&value,NULL,0) && cJSON_IsObject(value);
+    cJSON_Delete(value); return valid;
+}
 char *ce_zotero_cache_export(const CeZoteroLibrary *library, char *error, size_t capacity) {
     Report report={error,capacity}; clear_error(&report);
     if (!library || (library->item_count && !library->items) ||
@@ -1885,11 +1892,15 @@ char *ce_zotero_cache_export(const CeZoteroLibrary *library, char *error, size_t
         library->item_count>INT_MAX || library->collection_count>INT_MAX) {
         fail(&report,"Invalid library cache source"); return NULL;
     }
+    if (library->client_state_json && !cache_client_state_valid(library->client_state_json)) {
+        fail(&report,"Invalid library client settings"); return NULL;
+    }
     cJSON *root=cJSON_CreateObject();
     cJSON *items=root?cJSON_AddArrayToObject(root,"items"):NULL;
     cJSON *collections=root?cJSON_AddArrayToObject(root,"collections"):NULL;
     char *result=NULL;
     if (!root || !items || !collections || !cJSON_AddNumberToObject(root,"version",1)) goto oom;
+    if (library->client_state_json && !cJSON_AddStringToObject(root,"clientStateJson",library->client_state_json)) goto oom;
     for (size_t i=0;i<library->item_count;++i) {
         const CeZoteroItem *item=&library->items[i];
         cJSON *row=cJSON_CreateObject();
@@ -1947,6 +1958,11 @@ bool ce_zotero_cache_import(const char *json, CeZoteroLibrary *library, char *er
     CeZoteroLibrary next={0}; bool success=false;
     if (!cJSON_IsObject(root) || !cJSON_IsNumber(version) || version->valuedouble!=1 ||
         !cJSON_IsArray(items) || !cJSON_IsArray(collections)) goto malformed;
+    cJSON *client_state=cJSON_GetObjectItemCaseSensitive(root,"clientStateJson");
+    if (client_state) {
+        if (!cJSON_IsString(client_state) || !cache_client_state_valid(client_state->valuestring)) goto malformed;
+        if (!(next.client_state_json=copy_string(client_state->valuestring))) goto oom;
+    }
     size_t item_count=(size_t)cJSON_GetArraySize(items);
     size_t collection_count=(size_t)cJSON_GetArraySize(collections);
     if (item_count>SIZE_MAX/sizeof *next.items || collection_count>SIZE_MAX/sizeof *next.collections) goto oom;

@@ -91,6 +91,11 @@ bool ce_document_slice_from_html(const char *data, size_t size,
  * metadata rejects this conversion instead of being discarded.
  * A bibliography without its cited source nodes cannot be pasted as a derived
  * bibliography: this returns an explicit error; readable exports remain usable.
+ * Explicit bibliographyMode="selected" sections instead carry complete
+ * selectedItemsJson sources and may be pasted alone. Their source/cache/unknown
+ * attributes are preserved without trusting rendered caches or generating fake
+ * citation atoms. The citation session must merge selected identities, reject
+ * conflicts and rebuild controlled output before committing the candidate.
  *
  * Initialize *candidate NULL/live. On failure candidate AND optional anchor
  * remain unchanged. The candidate is owned and has no prior history. Commit

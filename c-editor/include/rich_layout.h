@@ -13,7 +13,8 @@ typedef enum CeRichCitationStatus {
     CE_RICH_CITATION_VALID,
     CE_RICH_CITATION_STALE,
     CE_RICH_CITATION_UNSUPPORTED,
-    CE_RICH_CITATION_ERROR
+    CE_RICH_CITATION_ERROR,
+    CE_RICH_CITATION_ARCHIVED
 } CeRichCitationStatus;
 typedef struct CeRichCitationSource {
     /* Increment whenever resolved content/status changes independently of the
@@ -48,6 +49,12 @@ bool ce_rich_layout_update(CeRichLayout *layout, const CeDocument *doc, float wi
  * of the atom's kind. Missing/stale/unsupported content gets an explicit neutral
  * placeholder, never approximate formatting. ERROR or allocation/layout failure
  * retains the prior layout. NULL source behaves as all caches absent.
+ * ARCHIVED requires cache=NULL and an eligible unmarked legacy bibliography.
+ * It decodes only entriesJson using bibliography_archive, labels the display
+ * as an old archive, and never treats old cslRenderJson as processor output.
+ * The temporary archive is released after shaping; malformed JSON/allocation
+ * failures retain the prior layout. Unsupported HTML uses diagnosed literal
+ * text fallback. It does not modify the document or regenerate references.
  * Supports bold/italic/underline/super/subscript, LTR Unicode/emoji and typed
  * bibliography columns, hanging indentation and spacing. Small caps/light/
  * oblique or bidi cache content receives an unsupported-format placeholder.

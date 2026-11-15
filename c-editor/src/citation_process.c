@@ -21,7 +21,7 @@ typedef struct Record {
     const char *id, *snapshot, *page;
     char *identity;
     size_t ordinal;
-    bool repair, numbers_exact;
+    bool repair, numbers_exact, selected_unique;
 } Record;
 typedef struct LibraryKey {
     char *key;
@@ -32,7 +32,10 @@ typedef struct Source {
     Nodes citations, sections;
     Record *records;
     Record **by_identity;
-    size_t count, repaired;
+    size_t count, record_count, repaired;
+    cJSON *selected_all, *selected_canonical;
+    size_t *include_items, include_count;
+    bool selected_intent;
     CeCslInput *input;
     char digest[65];
     LibraryKey *library_keys;
@@ -289,6 +292,15 @@ done:
     free(library);
     return result;
 }
+bool ce_citations_source_identity(const cJSON *attrs,char **out,char *error,size_t capacity) {
+    if(!out || !cJSON_IsObject(attrs))
+        return fail(error,capacity,"Source identity requires an attribute object and destination");
+    char *value=identity(attrs);
+    if(!value) return fail(error,capacity,"Invalid/unsafe source identity or allocation failure");
+    free(*out); *out=value;
+    if(error && capacity) *error=0;
+    return true;
+}
 static bool library_alias(Source *s, const CeZoteroItem *item, const char *tag, const char *scope,
                           const char *value) {
     if (!value || !*value)
@@ -453,12 +465,12 @@ static bool metadata_equal(const cJSON *a, const cJSON *b, bool *equal, char *er
 static bool source_items(Source *s, const CeZoteroLibrary *library, cJSON *items, char *error,
                          size_t capacity) {
     bool indexed = false;
-    Record **sorted = s->count ? malloc(s->count * sizeof *sorted) : NULL;
+    Record **sorted = s->record_count ? malloc(s->record_count * sizeof *sorted) : NULL;
     bool ok = false;
     s->by_identity = sorted;
-    if (s->count && !sorted)
+    if (s->record_count && !sorted)
         return fail(error, capacity, "Out of memory preparing CSL snapshots");
-    for (size_t i = 0; i < s->count; ++i) {
+    for (size_t i = 0; i < s->record_count; ++i) {
         Record *r = &s->records[i];
         sorted[i] = r;
         r->identity = identity(r->attrs);
@@ -507,11 +519,11 @@ static bool source_items(Source *s, const CeZoteroLibrary *library, cJSON *items
         }
         r->page = text(r->attrs, "page");
     }
-    if (s->count > 1)
-        qsort(sorted, s->count, sizeof *sorted, compare_identity);
-    for (size_t begin = 0; begin < s->count;) {
+    if (s->record_count > 1)
+        qsort(sorted, s->record_count, sizeof *sorted, compare_identity);
+    for (size_t begin = 0; begin < s->record_count;) {
         size_t end = begin + 1;
-        while (end < s->count && !strcmp(sorted[begin]->identity, sorted[end]->identity))
+        while (end < s->record_count && !strcmp(sorted[begin]->identity, sorted[end]->identity))
             ++end;
         Record *first = sorted[begin];
         for (size_t i = begin + 1; i < end; ++i) {
@@ -546,6 +558,94 @@ done:
         fail(error, capacity, "Unable to build complete CSL items");
     return ok;
 }
+static bool selected_attributes(const cJSON *attrs,char *error,size_t capacity) {
+    if(!cJSON_IsObject(attrs)) return fail(error,capacity,"Selected source must be an attribute object");
+    const char *keys[]={"itemUri","sourceId","libraryId","itemKey","citeKey","cslJson",
+                        "title","author","year","pdfUri"};
+    for(size_t i=0;i<sizeof keys/sizeof *keys;i++)
+        if(field(attrs,keys[i]) && !cJSON_IsString(field(attrs,keys[i])))
+            return fail(error,capacity,"Selected source identity/snapshot/display fields must be strings");
+    if(!*text(attrs,"itemUri") && !*text(attrs,"sourceId") && !*text(attrs,"itemKey") && !*text(attrs,"citeKey"))
+        return fail(error,capacity,"Selected bibliography source has no real item identity");
+    const cJSON *library=field(attrs,"libraryId");
+    if(library) {
+        const char *value=library->valuestring; size_t n=strlen(value);
+        if(!n || n>19 || (n>1 && value[0]=='0') || (n==19 && strcmp(value,"9223372036854775807")>0))
+            return fail(error,capacity,"Selected libraryId must be a canonical nonnegative int64 decimal string");
+        for(size_t i=0;i<n;i++) if(value[i]<'0' || value[i]>'9')
+            return fail(error,capacity,"Selected libraryId must be a decimal string");
+    }
+    if(!*text(attrs,"cslJson")) return fail(error,capacity,"Selected source needs a complete CSL snapshot");
+    return true;
+}
+static bool collect_selected(Source *s,char *error,size_t capacity) {
+    s->selected_all=cJSON_CreateArray();
+    if(!s->selected_all) return false;
+    size_t count=0;
+    for(size_t i=0;i<s->sections.count;i++) {
+        const cJSON *attrs=field(s->sections.data[i],"attrs"),*mode=field(attrs,"bibliographyMode");
+        bool selected=mode && cJSON_IsString(mode) && !strcmp(mode->valuestring,"selected");
+        if(mode && (!cJSON_IsString(mode) || (!selected && strcmp(mode->valuestring,"citations"))))
+            return fail(error,capacity,"Unsupported bibliographyMode; original bibliography retained");
+        const cJSON *serialized=field(attrs,"selectedItemsJson");
+        if(!selected) {
+            if(serialized) return fail(error,capacity,"selectedItemsJson requires explicit selected bibliographyMode");
+            continue;
+        }
+        s->selected_intent=true;
+        if(!cJSON_IsString(serialized)) return fail(error,capacity,"Selected bibliography requires selectedItemsJson string");
+        cJSON *array=NULL; bool exact=false;
+        if(!ce_csl_json_parse_strict_with_numbers(serialized->valuestring,strlen(serialized->valuestring),&array,&exact,error,capacity)) return false;
+        bool ok=exact && cJSON_IsArray(array);
+        if(!ok) fail(error,capacity,"Selected sources must be an array with losslessly writable numeric metadata");
+        size_t n=ok?(size_t)cJSON_GetArraySize(array):0;
+        if(ok && n>CE_CSL_INPUT_MAX_ITEMS-count) ok=fail(error,capacity,"Too many selected bibliography sources");
+        while(ok && array->child) {
+            if(!selected_attributes(array->child,error,capacity)) { ok=false; break; }
+            cJSON *attrs_node=cJSON_DetachItemFromArray(array,0);
+            ok=add(s->selected_all,attrs_node); if(ok) ++count;
+        }
+        cJSON_Delete(array); if(!ok) return false;
+    }
+    s->record_count=s->count+count;
+    return true;
+}
+static bool selected_equal(const cJSON *a,const cJSON *b,bool *equal,char *error,size_t capacity) {
+    cJSON *x=cJSON_Duplicate(a,true),*y=cJSON_Duplicate(b,true);
+    if(!x || !y) { cJSON_Delete(x); cJSON_Delete(y); return fail(error,capacity,"Out of memory comparing selected source metadata"); }
+    cJSON_DeleteItemFromObjectCaseSensitive(x,"cslJson"); cJSON_DeleteItemFromObjectCaseSensitive(y,"cslJson");
+    bool ok=metadata_equal(x,y,equal,error,capacity); cJSON_Delete(x); cJSON_Delete(y); return ok;
+}
+static bool normalize_selected(Source *s,char *error,size_t capacity) {
+    s->selected_canonical=cJSON_CreateArray();
+    size_t count=s->record_count-s->count;
+    s->include_items=count?malloc(count*sizeof *s->include_items):NULL;
+    if(!s->selected_canonical || (count && !s->include_items)) return false;
+    for(size_t begin=0;begin<s->record_count;) {
+        size_t end=begin+1;
+        while(end<s->record_count && !strcmp(s->by_identity[begin]->identity,s->by_identity[end]->identity)) ++end;
+        Record *first=NULL;
+        for(size_t i=begin;i<end;i++) {
+            Record *r=s->by_identity[i];
+            if(r->ordinal<s->count) continue;
+            if(!first) { first=r; r->selected_unique=true; }
+            else {
+                bool equal=false;
+                if(!selected_equal(first->attrs,r->attrs,&equal,error,capacity)) return false;
+                if(!equal) return fail(error,capacity,"Conflicting selected-source attributes for one identity");
+            }
+        }
+        begin=end;
+    }
+    for(size_t i=s->count;i<s->record_count;i++) if(s->records[i].selected_unique) {
+        Record *r=&s->records[i];
+        if(!add(s->selected_canonical,cJSON_Duplicate(r->attrs,true))) return false;
+        size_t item=ce_csl_input_find(s->input,r->identity);
+        if(item==SIZE_MAX) return fail(error,capacity,"Selected item is absent from processor input");
+        s->include_items[s->include_count++]=item;
+    }
+    return true;
+}
 static bool digest_source(Source *s, const CeCitationStyle *style, char *error, size_t capacity) {
     const CeCitationStyleInfo *info = ce_citation_style_loaded_info(style);
     const CeCslLocale *locale = ce_citation_style_locale(style);
@@ -553,7 +653,7 @@ static bool digest_source(Source *s, const CeCitationStyle *style, char *error, 
         return fail(error, capacity, "A loaded citation profile is required");
     CeCitationDigest digest;
     ce_citation_digest_init(&digest);
-    const char *fields[] = {"notelab-citation-source/v1",
+    const char *fields[] = {"notelab-citation-source/v2",
                             CE_CITATION_PROCESSOR_PROFILE,
                             info->profile_id,
                             info->style_id,
@@ -575,11 +675,19 @@ static bool digest_source(Source *s, const CeCitationStyle *style, char *error, 
             if (!ce_citation_digest_field(&digest, values[j], strlen(values[j]), error, capacity))
                 return false;
     }
+    const char *intent=s->selected_intent?"selected":"citations";
+    if(!ce_citation_digest_field(&digest,intent,strlen(intent),error,capacity)) return false;
+    if(s->selected_intent) {
+        char *selected=serialize(s->selected_canonical);
+        if(!selected) return fail(error,capacity,"Unable to serialize canonical selected sources");
+        bool ok=ce_citation_digest_field(&digest,selected,strlen(selected),error,capacity);
+        free(selected); if(!ok) return false;
+    }
     return ce_citation_digest_final_hex(&digest, s->digest, error, capacity);
 }
 static void source_free(Source *s) {
     if (s->records)
-        for (size_t i = 0; i < s->count; ++i) {
+        for (size_t i = 0; i < s->record_count; ++i) {
             free(s->records[i].identity);
             cJSON_Delete(s->records[i].item);
         }
@@ -590,6 +698,9 @@ static void source_free(Source *s) {
     free(s->by_identity);
     free(s->citations.data);
     free(s->sections.data);
+    free(s->include_items);
+    cJSON_Delete(s->selected_all);
+    cJSON_Delete(s->selected_canonical);
     ce_csl_input_free(s->input);
     cJSON_Delete(s->root);
     memset(s, 0, sizeof *s);
@@ -619,13 +730,18 @@ static bool source_build(const CeDocument *doc, const CeCitationStyle *style, co
     if (!type_is(s->root, "doc") || !collect(s->root, s, 0))
         return fail(error, capacity, "Unable to traverse citation document within limits");
     s->count = s->citations.count;
-    if (s->count) {
-        s->records = calloc(s->count, sizeof *s->records);
+    if(!collect_selected(s,error,capacity)) return false;
+    if (s->record_count) {
+        s->records = calloc(s->record_count, sizeof *s->records);
         if (!s->records)
             return fail(error, capacity, "Out of memory collecting citations");
     }
     if (!prepare_ids(s, error, capacity))
         return false;
+    size_t selected_index=s->count;
+    for(cJSON *a=s->selected_all->child;a;a=a->next,selected_index++) {
+        Record *r=&s->records[selected_index]; r->attrs=a; r->ordinal=selected_index; r->id="";
+    }
     cJSON *envelope = cJSON_CreateObject(), *items = cJSON_CreateArray(), *clusters = cJSON_CreateArray();
     bool ok = false;
     if (!envelope || !items || !clusters) {
@@ -670,6 +786,7 @@ static bool source_build(const CeDocument *doc, const CeCitationStyle *style, co
         goto done;
     ok = ce_csl_input_load(&s->input, json, strlen(json), error, capacity);
     free(json);
+    if(ok) ok=normalize_selected(s,error,capacity);
     if (ok)
         ok = digest_source(s, style, error, capacity);
 done:
@@ -784,7 +901,17 @@ static bool read_entries(const cJSON *section, cJSON **out, char *error, size_t 
 }
 static bool ordinary_section_fields(const cJSON *section) {
     return supported_keys(section, "type|attrs") &&
-           supported_keys(field(section, "attrs"), "style|entriesJson|cslRenderJson|bibliographyMode");
+           supported_keys(field(section, "attrs"), "style|entriesJson|cslRenderJson|bibliographyMode|selectedItemsJson");
+}
+static bool same_section_metadata(const cJSON *first,const cJSON *extra,bool *equal,char *error,size_t capacity) {
+    cJSON *a=cJSON_Duplicate(first,true),*b=cJSON_Duplicate(extra,true);
+    if(!a || !b) { cJSON_Delete(a); cJSON_Delete(b); return fail(error,capacity,"Out of memory comparing bibliography metadata"); }
+    const char *keys[]={"style","entriesJson","cslRenderJson","bibliographyMode","selectedItemsJson"};
+    cJSON *aa=cJSON_GetObjectItemCaseSensitive(a,"attrs"),*ba=cJSON_GetObjectItemCaseSensitive(b,"attrs");
+    for(size_t i=0;i<sizeof keys/sizeof *keys;i++) {
+        cJSON_DeleteItemFromObjectCaseSensitive(aa,keys[i]); cJSON_DeleteItemFromObjectCaseSensitive(ba,keys[i]);
+    }
+    bool ok=metadata_equal(a,b,equal,error,capacity); cJSON_Delete(a); cJSON_Delete(b); return ok;
 }
 static void remove_sections(cJSON *node) {
     if (type_is(node, CITATION) || type_is(node, "paragraph") || type_is(node, "heading"))
@@ -829,7 +956,7 @@ static bool attach_cache(cJSON *attrs, const CeCitationCache *cache, CeCitationP
     return ok;
 }
 static Record *first_record(const Source *s, const char *identity_key) {
-    size_t low = 0, high = s->count;
+    size_t low = 0, high = s->record_count;
     while (low < high) {
         size_t mid = low + (high - low) / 2;
         if (strcmp(s->by_identity[mid]->identity, identity_key) < 0)
@@ -837,7 +964,7 @@ static Record *first_record(const Source *s, const char *identity_key) {
         else
             high = mid;
     }
-    return low < s->count && !strcmp(s->by_identity[low]->identity, identity_key) ? s->by_identity[low]
+    return low < s->record_count && !strcmp(s->by_identity[low]->identity, identity_key) ? s->by_identity[low]
                                                                                   : NULL;
 }
 typedef struct OldKey {
@@ -873,10 +1000,16 @@ static bool collect_old_entries(const Source *source, cJSON **entries, OldEntrie
     for (size_t i = 0; i < source->sections.count; ++i) {
         const cJSON *section = source->sections.data[i], *attrs = field(section, "attrs");
         const cJSON *mode = field(attrs, "bibliographyMode");
-        if (mode && (!cJSON_IsString(mode) || strcmp(mode->valuestring, "citations")))
+        if (mode && (!cJSON_IsString(mode) || (strcmp(mode->valuestring, "citations") && strcmp(mode->valuestring,"selected"))))
             return fail(error, capacity, "Unsupported bibliographyMode; original bibliography retained");
-        if (i && !ordinary_section_fields(section))
-            return fail(error, capacity, "Extra bibliography section has custom metadata; original retained");
+        if (i && !ordinary_section_fields(section)) {
+            const cJSON *first_mode=field(field(source->sections.data[0],"attrs"),"bibliographyMode");
+            bool equal=false;
+            if(!mode || !first_mode)
+                return fail(error, capacity, "Extra bibliography section has conflicting custom metadata; original retained");
+            if(!same_section_metadata(source->sections.data[0],section,&equal,error,capacity)) return false;
+            if(!equal) return fail(error, capacity, "Extra bibliography section has conflicting custom metadata; original retained");
+        }
         cJSON *parsed = NULL;
         bool ok = read_entries(section, &parsed, error, capacity);
         size_t count = ok ? (size_t)cJSON_GetArraySize(parsed) : 0;
@@ -925,8 +1058,13 @@ static bool old_index(cJSON *entries, OldEntries *old, char *error, size_t capac
     if (old->count > 1)
         qsort(old->keys, old->count, sizeof *old->keys, old_key_compare);
     for (i = 1; i < old->count; ++i)
-        if (!strcmp(old->keys[i - 1].key, old->keys[i].key))
-            return fail(error, capacity, "Ambiguous legacy bibliography metadata identity");
+        if (!strcmp(old->keys[i - 1].key, old->keys[i].key)) {
+            const OldKey *a=&old->keys[i-1],*b=&old->keys[i];
+            const char *id=text(a->entry,"sourceItemId");
+            if(!old->derived[a->index] || !old->derived[b->index] || !ordinary_entry(a->entry) ||
+               !ordinary_entry(b->entry) || !*id || strcmp(id,text(b->entry,"sourceItemId")))
+                return fail(error, capacity, "Ambiguous legacy bibliography metadata identity");
+        }
     return true;
 }
 static OldKey *old_lookup(OldEntries *old, const char *id) {
@@ -1068,7 +1206,7 @@ static bool build_bibliography(Source *s, const CeCitationStyle *style, const Ce
     /* All entries were already validated above. Preserve first-section custom
      * fields without reparsing entries and mistaking an allocation failure for
      * custom metadata. */
-    bool keep = s->count != 0 || (s->sections.count && !ordinary_section_fields(s->sections.data[0]));
+    bool keep = s->count != 0 || s->selected_intent || (s->sections.count && !ordinary_section_fields(s->sections.data[0]));
     if (keep) {
         if (!ce_citation_cache_from_bibliography(header, &options, rows, count, NULL, &p->bibliography, error,
                                                  capacity))
@@ -1081,8 +1219,13 @@ static bool build_bibliography(Source *s, const CeCitationStyle *style, const Ce
         }
         bool stored = json_string_budget(&p->generated_bytes, json, strlen(json), error, capacity) &&
                       put_text(attrs, "entriesJson", json) && put_text(attrs, "style", header->profile) &&
-                      put_text(attrs, "bibliographyMode", "citations");
+                      put_text(attrs, "bibliographyMode", s->selected_intent?"selected":"citations");
         free(json);
+        if(stored && s->selected_intent) {
+            char *selected=serialize(s->selected_canonical);
+            stored=selected && put_text(attrs,"selectedItemsJson",selected);
+            free(selected);
+        } else if(stored) cJSON_DeleteItemFromObjectCaseSensitive(attrs,"selectedItemsJson");
         if (!stored || !attach_cache(attrs, p->bibliography, p, error, capacity))
             goto done;
     }
@@ -1130,12 +1273,14 @@ bool ce_citations_prepare(const CeDocument *doc, const CeCitationStyle *style, c
     memcpy(p->digest, source.digest, 65);
     p->stats.citation_count = source.count;
     p->stats.repaired_ids = source.repaired;
+    p->stats.selected_count=source.include_count;
+    p->stats.selected_bibliography=source.selected_intent;
     if (!source.root) {
         p->json = ce_document_export_json(doc);
         if (!p->json)
             goto done;
     } else {
-        if (source.count || persist) {
+        if (source.count || source.selected_intent || persist) {
             cJSON *attrs = attributes(source.root);
             if (!attrs ||
                 !put_text(attrs, "citationProfile", ce_citation_style_loaded_info(style)->profile_id))
@@ -1143,8 +1288,10 @@ bool ce_citations_prepare(const CeDocument *doc, const CeCitationStyle *style, c
             /* Explicit citationLocale remains untouched; do not turn a style's
              * implicit default into a persistent user override. */
         }
+        CeCslDocumentOptions document_options={0};
+        document_options.include_items=source.include_items; document_options.include_count=source.include_count;
         if (!ce_csl_document_build(ce_citation_style_style(style), ce_citation_style_locale(style),
-                                   source.input, NULL, NULL, &processed, error, capacity))
+                                   source.input, &document_options, NULL, &processed, error, capacity))
             goto done;
         const CeCitationStyleInfo *info = ce_citation_style_loaded_info(style);
         CeCitationCacheHeader header = {CE_CITATION_PROCESSOR_PROFILE,

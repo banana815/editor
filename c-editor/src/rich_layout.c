@@ -1,5 +1,6 @@
 #include "rich_layout.h"
 #include "citation_cache.h"
+#include "bibliography_archive.h"
 #include "cJSON.h"
 #include <limits.h>
 #include <math.h>
@@ -715,14 +716,87 @@ static bool citation_placeholder(CeRichLayout *l,const CeBlockInfo *b,bool bibli
         (bibliography?"参考文献尚未生成":"引用尚未生成");
     return layout_atom(l,b,message,indent,y);
 }
+static bool archive_cell(CeRichLayout *l,const CeCslOutput *output,float x,float y,float width,float *height) {
+    if(citation_supported(output)) return citation_cell(l,output,x,y,width,0,0,1,height);
+    CeCslOutput *fallback=ce_csl_output_new(NULL,l->error,sizeof l->error);
+    const char *text="旧存档文字方向暂不支持显示";
+    bool ok=fallback && ce_csl_output_append(fallback,text,strlen(text),0,NULL,l->error,sizeof l->error) &&
+        citation_cell(l,fallback,x,y,width,0,0,1,height);
+    ce_csl_output_free(fallback); return ok;
+}
+static bool layout_archive(CeRichLayout *l,const CeBlockInfo *b,const cJSON *node,float indent,float *y) {
+    CeBibliographyArchive *archive=NULL;
+    if(!ce_bibliography_archive_decode(node,NULL,&archive,l->error,sizeof l->error)) return false;
+    float top=*y,padding=8,width=fmaxf(l->font_size,l->width-indent),inside=fmaxf(1,width-padding*2);
+    float x=indent+padding,cursor=top+padding,label=0,gap=l->font_size*.5f,h=0;
+    CeCslOutput *caption=ce_csl_output_new(NULL,l->error,sizeof l->error);
+    const char *title=ce_bibliography_archive_diagnostics(archive)?
+        "参考文献（旧存档；部分格式按原文显示）":"参考文献（旧存档）";
+    bool ok=caption && ce_csl_output_append(caption,title,strlen(title),CE_CSL_BOLD,NULL,l->error,sizeof l->error) &&
+        citation_cell(l,caption,x,cursor,inside,0,0,1,&h);
+    ce_csl_output_free(caption);
+    if(!ok) goto done;
+    cursor+=h+l->font_size*.4f;
+    for(size_t i=0;i<ce_bibliography_archive_count(archive);i++) {
+        const CeBibliographyArchiveEntry *entry=ce_bibliography_archive_entry(archive,i);
+        if(entry->label) {
+            float measured=0;
+            if(!citation_measure(l,entry->label,&measured)) { ok=false; goto done; }
+            label=fmaxf(label,measured);
+        }
+    }
+    label=fminf(label,inside*.25f);
+    for(size_t i=0;i<ce_bibliography_archive_count(archive);i++) {
+        const CeBibliographyArchiveEntry *entry=ce_bibliography_archive_entry(archive,i);
+        if(i) cursor+=l->font_size*.4f;
+        float entry_top=cursor,label_height=0,gutter=entry->label?fminf(label+gap,inside*.45f):0;
+        float body_width=fmaxf(1,inside-gutter),body_x=x+gutter;
+        if(entry->label && !archive_cell(l,entry->label,x,cursor,fmaxf(1,label),&label_height)) { ok=false; goto done; }
+        float inner_label=0;
+        for(size_t j=0;j<entry->row_count;j++) if(entry->rows[j].left && citation_supported(entry->rows[j].left)) {
+            float measured=0;
+            if(!citation_measure(l,entry->rows[j].left,&measured)) { ok=false; goto done; }
+            inner_label=fmaxf(inner_label,measured);
+        }
+        inner_label=fminf(inner_label,body_width*.35f);
+        for(size_t j=0;j<entry->row_count;j++) {
+            const CeBibliographyArchiveRow *r=&entry->rows[j]; float left_height=0;
+            if(r->kind==CE_CSL_BIBLIOGRAPHY_TWO_COLUMNS) {
+                float inner_gutter=fminf(inner_label+gap,body_width*.45f);
+                ok=archive_cell(l,r->left,body_x,cursor,fmaxf(1,inner_label),&left_height) &&
+                    archive_cell(l,r->body,body_x+inner_gutter,cursor,fmaxf(1,body_width-inner_gutter),&h);
+            } else {
+                float inset=r->kind==CE_CSL_BIBLIOGRAPHY_INDENT?fminf(2*l->font_size,body_width*.4f):0;
+                ok=archive_cell(l,r->body,body_x+inset,cursor,fmaxf(1,body_width-inset),&h);
+            }
+            if(!ok) goto done;
+            cursor+=fmaxf(h,left_height);
+        }
+        cursor=fmaxf(cursor,entry_top+label_height);
+        if(!isfinite(cursor) || cursor>CITATION_MAX_HEIGHT) { ok=error(l,"Archive exceeds citation layout height limit"); goto done; }
+    }
+    {
+        SDL_FRect bounds={indent,top,width,cursor-top+padding};
+        if(l->fragment_count>=CITATION_MAX_FRAGMENTS) { ok=error(l,"Archive layout fragment limit exceeded"); goto done; }
+        ok=fragment(l,NULL,bounds,false,l->theme.atom_background,true) &&
+           cluster(l,b->start,b->end,bounds,l->row_count) && row(l,b->start,b->end,bounds);
+        if(ok) *y=top+bounds.h;
+    }
+done:
+    ce_bibliography_archive_free(archive); return ok;
+}
 static bool layout_citation(CeRichLayout *l,const CeBlockInfo *b,const cJSON *node,
                             const CeRichCitationSource *source,float indent,float *y) {
     bool bibliography=!strcmp(jstr(node,"type"),"zoteroEndnoteSection");
     const CeCitationCache *cache=NULL;
     CeRichCitationStatus status=source?source->resolve(source->context,node,&cache,l->error,sizeof l->error):CE_RICH_CITATION_ABSENT;
     if(status==CE_RICH_CITATION_ERROR) return *l->error?false:error(l,"Unable to resolve citation display");
-    if(status<CE_RICH_CITATION_ABSENT || status>CE_RICH_CITATION_ERROR) return error(l,"Invalid citation display status");
+    if(status<CE_RICH_CITATION_ABSENT || status>CE_RICH_CITATION_ARCHIVED) return error(l,"Invalid citation display status");
     l->error[0]=0;
+    if(status==CE_RICH_CITATION_ARCHIVED) {
+        if(cache || !bibliography || !ce_bibliography_archive_eligible(node)) return error(l,"Invalid archived bibliography display source");
+        return layout_archive(l,b,node,indent,y);
+    }
     if(status!=CE_RICH_CITATION_VALID) return citation_placeholder(l,b,bibliography,status,indent,y);
     if(!cache || ce_citation_cache_kind(cache)!=(bibliography?CE_CITATION_CACHE_BIBLIOGRAPHY:CE_CITATION_CACHE_CITATION))
         return error(l,"Citation display cache has the wrong kind");

@@ -16,6 +16,14 @@ static void clipboard_request_free(EditorClipboardRequest *r) {
 }
 static bool clipboard_atom_text(void *context,const cJSON *atom,char **text,char *error,size_t capacity) {
     App *a=context; const CeCitationCache *cache=NULL;
+    if(ce_bibliography_archive_eligible(atom)) {
+        CeBibliographyArchive *archive=NULL; CeCslOutputString plain={0};
+        bool ok=ce_bibliography_archive_decode(atom,NULL,&archive,error,capacity) &&
+            ce_bibliography_archive_plain(archive,&plain,error,capacity);
+        if(ok) { *text=copy_string(plain.data); ok=*text!=NULL; }
+        ce_csl_output_string_free(&plain); ce_bibliography_archive_free(archive);
+        return ok;
+    }
     if(citation_resolve(a,atom,&cache,error,capacity)!=CE_RICH_CITATION_VALID ||
        ce_citation_cache_kind(cache)!=CE_CITATION_CACHE_CITATION) return true;
     CeCslOutputString result={0};

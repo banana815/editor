@@ -803,9 +803,15 @@ static bool wrap_context(const cJSON *left,cJSON *insert,size_t *start,size_t *e
 }
 
 typedef struct { cJSON *node; char *id,*identity; bool inserted,repair; size_t ordinal; } Citation;
-typedef struct { Citation *data; size_t count,capacity,bibliographies,inserted_citations; } Citations;
+typedef struct { Citation *data; size_t count,capacity,bibliographies,selected_bibliographies,inserted_citations; } Citations;
 static bool collect(Citations *v,cJSON *n,bool inserted,Error *e) {
-    if (type_is(n,"zoteroEndnoteSection")) { if (inserted) ++v->bibliographies;return true; }
+    if (type_is(n,"zoteroEndnoteSection")) {
+        if (inserted) {
+            ++v->bibliographies;
+            if (!strcmp(string(get(n,"attrs"),"bibliographyMode"),"selected")) ++v->selected_bibliographies;
+        }
+        return true;
+    }
     if (type_is(n,"zoteroCitationBlock")) {
         if (v->count==v->capacity) {
             size_t capacity=v->capacity?v->capacity*2:16;
@@ -919,6 +925,28 @@ static bool derived_section(const cJSON *section,Citation **sorted,size_t count,
     cJSON_Delete(entries);
     return ok || fail(e,"derived bibliography has custom metadata or a source absent from the copied slice");
 }
+static bool selected_section(const cJSON *section,Error *e) {
+    const cJSON *attrs=get(section,"attrs"),*value=get(attrs,"selectedItemsJson");
+    if (!cJSON_IsObject(attrs) || !cJSON_IsString(value)) return fail(e,"selected bibliography needs complete source attributes");
+    cJSON *items=NULL;bool exact=false;
+    if (!ce_csl_json_parse_strict_with_numbers(value->valuestring,strlen(value->valuestring),&items,&exact,e->error,e->capacity)) {
+        e->failed=true;return false;
+    }
+    bool ok=exact && cJSON_IsArray(items) && cJSON_GetArraySize(items)<=(int)CE_CSL_INPUT_MAX_ITEMS;
+    for (const cJSON *item=items?items->child:NULL;ok && item;item=item->next) {
+        const cJSON *snapshot=get(item,"cslJson");cJSON *parsed=NULL;
+        if (!cJSON_IsObject(item) || !cJSON_IsString(snapshot) || !*snapshot->valuestring) { ok=false;break; }
+        ok=ce_csl_json_parse_strict(snapshot->valuestring,strlen(snapshot->valuestring),&parsed,e->error,e->capacity);
+        if (!ok) e->failed=true;
+        if (ok && !cJSON_IsObject(parsed)) ok=false;
+        cJSON_Delete(parsed);
+    }
+    cJSON_Delete(items);
+    /* Preserve the exact source string, old cache and unknown metadata. The
+     * authoritative citation transaction performs identity union/conflict
+     * checks and replaces the old controlled output before a live commit. */
+    return ok || fail(e,"selected bibliography has invalid/incomplete or non-lossless sources");
+}
 static bool prune_incoming_bibliography(cJSON *node,Citation **sorted,size_t count,size_t *work,Error *e) {
     if (type_is(node,"zoteroCitationBlock")) return true;
     cJSON *content=cJSON_GetObjectItemCaseSensitive(node,"content");
@@ -926,9 +954,12 @@ static bool prune_incoming_bibliography(cJSON *node,Citation **sorted,size_t cou
         cJSON *next=child->next;
         if (type_is(child,"zoteroEndnoteSection")) {
             const cJSON *mode=get(get(child,"attrs"),"bibliographyMode");
-            if (mode && (!cJSON_IsString(mode) || strcmp(mode->valuestring,"citations")))
+            bool selected=mode && cJSON_IsString(mode) && !strcmp(mode->valuestring,"selected");
+            if (mode && (!cJSON_IsString(mode) || (!selected && strcmp(mode->valuestring,"citations"))))
                 return fail(e,"unsupported bibliography mode in copied slice");
-            if (mode) {
+            if (selected) {
+                if (!selected_section(child,e)) return false;
+            } else if (mode) {
                 if (!derived_section(child,sorted,count,work,e)) return false;
                 cJSON_Delete(cJSON_DetachItemViaPointer(content,child));
             }
@@ -940,7 +971,7 @@ static bool prune_incoming_bibliography(cJSON *node,Citation **sorted,size_t cou
 static bool prepare_citations(cJSON *left,cJSON *right,cJSON *insert,Error *e) {
     Citations v={0};Citation **sorted=NULL;
     bool ok=collect(&v,left,false,e) && collect(&v,right,false,e) && collect(&v,insert,true,e);
-    if (ok && v.bibliographies && !v.inserted_citations)
+    if (ok && v.bibliographies>v.selected_bibliographies && !v.inserted_citations)
         ok=fail(e,"a bibliography alone cannot be pasted as a derived section; paste readable text instead");
     if (ok && v.count) {
         sorted=malloc(v.count*sizeof *sorted);

@@ -32,7 +32,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build pkg-config libx11-dev libxext-dev \
             libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev \
-            libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev
+            libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev libcurl4-openssl-dev
       - name: Configure
         run: cmake -S c-editor -B c-editor/build -DCMAKE_BUILD_TYPE=Release -DEDITOR_DISTRIBUTION=ON
       - name: Build
@@ -96,6 +96,8 @@ jobs:
         run: python3 c-editor/platform/android/prepare.py
       - name: Test Android startup readiness and screenshot validation
         run: python3 c-editor/platform/android/test_smoke_checks.py
+      - name: Test Android HTTP bridge with isolated local fixtures
+        run: python3 c-editor/tests/test_library_source_android.py
       - name: Compile unsigned APK for device and emulator
         working-directory: c-editor/platform/android
         run: ./gradlew --no-daemon :app:assembleRelease :app:assembleDebug
@@ -232,6 +234,8 @@ jobs:
         run: |
           node c-editor/tests/test_browser.mjs c-editor/build-web "$(command -v google-chrome)"
           node c-editor/tests/test_browser_touch.mjs c-editor/build-web "$(command -v google-chrome)"
+          node c-editor/tests/test_library_source_browser.mjs c-editor/build-web/test_library_source_web.cjs "$(command -v google-chrome)"
+          node c-editor/tests/test_browser_library.mjs c-editor/build-web "$(command -v google-chrome)"
       - name: Run C core fixtures in WebAssembly
         run: |
           source "$RUNNER_TEMP/emsdk/emsdk_env.sh"

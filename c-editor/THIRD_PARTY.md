@@ -127,6 +127,12 @@ script copyright notice are preserved in `Gradle-Apache-2.0.txt` and
 
 **Desktop and iOS.** Apple frameworks and OS-provided C/C++ libraries are linked
 from the SDK/system and are not copied into the application by this source tree.
+HTTP source refresh links the OS WinHTTP or Foundation framework on Windows and
+Apple platforms. Linux dynamically links the host's libcurl (7.84 or later),
+including that installation's TLS dependencies; these system binaries are not
+copied into the preview archive. If packaging them in a future distribution,
+include the notices of the exact libcurl/TLS build. Android HttpURLConnection
+and browser fetch are platform APIs, not bundled HTTP implementations.
 Any Windows redistributable runtime or Linux shared libraries actually included
 in a release need the notices/redistribution terms of those exact binaries.
 Development builds may use an installed SDL; that installation's version and

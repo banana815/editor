@@ -4,6 +4,10 @@ The target is the same note editor on **Windows, macOS, Linux, Android, iOS and
 the browser**, with the existing rich-text and Zotero workflows. This directory
 is an ongoing rewrite, not a completed replacement. `../test-app` remains intact.
 
+For the pause checkpoint, verified results and remaining work, see
+[项目状态与交接](PROJECT_STATUS.md). Local validation and remote CI results
+are recorded separately; further feature development remains paused.
+
 Application code and document/storage logic are C11. The iOS file picker uses
 the platform's Objective-C API behind a C interface. SDL3 handles windows and
 input; SDL_ttf, FreeType and HarfBuzz handle Unicode shaping. HarfBuzz is a C API
@@ -63,6 +67,45 @@ including IME input. On touch screens, dragging scrolls without moving the
 caret; tapping focuses input, and a long press selects text for the floating
 copy/cut/paste/select-all menu. Mouse and pen input retain their normal behavior.
 
+List items support one-level indent/outdent through toolbar actions and
+Tab/Shift+Tab. Selections retain their text offsets and each operation is one
+undo step. Clear formatting also resets selected headings, alignment and list
+structure; at a caret it changes the block and subsequent typing, preserving
+marks on existing unselected text. Unknown wrapper metadata that cannot survive
+unwrapping causes an explicit failure.
+
+The library panel keeps independent checkboxes across search and collection
+filters. “勾选结果” selects the current filtered items, “清空勾选” clears all
+checks, and “设为书目” replaces the explicit reading-list selection. The resulting
+bibliography combines those sources with actual body citations. It does not
+insert fake citation blocks. Changing the style, clearing the selection and
+deleting a body citation all use the same C processing and undo transaction.
+Opening the panel with selected prose copies that text into the quotation field.
+
+“连接来源” explicitly downloads CSL JSON from an editable HTTP(S) URL;
+“刷新来源” rereads the saved URL or a previously selected desktop SQLite file.
+File imports on browsers and mobile devices ask the user to select the file
+again. Sources are never contacted automatically on startup. Bytes are parsed
+in C before replacing the library; cancellation, malformed content and failed
+requests preserve the previous library. The source configuration and its
+library snapshot are saved together in the local cache.
+
+Transport uses WinHTTP, NSURLSession, Android HttpURLConnection, system libcurl
+on Linux, and browser fetch. Application decisions and CSL parsing stay in C;
+platform bridge code only transfers bytes. Responses are limited to 128 MiB
+after decompression and normally 30 seconds. Redirects are rejected and TLS
+verification remains enabled. Plain HTTP is limited to loopback, private/link
+local IP addresses and localhost/.localhost/.local names. URLs must be ASCII
+with non-ASCII path/query bytes percent-encoded. The Android bridge relies on
+this application not installing a global Authenticator; it rejects an installed
+CookieHandler instead of changing global handlers.
+
+Browser CORS and local-network permissions still apply. Better BibTeX pull
+exports reject browser access, so use file import there, or a CSL JSON endpoint
+that permits the browser origin. On a phone, `127.0.0.1` refers to the phone.
+The desktop SQLite refresh always uses the existing read-only WAL-aware loader;
+mobile file-provider grants are not fabricated or retained as reusable paths.
+
 ## Desktop preview packages
 
 ```sh
@@ -78,7 +121,7 @@ This produces a ZIP with a macOS application bundle or Windows executable, or
 a Linux tar.gz, including fonts and third-party notices. Extract the complete
 archive before launching the application. The archive is specific to the OS
 and architecture used for the build. Application libraries are linked statically;
-Linux still uses the host's system libraries and window services. The CI Linux
+Linux still uses the host's system libraries, libcurl (7.84 or later) and window services. The CI Linux
 package targets Ubuntu 24.04 and compatible environments.
 
 Packages are development previews. Apple signing/notarization, Windows signing
@@ -107,7 +150,7 @@ tests cover stale selections, IME cancellation/commit and clipboard edge cases.
 
 | Area | Current evidence / remaining work |
 | --- | --- |
-| C document core | Tested text/HTML/TipTap JSON import/export, rich marks, alignment, history, search, citation/endnote preservation, nested-list Enter/exit, atom-adjacent insertion and paragraph splitting. Same-container block/list-item movement is supported; arbitrary cross-container moves remain restricted. |
+| C document core | Tested text/HTML/TipTap JSON import/export, rich marks, alignment, history, search, citation/endnote preservation, nested-list Enter/exit, indent/outdent, full clear-formatting, atom-adjacent insertion and paragraph splitting. Same-container block/list-item movement is supported; arbitrary cross-container moves remain restricted. |
 | Note storage | Unicode filenames, exclusive creation, atomic saving, read/delete/list and failure propagation pass on macOS, Windows and Linux CI. |
 | Native interface | Rich-text rendering, input, headings, marks, lists, alignment, selection, IME, reference cards and emoji shaping are tested. Autosave, themes, resizable sidebar, repeat search, file export and safe legacy import are wired. The library panel supports search, collection filtering, citation insertion/editing and undo. Logical-pixel and device-safe-area layout keep controls and IME within the usable mobile area. RTL/bidi text uses the plain layout; full rich bidi layout and Unicode line-breaking rules remain. |
 | Browser | Actual Emscripten/Chrome integration tests cover IME, Unicode, IndexedDB save/reload and failures, navigation cancellation, real system clipboard, JSON download, file chooser import and the citation workflow. Safari/Firefox and mobile browser device validation remain. |
@@ -165,11 +208,21 @@ Ordinary prose in an unprocessable legacy note remains editable. The startup
 sequence restores the library before processing the first note.
 
 Legacy reference lists can contain independently selected items with no body
-citation. Such unmatched entries are retained, and automatic processing reports
-that the original list needs migration. Only a section explicitly marked
-`bibliographyMode: "citations"` declares that its ordinary entries are derived
-from the current body citations and may be removed when those citations are
-deleted. Opening a legacy note does not silently opt it into that declaration.
+citation. Such unmatched entries are retained and displayed as “旧存档” using
+their stored text and a bounded, controlled HTML subset. Unsupported stored
+formatting falls back to readable text with a diagnostic. This is archival
+display, not newly computed citation output; processing still reports when a
+list needs migration. Opening a legacy note never deletes its unmatched items.
+
+A section marked `bibliographyMode: "citations"` declares ordinary entries
+derived from actual body citations. New explicit reading lists instead store
+`bibliographyMode: "selected"` with complete source attributes in
+`selectedItemsJson`. The C processor regenerates the union of selected and cited
+sources, preserving unknown source attributes. Removing a body citation leaves
+an explicitly selected source in the bibliography. An empty selected set removes
+only the explicit selection, retaining body-cited sources. Unknown metadata or
+conflicting snapshots that cannot be merged cause an atomic failure. Unmanaged
+legacy entries are not silently converted into complete CSL sources.
 
 `cslRenderJson` stores versioned controlled runs and bibliography rows, bound to
 the complete source order, style/locale pins and a SHA-256 consistency digest.

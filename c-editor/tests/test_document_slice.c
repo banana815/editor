@@ -7,6 +7,7 @@
 #include "cJSON.h"
 #include "citation_session.h"
 #include "citations.h"
+#include "bibliography_selection.h"
 
 static size_t allocations,fail_at;
 static bool rejected;
@@ -317,6 +318,84 @@ static void test_formal_whole_document(void) {
     printf("%zu citation/bibliography sticky allocation failure points preserve all outputs\n",checked);
     free(before);free(old_id);ce_document_slice_free(slice);ce_document_free(candidate);ce_citation_session_free(session);ce_document_free(source);
 }
+static CeDocument *selected_document(const char *id,const char *title) {
+    cJSON *item=cJSON_CreateObject();assert(item);
+    assert(cJSON_AddStringToObject(item,"id",id) && cJSON_AddStringToObject(item,"type","book") &&
+           cJSON_AddStringToObject(item,"title",title));
+    char *snapshot=ce_csl_json_print_exact(item);assert(snapshot);cJSON_Delete(item);
+    CeZoteroItem source={0};source.id=(char *)id;source.title=(char *)title;source.csl_json=snapshot;
+    const CeZoteroItem *items[]={&source};CeDocument *doc=load("",CE_FORMAT_TEXT);
+    assert(ce_bibliography_select(doc,items,1,test_error,sizeof test_error));cJSON_free(snapshot);
+    CeCitationSession *session=NULL;assert(ce_citation_session_build(doc,NULL,NULL,&session,test_error,sizeof test_error));
+    assert(ce_document_import(doc,ce_citation_prepared_json(ce_citation_session_prepared(session)),CE_FORMAT_JSON,test_error,sizeof test_error));
+    ce_citation_session_free(session);return doc;
+}
+static CeDocumentSlice *selected_slice(CeDocument *doc) {
+    CeBlockInfo block;assert(ce_document_block_info(doc,ce_document_block_count(doc)-1,&block) && block.kind==CE_BLOCK_ENDNOTES);
+    return capture_slice(doc,block.start,block.end);
+}
+static void test_selected_bibliography(void) {
+    CeDocument *source=selected_document("A","Selected book A"),*target=selected_document("B","Selected book B");
+    CeDocumentSlice *slice=selected_slice(source),*round=NULL;char *html=NULL;bool found=false;
+    assert(ce_document_slice_html(slice,NULL,NULL,&html,test_error,sizeof test_error));
+    assert(ce_document_slice_from_html(html,strlen(html),&round,&found,test_error,sizeof test_error) && found);free(html);
+    CeDocument *candidate=paste(target,ce_document_length(target),ce_document_length(target),round,NULL);
+    size_t sections=0,citations=0;
+    for(size_t i=0;i<ce_document_block_count(candidate);i++) { CeBlockInfo b;assert(ce_document_block_info(candidate,i,&b));sections+=b.kind==CE_BLOCK_ENDNOTES;citations+=b.kind==CE_BLOCK_CITATION; }
+    assert(sections==2 && !citations);char *before=snapshot(target);CeCitationSession *session=NULL;
+    assert(ce_citation_session_build(target,NULL,NULL,&session,test_error,sizeof test_error));
+    assert(ce_citation_session_apply(&session,target,candidate,NULL,NULL,true,test_error,sizeof test_error));
+    const CeCitationProcessStats *stats=ce_citation_prepared_stats(ce_citation_session_prepared(session));
+    assert(!stats->citation_count && stats->reference_count==2 && stats->selected_count==2);
+    assert(ce_document_undo(target));document_is(target,before);assert(!ce_document_can_undo(target));free(before);
+    assert(ce_citation_session_build(target,NULL,NULL,&session,test_error,sizeof test_error));
+    /* Copying the same explicit bibliography is a union, not another fake cite. */
+    CeDocumentSlice *duplicate=selected_slice(target);ce_document_free(candidate);candidate=paste(target,0,0,duplicate,NULL);
+    assert(ce_citation_session_apply(&session,target,candidate,NULL,NULL,true,test_error,sizeof test_error));
+    stats=ce_citation_prepared_stats(ce_citation_session_prepared(session));assert(!stats->citation_count && stats->reference_count==1 && stats->selected_count==1);
+    /* Same source with different CSL is preserved in the private candidate,
+     * then rejected by the authoritative transaction without touching live. */
+    CeDocument *conflict=selected_document("B","Changed source B");CeDocumentSlice *conflicting=selected_slice(conflict);
+    ce_document_free(candidate);candidate=paste(target,0,0,conflicting,NULL);before=snapshot(target);CeCitationSession *old=session;
+    assert(!ce_citation_session_apply(&session,target,candidate,NULL,NULL,true,test_error,sizeof test_error));
+    assert(session==old && strstr(test_error,"Conflicting"));document_is(target,before);free(before);
+    ce_document_slice_free(conflicting);ce_document_free(conflict);
+    /* Unknown section/source metadata survives selected-only transport. */
+    cJSON *tree=cJSON_Parse(ce_citation_prepared_json(ce_citation_session_prepared(session)));assert(tree);
+    cJSON *node=(cJSON *)first_type(tree,"zoteroEndnoteSection"),*attrs=cJSON_GetObjectItemCaseSensitive(node,"attrs"),*items=NULL;
+    assert(cJSON_AddStringToObject(attrs,"customSection","keep"));
+    const char *encoded=string(attrs,"selectedItemsJson");assert(ce_csl_json_parse_strict(encoded,strlen(encoded),&items,test_error,sizeof test_error));
+    assert(cJSON_AddNumberToObject(items->child,"customSource",4503599627370501.0));
+    char *item_json=ce_csl_json_print_exact(items);assert(item_json);cJSON_Delete(items);
+    assert(cJSON_ReplaceItemInObjectCaseSensitive(attrs,"selectedItemsJson",cJSON_CreateString(item_json)));cJSON_free(item_json);
+    char *custom_json=ce_csl_json_print_exact(tree);assert(custom_json);cJSON_Delete(tree);
+    CeDocument *custom=load(custom_json,CE_FORMAT_JSON);cJSON_free(custom_json);CeDocumentSlice *custom_slice=selected_slice(custom);
+    CeDocument *empty=load("",CE_FORMAT_TEXT);ce_document_free(candidate);candidate=paste(empty,0,0,custom_slice,NULL);
+    char *copied=snapshot(candidate);assert(strstr(copied,"customSection") && strstr(copied,"4503599627370501"));free(copied);
+    CeCitationSession *empty_session=NULL;assert(ce_citation_session_apply(&empty_session,empty,candidate,NULL,NULL,true,test_error,sizeof test_error));
+    copied=snapshot(empty);assert(strstr(copied,"customSection") && strstr(copied,"4503599627370501"));free(copied);
+    /* Conflicting custom metadata may not be silently merged away. */
+    ce_document_free(candidate);candidate=paste(target,0,0,custom_slice,NULL);before=snapshot(target);old=session;
+    assert(!ce_citation_session_apply(&session,target,candidate,NULL,NULL,true,test_error,sizeof test_error));
+    assert(old==session);document_is(target,before);free(before);
+    ce_document_slice_free(custom_slice);ce_document_free(custom);ce_document_free(empty);ce_citation_session_free(empty_session);
+    size_t checked=test_oom_one(source,ce_document_length(source)-3,ce_document_length(source),target,0);
+    printf("%zu selected bibliography sticky allocation failure points preserve all outputs\n",checked);
+    ce_document_slice_free(duplicate);ce_document_slice_free(round);ce_document_slice_free(slice);
+    ce_document_free(candidate);ce_document_free(source);ce_document_free(target);ce_citation_session_free(session);
+    /* Structural validation is early, but complete identity/CSL semantics
+     * remain the processor's responsibility; no trust in imported caches. */
+    const char *bad[]={"null","[] trailing","[{\"cslJson\":\"null\"}]","[{\"cslJson\":\"{}\",\"x\":1.0000000000000001}]"};
+    for(size_t i=0;i<sizeof bad/sizeof *bad;i++) {
+        source=selected_document("A","Selected book A");char *json=snapshot(source);tree=cJSON_Parse(json);free(json);assert(tree);
+        attrs=cJSON_GetObjectItemCaseSensitive((cJSON *)first_type(tree,"zoteroEndnoteSection"),"attrs");
+        assert(cJSON_ReplaceItemInObjectCaseSensitive(attrs,"selectedItemsJson",cJSON_CreateString(bad[i])));
+        json=ce_csl_json_print_exact(tree);assert(json);cJSON_Delete(tree);assert(ce_document_import(source,json,CE_FORMAT_JSON,test_error,sizeof test_error));cJSON_free(json);
+        slice=selected_slice(source);empty=load("",CE_FORMAT_TEXT);candidate=NULL;
+        assert(!ce_document_slice_prepare_replace(empty,0,0,slice,&candidate,NULL,test_error,sizeof test_error) && !candidate);
+        ce_document_slice_free(slice);ce_document_free(source);ce_document_free(empty);
+    }
+}
 static void test_oom(void) {
     CeDocument *source=load("<ol start=\"4\"><li><p>A<strong>BC</strong></p></li><li><p>D<em>EF</em></p></li></ol>",CE_FORMAT_HTML);
     CeDocument *target=load("<ol start=\"1\"><li><p>XY</p></li></ol>",CE_FORMAT_HTML);
@@ -348,7 +427,7 @@ static void test_allocator_contract(void) {
 }
 int main(void) {
     cJSON_Hooks hooks={slice_malloc,slice_free};cJSON_InitHooks(&hooks);
-    test_text();test_lists();test_atoms();test_bibliography();test_guard_and_validation();test_html_and_unknown();test_boundaries();test_oom();test_formal_whole_document();
+    test_text();test_lists();test_atoms();test_bibliography();test_guard_and_validation();test_html_and_unknown();test_boundaries();test_oom();test_formal_whole_document();test_selected_bibliography();
     assert(!live_allocations && !live_bytes);
     cJSON_InitHooks(NULL);test_allocator_contract();
     assert(!live_allocations && !live_bytes);

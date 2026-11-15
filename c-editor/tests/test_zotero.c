@@ -616,6 +616,36 @@ static void test_csl_number_precision(void) {
     assert(strstr(restored.items[0].csl_json,"-4503599627370501"));
     free(json); ce_zotero_library_free(&library); ce_zotero_library_free(&restored);
 }
+static void test_cache_client_state(void) {
+    CeZoteroLibrary library={0},restored={0}; char error[256];
+    const char *settings="{ \"version\":1, \"kind\":\"http\", \"location\":\"https://example.invalid/library?q=中文\",\"future\":9007199254740993 }";
+    assert(ce_zotero_import_csl("[{\"id\":\"source\",\"type\":\"book\",\"title\":\"Library\"}]",&library,error,sizeof error));
+    library.client_state_json=malloc(strlen(settings)+1); assert(library.client_state_json);
+    strcpy(library.client_state_json,settings);
+    char *cache=ce_zotero_cache_export(&library,error,sizeof error); assert(cache);
+    assert(ce_zotero_cache_import(cache,&restored,error,sizeof error));
+    assert(restored.client_state_json && !strcmp(restored.client_state_json,settings));
+    /* Opaque settings stay byte-for-byte intact, including unknown numeric
+     * spellings; invalid replacements cannot partially replace the library. */
+    const char *bad[]={"[]","null","{\"kind\":1,\"kind\":2}","{\"x\":\"\\u0000\"}","{bad"};
+    CeZoteroItem *old_items=restored.items; char *old_state=restored.client_state_json;
+    for(size_t i=0;i<sizeof bad/sizeof *bad;i++) {
+        cJSON *tree=cJSON_Parse(cache); assert(tree);
+        assert(cJSON_SetValuestring(cJSON_GetObjectItemCaseSensitive(tree,"clientStateJson"),bad[i]));
+        char *broken=cJSON_PrintUnformatted(tree); assert(broken);
+        assert(!ce_zotero_cache_import(broken,&restored,error,sizeof error));
+        assert(restored.items==old_items && restored.client_state_json==old_state);
+        cJSON_free(broken); cJSON_Delete(tree);
+    }
+    free(library.client_state_json); library.client_state_json=malloc(16386); assert(library.client_state_json);
+    memset(library.client_state_json,' ',16385); library.client_state_json[0]='{'; library.client_state_json[16384]='}'; library.client_state_json[16385]=0;
+    assert(!ce_zotero_cache_export(&library,error,sizeof error));
+    /* Importing a new external library removes old client state rather than
+     * incorrectly attaching the previous source to unrelated data. */
+    assert(ce_zotero_import_csl("[]",&restored,error,sizeof error));
+    assert(!restored.client_state_json && !restored.item_count);
+    free(cache); ce_zotero_library_free(&library); ce_zotero_library_free(&restored);
+}
 static int run_tests(const char *directory) {
     char path[2048], unicode_path[2048];
     assert(snprintf(path, sizeof path, "%s/test-zotero.sqlite", directory) < (int)sizeof path);
@@ -623,6 +653,7 @@ static int run_tests(const char *directory) {
     test_csl();
     test_cache_integer_precision();
     test_csl_number_precision();
+    test_cache_client_state();
     test_cache_allocator_contract(path);
     test_sqlite(path);
     test_metadata(path);

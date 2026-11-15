@@ -28,6 +28,10 @@ typedef struct CeZoteroLibrary {
     size_t collection_count;
     size_t *roots, root_count;
     size_t repaired_parents; /* Cycles, orphans and cross-library parents. */
+    /* Optional owned client settings, a strict JSON object of at most 16 KiB.
+     * Kept verbatim in the local cache alongside this exact library snapshot;
+     * never included in CSL exports and never interpreted by this module. */
+    char *client_state_json;
 } CeZoteroLibrary;
 
 /* Zero-initialize outputs. Success atomically replaces the previous library;

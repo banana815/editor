@@ -16,6 +16,8 @@ typedef struct CeCitationProcessOptions {
 typedef struct CeCitationProcessStats {
     size_t citation_count, reference_count, repaired_ids, removed_sections;
     bool missing_term, literal_markup, malformed_markup;
+    size_t selected_count; /* Unique explicitly included identities, cited or not. */
+    bool selected_bibliography; /* Explicit selected intent, including an empty set. */
 } CeCitationProcessStats;
 
 /* Reads an immutable revision and constructs a complete private candidate.
@@ -31,8 +33,12 @@ typedef struct CeCitationProcessStats {
  * strings are never parsed into invented CSL data. User note stays separate
  * from the CSL locator and note index. No network/file access or approximate
  * fallback occurs. The current app profile has one item per citation atom.
- * Rebuilt bibliography sections declare attrs.bibliographyMode="citations".
- * Only this explicit mode permits removal of ordinary entries no longer cited.
+ * Rebuilt bibliography sections declare attrs.bibliographyMode="citations" or
+ * "selected". Selected sections carry selectedItemsJson, a complete ordered
+ * source-attribute array; unique sources are explicitly included even without
+ * a citation atom. Removing a citation cannot remove an explicitly selected
+ * item. Empty selected intent retains an empty canonical bibliography. Both
+ * managed modes permit removal of obsolete ordinary generated entries.
  * An unmatched legacy entry, unsupported mode, ambiguous cross-section identity,
  * or metadata that cannot be preserved rejects the entire preparation. Existing
  * render caches never establish this intent; initial loads still rebuild them.
@@ -60,11 +66,21 @@ const CeCitationCache *ce_citation_prepared_bibliography(const CeCitationPrepare
  * citations, modifying the document or parsing existing render caches. Missing
  * snapshots/identity conflicts remain explicit failures. Success writes exactly
  * 65 bytes (lowercase SHA-256 plus NUL); failure preserves all output bytes.
- * Digest includes the complete ordered citation revision and style/locale pins;
- * ordinary prose and user quotation notes are excluded. It is a cache key, not
+ * Digest includes the complete ordered citation revision, canonical explicit
+ * selections/intent and style/locale pins; ordinary prose and citation quotation
+ * notes are excluded. Selected-source unknown attrs participate in the digest.
+ * It is a cache key, not
  * an authenticity proof. Initial imports must still be processed afresh. */
 bool ce_citations_source_digest(const CeDocument *document, const CeCitationStyle *style,
                                 const CeZoteroLibrary *fallback_library, char digest[65], char *error,
                                 size_t capacity);
+
+/* Shared canonical identity for citation and selected-source attributes.
+ * Pure read-only helper; initialize *owned_key to NULL/live malloc storage.
+ * Success replaces it; error preserves it. URI takes precedence, followed by
+ * scoped source ID/key, cite key, then citation ID for legacy citation atoms.
+ * This does not validate the item's CSL metadata or grant source authority. */
+bool ce_citations_source_identity(const cJSON *source_attrs,char **owned_key,
+                                  char *error,size_t capacity);
 
 #endif

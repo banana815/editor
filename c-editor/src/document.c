@@ -971,6 +971,266 @@ static size_t last_selected_block(CeDocument *d, size_t a, size_t b) {
         last--;
     return last;
 }
+/* Structural list edits are built privately: no live document/history mutation
+ * occurs before the single atomic apply_json commit. */
+#define LE_MAX_BYTES (16u * 1024u * 1024u)
+#define LE_MAX_VALUES 250000u
+#define LE_MAX_WORK 16000000u
+#define LE_NONE SIZE_MAX
+typedef struct {
+    cJSON *node;
+    size_t parent, first, last;
+    unsigned depth;
+} ListEditRef;
+typedef struct {
+    CeDocument *doc;
+    ListEditRef *refs;
+    size_t count, capacity, next_block, first_block, last_block, work;
+} ListEdit;
+static bool le_set(cJSON *obj, const char *key, cJSON *value) {
+    if (!value) return false;
+    cJSON_DeleteItemFromObjectCaseSensitive(obj,key);
+    if (cJSON_AddItemToObject(obj,key,value)) return true;
+    cJSON_Delete(value); return false;
+}
+static bool le_index(ListEdit *e, cJSON *n, size_t parent, unsigned depth) {
+    if (++e->work > LE_MAX_WORK || depth > 128 || e->count >= LE_MAX_VALUES)
+        return fail(e->doc,"List edit traversal limit exceeded");
+    if (!reserve((void **)&e->refs,&e->capacity,e->count+1,sizeof *e->refs)) return false;
+    size_t at=e->count++;
+    e->refs[at]=(ListEditRef){n,parent,LE_NONE,LE_NONE,depth};
+    if (e->next_block<e->doc->nblocks && e->doc->blocks[e->next_block].node==n) {
+        size_t b=e->next_block++;
+        if (b>=e->first_block && b<=e->last_block) e->refs[at].first=e->refs[at].last=at;
+    }
+    cJSON *child;
+    cJSON_ArrayForEach(child,field(n,"content")) {
+        size_t sub=e->count;
+        if (!le_index(e,child,at,depth+1)) return false;
+        if (e->refs[sub].first!=LE_NONE) {
+            if (e->refs[at].first==LE_NONE) e->refs[at].first=e->refs[sub].first;
+            e->refs[at].last=e->refs[sub].last;
+        }
+    }
+    return true;
+}
+static bool le_reindex(ListEdit *e,size_t a,size_t b) {
+    e->count=e->next_block=0;
+    e->first_block=block_index(e->doc,a); e->last_block=last_selected_block(e->doc,a,b);
+    return le_index(e,e->doc->root,LE_NONE,0) && e->next_block==e->doc->nblocks;
+}
+/* cJSON's first child prev points at the last child. Splice at a known pointer
+ * instead of repeatedly scanning linked arrays by ordinal (quadratic on lists). */
+static void le_before(cJSON *a,cJSON *before,cJSON *n) {
+    if (!before) { cJSON_AddItemToArray(a,n); return; }
+    n->next=before; n->prev=before->prev;
+    if (a->child==before) a->child=n; else before->prev->next=n;
+    before->prev=n;
+}
+static void le_move(cJSON *from,cJSON *to,cJSON *n,cJSON *before) {
+    cJSON_DetachItemViaPointer(from,n); le_before(to,before,n);
+}
+static bool le_discardable(cJSON *n) {
+    cJSON *f;
+    cJSON_ArrayForEach(f,n) {
+        if (!strcmp(f->string,"type") || !strcmp(f->string,"content")) continue;
+        if (strcmp(f->string,"attrs") || !cJSON_IsObject(f)) return false;
+        cJSON *attr;
+        cJSON_ArrayForEach(attr,f)
+            if (!istype(n,"orderedList") || strcmp(attr->string,"start")) return false;
+    }
+    return true;
+}
+static cJSON *le_shell(cJSON *source) {
+    cJSON *out=cJSON_CreateObject(); if (!out) return NULL;
+    cJSON *f;
+    cJSON_ArrayForEach(f,source)
+        if (strcmp(f->string,"content") && !le_set(out,f->string,cJSON_Duplicate(f,true))) { cJSON_Delete(out); return NULL; }
+    if (!le_set(out,"content",cJSON_CreateArray())) { cJSON_Delete(out); return NULL; }
+    return out;
+}
+static bool le_list_shape(CeDocument *d,cJSON *list) {
+    cJSON *a=field(list,"content"),*item;
+    if (!cJSON_IsArray(a)) return fail(d,"List has no content array");
+    cJSON_ArrayForEach(item,a)
+        if (!istype(item,"listItem") || !cJSON_IsArray(field(item,"content")) || !field(item,"content")->child)
+            return fail(d,"Malformed list item cannot be structurally edited");
+    return true;
+}
+static bool le_change(ListEdit *e,size_t list_at,size_t first_at,size_t last_at,int direction,bool *changed) {
+    CeDocument *d=e->doc;
+    cJSON *list=e->refs[list_at].node,*first=e->refs[first_at].node,*last=e->refs[last_at].node;
+    cJSON *a=field(list,"content");
+    if (!le_list_shape(d,list)) return false;
+    if (direction>0) {
+        if (a->child==first) return true;
+        cJSON *previous=first->prev,*children=field(previous,"content"),*nested=children->child?children->child->prev:NULL;
+        if (!nested || strcmp(type(nested),type(list))) {
+            nested=node(type(list));
+            if (!nested || !le_set(nested,"content",cJSON_CreateArray())) { cJSON_Delete(nested); return false; }
+            if (istype(list,"orderedList")) {
+                cJSON *attrs=cJSON_CreateObject();
+                if (!attrs || !le_set(attrs,"start",cJSON_CreateNumber(1))) { cJSON_Delete(attrs); cJSON_Delete(nested); return false; }
+                if (!le_set(nested,"attrs",attrs)) { cJSON_Delete(nested); return false; }
+            }
+            cJSON_AddItemToArray(children,nested);
+        } else if (!le_list_shape(d,nested)) return false;
+        cJSON *after=last->next,*item=first;
+        while (item!=after) { cJSON *next=item->next; le_move(a,field(nested,"content"),item,NULL); item=next; }
+        *changed=true; return true;
+    }
+    size_t parent_at=e->refs[list_at].parent;
+    if (parent_at==LE_NONE) return fail(d,"List has no parent");
+    cJSON *parent=e->refs[parent_at].node,*p=field(parent,"content");
+    bool nested=istype(parent,"listItem");
+    size_t outer_at=e->refs[parent_at].parent;
+    cJSON *outer=nested && outer_at!=LE_NONE?e->refs[outer_at].node:NULL;
+    if (nested && (!is_list(outer) || !le_list_shape(d,outer))) return fail(d,"Nested item has no outer list");
+    if (first==a->child && !last->next && !le_discardable(list))
+        return fail(d,"Removing this list would discard unknown metadata");
+    if (!nested) for (cJSON *item=first;;item=item->next) {
+        if (!le_discardable(item)) return fail(d,"Unwrapping this item would discard unknown metadata");
+        if (item==last) break;
+    }
+    cJSON *suffix=last->next?le_shell(list):NULL;
+    if (last->next && !suffix) return false;
+    while (last->next) le_move(a,field(suffix,"content"),last->next,NULL);
+    cJSON *after=last->next; /* NULL after moving the suffix */
+    if (nested) {
+        cJSON *tail=field(last,"content");
+        cJSON *existing=tail->child?tail->child->prev:NULL;
+        if (suffix && existing && !strcmp(type(existing),type(suffix))) {
+            /* ProseMirror joins following items to the lifted item's existing
+             * final list, retaining that list's start. Custom suffix metadata
+             * has no safe merge rule, so refuse rather than dropping it. */
+            if (!le_discardable(suffix) || !le_list_shape(d,existing)) {
+                cJSON_Delete(suffix);
+                return fail(d,"Joining the trailing list would discard unsupported metadata");
+            }
+            cJSON *children=field(suffix,"content");
+            while (children->child) le_move(children,field(existing,"content"),children->child,NULL);
+            cJSON_Delete(suffix);
+        } else if (suffix) cJSON_AddItemToArray(tail,suffix);
+        while (list->next) le_move(p,tail,list->next,NULL);
+        cJSON *insert=parent->next,*item=first;
+        while (item!=after) { cJSON *next=item->next; le_move(a,field(outer,"content"),item,insert); item=next; }
+    } else {
+        cJSON *insert=list->next,*item=first;
+        while (item!=after) {
+            cJSON *next=item->next,*children=field(item,"content");
+            while (children->child) le_move(children,p,children->child,insert);
+            cJSON_Delete(cJSON_DetachItemViaPointer(a,item)); item=next;
+        }
+        if (suffix) le_before(p,insert,suffix);
+    }
+    if (!a->child) cJSON_Delete(cJSON_DetachItemViaPointer(p,list));
+    *changed=true; return true;
+}
+static bool le_lists(ListEdit *e,int direction,bool *changed) {
+    for (size_t i=0;i<e->count;++i) {
+        if (!is_list(e->refs[i].node) || e->refs[i].first==LE_NONE) continue;
+        bool ancestor=false;
+        for (size_t p=e->refs[i].parent;p!=LE_NONE;p=e->refs[p].parent) {
+            if (++e->work>LE_MAX_WORK) return fail(e->doc,"List edit work limit exceeded");
+            if (is_list(e->refs[p].node)) { ancestor=true; break; }
+        }
+        if (ancestor) continue;
+        size_t first=e->refs[i].first,last=e->refs[i].last,x=first,y=last;
+        while (x!=y) {
+            if (e->refs[x].depth>=e->refs[y].depth) x=e->refs[x].parent;
+            else y=e->refs[y].parent;
+        }
+        while (x!=LE_NONE && !is_list(e->refs[x].node)) x=e->refs[x].parent;
+        if (x==LE_NONE) return fail(e->doc,"Cannot locate selected list");
+        while (e->refs[first].parent!=x) first=e->refs[first].parent;
+        while (e->refs[last].parent!=x) last=e->refs[last].parent;
+        /* Skip this whole outer subtree after mutating it; its old refs may
+         * point to wrappers removed by the operation. Other roots are disjoint. */
+        size_t next=i+1;
+        while (next<e->count && e->refs[next].depth>e->refs[i].depth) ++next;
+        if (!le_change(e,x,first,last,direction,changed)) return false;
+        i=next-1;
+    }
+    return true;
+}
+static bool le_clear_marks(ListEdit *e,size_t a,size_t b) {
+    if (a==b) return true;
+    size_t span=0;
+    for (size_t i=0;i<e->count && span<e->doc->nspans;++i) {
+        cJSON *n=e->refs[i].node;
+        if (n!=e->doc->spans[span].node) continue;
+        Span *s=&e->doc->spans[span++];
+        if (s->end<=a || s->start>=b || (!istype(n,"text") && !istype(n,"hardBreak")) || !field(n,"marks")) continue;
+        if (istype(n,"hardBreak")) { cJSON_DeleteItemFromObjectCaseSensitive(n,"marks"); continue; }
+        size_t lo=a>s->start?a-s->start:0,hi=b<s->end?b-s->start:s->end-s->start;
+        if (!lo && hi==s->end-s->start) { cJSON_DeleteItemFromObjectCaseSensitive(n,"marks"); continue; }
+        cJSON *parent=field(e->refs[e->refs[i].parent].node,"content");
+        size_t cuts[]={0,lo,hi,s->end-s->start};
+        for (size_t k=0;k<3;++k) {
+            if (cuts[k]==cuts[k+1]) continue;
+            cJSON *part=cJSON_Duplicate(n,true); char *text=copy_n(str(n,"text")+cuts[k],cuts[k+1]-cuts[k]);
+            if (!part || !text) { cJSON_Delete(part); free(text); return false; }
+            bool ok=le_set(part,"text",cJSON_CreateString(text)); free(text);
+            if (!ok) { cJSON_Delete(part); return false; }
+            if (k==1) cJSON_DeleteItemFromObjectCaseSensitive(part,"marks");
+            le_before(parent,n,part);
+        }
+        cJSON_Delete(cJSON_DetachItemViaPointer(parent,n));
+    }
+    return true;
+}
+static bool le_edit(CeDocument *d,size_t a,size_t b,int direction,bool clear,bool *changed) {
+    if (!d) return false;
+    if (a>b || !boundary(d,a) || !boundary(d,b) || (!clear && direction!=1 && direction!=-1))
+        return fail(d,"Invalid list edit range or direction");
+    CeDocument *candidate=calloc(1,sizeof *candidate);
+    if (!candidate) return fail(d,"Out of memory preparing list edit");
+    char *json=ce_csl_json_print_exact_with_limit(d->root,LE_MAX_BYTES);
+    bool ok=json && ce_csl_json_parse_strict(json,strlen(json),&candidate->root,candidate->error,sizeof candidate->error);
+    cJSON_free(json); json=NULL;
+    if (ok) ok=rebuild(candidate);
+    ListEdit e={0}; e.doc=candidate; bool any=false;
+    if (ok) ok=le_reindex(&e,a,b);
+    if (ok && clear) {
+        for (size_t i=e.first_block;i<=e.last_block && i<candidate->nblocks;++i) {
+            cJSON *n=candidate->blocks[i].node;
+            if (!istype(n,"heading") && !istype(n,"paragraph")) continue;
+            if (istype(n,"heading") && !le_set(n,"type",cJSON_CreateString("paragraph"))) { ok=false; break; }
+            cJSON *attrs=field(n,"attrs");
+            cJSON_DeleteItemFromObjectCaseSensitive(attrs,"level");
+            cJSON_DeleteItemFromObjectCaseSensitive(attrs,"textAlign");
+        }
+        if (ok) ok=le_clear_marks(&e,a,b);
+        if (ok) ok=rebuild(candidate) && le_reindex(&e,a,b);
+    }
+    for (unsigned pass=0;ok;++pass) {
+        bool moved=false; ok=le_lists(&e,clear?-1:direction,&moved); any|=moved;
+        if (!ok || !clear || !moved) break;
+        if (pass>=128) { ok=fail(candidate,"List clear depth limit exceeded"); break; }
+        ok=rebuild(candidate) && le_reindex(&e,a,b);
+    }
+    if (ok) ok=rebuild(candidate);
+    if (ok && (candidate->text.n!=d->text.n || strcmp(candidate->text.p,d->text.p)))
+        ok=fail(candidate,"List transformation would change text order");
+    if (ok) { json=ce_csl_json_print_exact_with_limit(candidate->root,LE_MAX_BYTES); ok=json!=NULL; }
+    if (ok) {
+        cJSON *checked=NULL;
+        ok=ce_csl_json_parse_strict(json,strlen(json),&checked,candidate->error,sizeof candidate->error);
+        cJSON_Delete(checked);
+    }
+    if (!ok) fail(d,*candidate->error?candidate->error:"List edit exceeds limits or memory is unavailable");
+    if (ok) ok=ce_document_apply_json(d,json);
+    cJSON_free(json); free(e.refs); ce_document_free(candidate);
+    if (ok && changed) *changed=any;
+    return ok;
+}
+bool ce_document_adjust_list_depth(CeDocument *d,size_t a,size_t b,int direction,bool *changed) {
+    return le_edit(d,a,b,direction,false,changed);
+}
+bool ce_document_clear_block_formatting(CeDocument *d,size_t a,size_t b) {
+    return le_edit(d,a,b,-1,true,NULL);
+}
+
 bool ce_document_set_alignment(CeDocument *d, size_t a, size_t b, const char *alignment) {
     if (!d || !alignment || a > b || !boundary(d, a) || !boundary(d, b))
         return false;
@@ -1611,8 +1871,12 @@ static bool html_document_wrapper(CeDocument *d, cJSON *h, bool root_position, c
         return fail(d, "Citation render metadata belongs only to citation or endnote blocks");
     if (field(attrs, "data-bibliography-mode") &&
         (strcmp(tag, "div") || strcmp(kind, "zoteroEndnoteSection") ||
-         strcmp(str(attrs, "data-bibliography-mode"), "citations")))
+         (strcmp(str(attrs, "data-bibliography-mode"), "citations") &&
+          strcmp(str(attrs, "data-bibliography-mode"), "selected"))))
         return fail(d, "Unsupported bibliography mode or placement; original document was retained");
+    if (field(attrs, "data-selected-items-json") &&
+        (strcmp(tag, "div") || strcmp(kind, "zoteroEndnoteSection")))
+        return fail(d, "Selected bibliography metadata belongs only to an endnote section");
     bool transparent = root_position && (!strcmp(tag, "html-root") || !strcmp(tag, "html") || !strcmp(tag, "body"));
     size_t meaningful = 0;
     cJSON_ArrayForEach(child, children)
@@ -1700,7 +1964,7 @@ static bool html_blocks(CeDocument *d, cJSON *h, cJSON *out, unsigned depth) {
         const char *allowed = istype(n, "zoteroCitationBlock") ?
             "data-type|citationid|endnotenumber|itemkey|itemuri|pdfuri|title|author|year|citekey|page|note|"
             "data-citation-id|data-endnote-number|sourceid|libraryid|csljson|data-source-id|data-library-id|data-csl-json|"
-            "data-csl-render-json|cslrenderjson" : "data-type|style|entriesjson|data-csl-render-json|cslrenderjson|data-bibliography-mode";
+            "data-csl-render-json|cslrenderjson" : "data-type|style|entriesjson|data-csl-render-json|cslrenderjson|data-bibliography-mode|data-selected-items-json";
         if (!keys_supported(ha, allowed)) {
             cJSON_Delete(attrs); cJSON_Delete(n);
             return fail(d, "Unknown citation HTML metadata requires JSON to avoid data loss");
@@ -1745,6 +2009,8 @@ static bool html_blocks(CeDocument *d, cJSON *h, cJSON *out, unsigned depth) {
             if (field(ha, "data-bibliography-mode"))
                 metadata_ok = cJSON_AddStringToObject(attrs, "bibliographyMode", str(ha, "data-bibliography-mode")) && metadata_ok;
         }
+        if (istype(n, "zoteroEndnoteSection") && field(ha, "data-selected-items-json"))
+            metadata_ok = cJSON_AddStringToObject(attrs, "selectedItemsJson", str(ha, "data-selected-items-json")) && metadata_ok;
         metadata_ok = optional_html_metadata(d, ha, attrs, "cslRenderJson", "data-csl-render-json", "cslrenderjson") && metadata_ok;
         if (!metadata_ok || !cJSON_AddItemToObject(n, "attrs", attrs)) {
             cJSON_Delete(attrs); cJSON_Delete(n);
@@ -2007,7 +2273,7 @@ static bool html_export(CeDocument *d, cJSON *n, Buffer *b, unsigned depth) {
         known = !strcmp(t, "zoteroCitationBlock") ? "citationId|endnoteNumber|itemKey|itemUri|"
                                                     "pdfUri|title|author|year|citeKey|page|note|"
                                                     "sourceId|libraryId|cslJson|cslRenderJson"
-                                                  : "style|entriesJson|cslRenderJson|bibliographyMode";
+                                                  : "style|entriesJson|cslRenderJson|bibliographyMode|selectedItemsJson";
     if (!keys_supported(attrs, known))
         return fail(d, "Additional node attributes require JSON export to avoid data loss");
     if (!strcmp(t, "text")) {
@@ -2101,9 +2367,14 @@ static bool html_export(CeDocument *d, cJSON *n, Buffer *b, unsigned depth) {
         cJSON_ArrayForEach (a, attrs) {
             const char *key = a->string;
             if (!strcmp(t, "zoteroEndnoteSection") && !strcmp(key, "bibliographyMode")) {
-                if (!cJSON_IsString(a) || strcmp(a->valuestring, "citations"))
+                if (!cJSON_IsString(a) || (strcmp(a->valuestring, "citations") && strcmp(a->valuestring, "selected")))
                     return fail(d, "Unsupported bibliography mode requires JSON export to preserve its value");
                 key = "data-bibliography-mode";
+            }
+            if (!strcmp(t, "zoteroEndnoteSection") && !strcmp(key, "selectedItemsJson")) {
+                if (!cJSON_IsString(a))
+                    return fail(d, "Selected bibliography sources require string metadata for HTML export");
+                key = "data-selected-items-json";
             }
             if (!strcmp(key, "cslRenderJson") || (!strcmp(t, "zoteroCitationBlock") &&
                 (!strcmp(key, "sourceId") || !strcmp(key, "libraryId") || !strcmp(key,"cslJson")))) {

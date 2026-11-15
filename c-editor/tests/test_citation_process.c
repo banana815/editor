@@ -624,12 +624,83 @@ static void test_cumulative_budget(void) {
     ce_citation_cache_free(cache);
     assert(!test_live && !test_bytes);
 }
+static CeDocument *test_selected_document(bool body,bool repeated) {
+    CeDocument *doc=test_document(test_item,NULL,false);
+    cJSON *root=test_root(doc),*content=test_field(root,"content");
+    cJSON *attrs=cJSON_Duplicate(test_field(test_atom(root,0),"attrs"),true); assert(attrs);
+    const char *remove[]={"citationId","page","note","endnoteNumber"};
+    for(size_t i=0;i<sizeof remove/sizeof *remove;i++) cJSON_DeleteItemFromObjectCaseSensitive(attrs,remove[i]);
+    cJSON *sources=cJSON_CreateArray(); assert(sources && cJSON_AddItemToArray(sources,attrs));
+    char *json=ce_csl_json_print_exact(sources); assert(json); cJSON_Delete(sources);
+    if(!body) cJSON_DeleteItemFromArray(content,1);
+    for(size_t i=0;i<(repeated?2u:1u);i++) {
+        cJSON *section_attrs=test_add_section(root,"[]");
+        test_put(section_attrs,"bibliographyMode",cJSON_CreateString("selected"));
+        test_put(section_attrs,"selectedItemsJson",cJSON_CreateString(json));
+        test_put(section_attrs,"sharedCustom",cJSON_CreateString("preserve"));
+    }
+    cJSON_free(json); test_import(doc,root); cJSON_Delete(root); return doc;
+}
+static void test_selected_sources(void) {
+    CeCitationStyle *style=NULL; assert(ce_citation_style_load(CE_CITATION_PROFILE_APA,NULL,NULL,&style,test_error,sizeof test_error));
+    CeDocument *doc=test_selected_document(false,true); CeCitationPrepared *prepared=NULL;
+    test_success(doc,style,&prepared);
+    assert(!prepared->stats.citation_count && prepared->stats.reference_count==1 && prepared->stats.selected_count==1 && prepared->stats.selected_bibliography);
+    assert(ce_document_apply_json(doc,prepared->json));
+    char *once=ce_document_export_json(doc); test_success(doc,style,&prepared); assert(!strcmp(once,prepared->json)); free(once);
+    cJSON *root=test_root(doc),*section_node=cJSON_GetArrayItem(test_field(root,"content"),1);
+    cJSON *entries=NULL; const char *encoded=text(field(section_node,"attrs"),"entriesJson");
+    assert(ce_csl_json_parse_strict(encoded,strlen(encoded),&entries,test_error,sizeof test_error));
+    assert(!*text(entries->child,"citationId") && *text(entries->child,"sourceItemId")); cJSON_Delete(entries);
+    /* A copied, explicitly derived section can contain repeated obsolete cache
+     * rows; identity and original source declarations are still checked. */
+    assert(cJSON_AddItemToArray(test_field(root,"content"),cJSON_Duplicate(section_node,true)));
+    test_import(doc,root); cJSON_Delete(root); test_success(doc,style,&prepared);
+    assert(prepared->stats.reference_count==1 && prepared->stats.selected_count==1 && prepared->stats.removed_sections==1);
+    ce_document_free(doc);
+    for(size_t variant=0;variant<12;variant++) {
+        doc=test_selected_document(true,true); root=test_root(doc);
+        cJSON *attrs=test_field(cJSON_GetArrayItem(test_field(root,"content"),3),"attrs"),*sources=NULL;
+        encoded=text(attrs,"selectedItemsJson");
+        assert(ce_csl_json_parse_strict(encoded,strlen(encoded),&sources,test_error,sizeof test_error));
+        cJSON *source=sources->child;
+        if(variant==0) test_put(source,"cslJson",cJSON_CreateString("{\"id\":\"other\",\"type\":\"book\",\"title\":\"Conflict\"}"));
+        if(variant==1) test_put(source,"customCitation",cJSON_CreateBool(false));
+        if(variant==2) test_put(source,"sourceId",cJSON_CreateString("different transport identity"));
+        if(variant==3) test_put(source,"libraryId",cJSON_CreateNumber(1));
+        if(variant==4) test_put(source,"libraryId",cJSON_CreateString("01"));
+        if(variant==5) test_put(source,"cslJson",cJSON_CreateString(""));
+        if(variant==10) {
+            cJSON *first_attrs=test_field(cJSON_GetArrayItem(test_field(root,"content"),2),"attrs"),*first_sources=NULL;
+            const char *first_text=text(first_attrs,"selectedItemsJson");
+            assert(ce_csl_json_parse_strict(first_text,strlen(first_text),&first_sources,test_error,sizeof test_error));
+            test_put(first_sources->child,"exactCustom",cJSON_CreateNumber(4503599627370496.0));
+            char *first_json=ce_csl_json_print_exact(first_sources); assert(first_json); cJSON_Delete(first_sources);
+            test_put(first_attrs,"selectedItemsJson",cJSON_CreateString(first_json)); cJSON_free(first_json);
+            test_put(source,"exactCustom",cJSON_CreateNumber(4503599627370497.0));
+        }
+        char *json=ce_csl_json_print_exact(sources); assert(json); cJSON_Delete(sources);
+        test_put(attrs,"selectedItemsJson",cJSON_CreateString(json)); cJSON_free(json);
+        if(variant==6) test_put(attrs,"selectedItemsJson",cJSON_CreateString("[{\"itemUri\":\"x\",\"cslJson\":\"{}\",\"unknown\":1.0000000000000001}]"));
+        if(variant==7) test_put(attrs,"selectedItemsJson",cJSON_CreateNull());
+        if(variant==11) test_put(attrs,"selectedItemsJson",cJSON_CreateString("[{\"itemUri\":\"x\",\"cslJson\":\"{}\",\"unknown\":1e-9999}]"));
+        if(variant==8) test_put(attrs,"sharedCustom",cJSON_CreateString("conflicting extra section"));
+        if(variant==9) {
+            test_put(attrs,"entriesJson",cJSON_CreateString("[{\"sourceItemId\":\"uri:http://zotero.org/users/local/items/AAAA\",\"custom\":true}]"));
+        }
+        test_import(doc,root); cJSON_Delete(root); char *before=ce_document_export_json(doc); CeCitationPrepared *old=prepared;
+        assert(!ce_citations_prepare(doc,style,NULL,NULL,&prepared,test_error,sizeof test_error) && prepared==old);
+        test_unchanged(doc,before); free(before); ce_document_free(doc);
+    }
+    ce_citation_prepared_free(prepared); ce_citation_style_free(style); assert(!test_live && !test_bytes);
+}
 static void test_prepare_oom(unsigned variant) {
     bool complex = variant == 1;
     CeCitationStyle *style = NULL;
     assert(
         ce_citation_style_load(CE_CITATION_PROFILE_IEEE, NULL, NULL, &style, test_error, sizeof test_error));
-    CeDocument *doc = test_document(complex ? NULL : test_item, complex ? test_reordered : NULL, complex);
+    CeDocument *doc = variant==3?test_selected_document(false,true):
+        test_document(complex ? NULL : test_item, complex ? test_reordered : NULL, complex);
     CeZoteroItem item = {0};
     item.id = (char *)"a";
     item.item_uri = (char *)test_uri;
@@ -699,6 +770,7 @@ static void test_prepare_oom(unsigned variant) {
            "source\n",
            complex        ? " (fallback/repair/legacy metadata)"
            : variant == 2 ? " (last citation removal)"
+           : variant == 3 ? " (uncited selected sources/multiple sections)"
                           : "",
            calls);
 }
@@ -712,9 +784,11 @@ int main(void) {
     test_bibliography_intent();
     test_envelope_integer_preservation();
     test_cumulative_budget();
+    test_selected_sources();
     test_prepare_oom(0);
     test_prepare_oom(1);
     test_prepare_oom(2);
+    test_prepare_oom(3);
     puts("citation prepare: real profiles, identity/metadata conflicts, source bindings, preserved attrs, "
          "fallback and atomic failures passed");
     return 0;

@@ -53,13 +53,15 @@ void ce_library_panel_init(CeLibraryPanel *panel) {
 }
 void ce_library_panel_destroy(CeLibraryPanel *panel) {
     if(!panel) return;
-    ce_zotero_library_free(&panel->library); free(panel->query); free(panel->rows);
+    ce_zotero_library_free(&panel->library); free(panel->query); free(panel->rows); free(panel->checked);
     ce_library_panel_init(panel);
 }
 bool ce_library_panel_replace(CeLibraryPanel *panel,CeZoteroLibrary *library) {
     if(!panel || !library || library==&panel->library) return false;
     CeLibraryPanel next; ce_library_panel_init(&next); next.library=*library;
     if(!rebuild(&next,"",SIZE_MAX,true,false)) return false;
+    next.checked=library->item_count?calloc(library->item_count,sizeof *next.checked):NULL;
+    if(library->item_count && !next.checked) { free(next.rows); return false; }
     ce_library_panel_destroy(panel); *panel=next; memset(library,0,sizeof *library); return true;
 }
 bool ce_library_panel_query(CeLibraryPanel *panel,const char *query) {
@@ -82,6 +84,27 @@ bool ce_library_panel_collections(CeLibraryPanel *panel,bool show) {
 }
 const CeZoteroItem *ce_library_panel_selected(const CeLibraryPanel *panel) {
     return panel && panel->selected_item<panel->library.item_count?&panel->library.items[panel->selected_item]:NULL;
+}
+bool ce_library_panel_check(CeLibraryPanel *panel,size_t item,bool checked) {
+    if(!panel || item>=panel->library.item_count || !panel->checked) return false;
+    if(panel->checked[item]!=checked) {
+        panel->checked[item]=checked;
+        if(checked) ++panel->checked_count; else --panel->checked_count;
+    }
+    return true;
+}
+bool ce_library_panel_check_visible(CeLibraryPanel *panel,bool checked) {
+    if(!panel || panel->collections_view) return false;
+    for(size_t i=0;i<panel->row_count;++i)
+        if(panel->rows[i]>=panel->library.item_count || !panel->checked) return false;
+    for(size_t i=0;i<panel->row_count;++i)
+        ce_library_panel_check(panel,panel->rows[i],checked);
+    return true;
+}
+void ce_library_panel_uncheck_all(CeLibraryPanel *panel) {
+    if(!panel) return;
+    if(panel->checked) memset(panel->checked,0,panel->library.item_count*sizeof *panel->checked);
+    panel->checked_count=0;
 }
 size_t ce_library_panel_collection_depth(const CeLibraryPanel *panel,size_t index) {
     size_t depth=0;

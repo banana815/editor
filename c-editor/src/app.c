@@ -7,9 +7,13 @@
 #include "rich_layout.h"
 #include "citations.h"
 #include "citation_session.h"
+#include "bibliography_archive.h"
+#include "bibliography_selection.h"
 #include "library_panel.h"
 #include "platform_import.h"
+#include "platform_library_source.h"
 #include "cJSON.h"
+#include "csl_json.h"
 #include "note_store.h"
 #include "platform_persistence.h"
 #include "platform_export.h"
@@ -27,16 +31,17 @@
 #endif
 
 typedef enum { PROMPT_NONE, PROMPT_NEW, PROMPT_FIND, PROMPT_LINK, PROMPT_DELETE,
-    PROMPT_LIBRARY_SEARCH, PROMPT_CITATION_PAGE, PROMPT_CITATION_NOTE } Prompt;
+    PROMPT_LIBRARY_SEARCH, PROMPT_CITATION_PAGE, PROMPT_CITATION_NOTE, PROMPT_LIBRARY_SOURCE } Prompt;
 typedef enum { LIB_CLOSE, LIB_IMPORT, LIB_ITEMS, LIB_CURRENT, LIB_SEARCH,
     LIB_COLLECTIONS, LIB_ALL, LIB_DESCENDANTS, LIB_PAGE, LIB_NOTE, LIB_INSERT,
-    LIB_OPEN_ITEM, LIB_OPEN_PDF, LIB_STYLE, LIB_SYNC, LIB_VIEW, LIB_RETRY, LIB_BUTTON_COUNT } LibraryAction;
+    LIB_OPEN_ITEM, LIB_OPEN_PDF, LIB_STYLE, LIB_SYNC, LIB_VIEW, LIB_RETRY,
+    LIB_CHECK_ALL, LIB_CHECK_NONE, LIB_BIBLIOGRAPHY, LIB_SOURCE, LIB_SOURCE_REFRESH, LIB_SOURCE_CANCEL, LIB_BUTTON_COUNT } LibraryAction;
 typedef enum { ACT_SIDEBAR, ACT_NEW, ACT_SAVE, ACT_UNDO, ACT_REDO, ACT_BOLD,
     ACT_ITALIC, ACT_UNDERLINE, ACT_HIGHLIGHT, ACT_RED, ACT_LINK, ACT_BULLETS,
     ACT_NUMBERS, ACT_HEADING, ACT_FIND, ACT_THEME, ACT_TYPEWRITER, ACT_JSON,
     ACT_DELETE, ACT_REFRESH, ACT_PARAGRAPH, ACT_CLEAR, ACT_LEFT, ACT_CENTER,
     ACT_RIGHT, ACT_JUSTIFY, ACT_FIND_PREVIOUS, ACT_FIND_NEXT, ACT_MOVE_UP,
-    ACT_MOVE_DOWN, ACT_MORE } Action;
+    ACT_MOVE_DOWN, ACT_INDENT, ACT_OUTDENT, ACT_MORE } Action;
 typedef struct { const char *label; Action action; SDL_FRect box; } Button;
 typedef struct EditorClipboardRequest EditorClipboardRequest;
 typedef struct {
@@ -52,11 +57,13 @@ typedef struct {
     bool rich_valid, rich_dirty, rich_dark;
     PlatformExport *export_job;
     PlatformImport *import_job;
+    PlatformLibrarySource *source_job;
+    char *source_pending_config;
     PlatformImportKind import_kind;
     char *pending_note_json, *pending_note_stem;
     CeLibraryPanel library;
-    bool library_open, library_citation_mode, library_dragging, library_drag_moved;
-    float library_drag_y, library_drag_origin, library_outer_scroll, library_content_height;
+    bool library_open, library_citation_mode, library_dragging, library_drag_moved, library_pressed_check;
+    float library_drag_y, library_drag_origin, library_drag_origin_x, library_outer_scroll, library_content_height;
     size_t library_insert_offset, library_pressed_row;
     CeCitationProfile citation_style;
     CeCitationSession *citation_session;
@@ -101,7 +108,7 @@ typedef struct {
     Uint64 edited_at;
     unsigned frames;
     const char *screenshot;
-    Button buttons[31];
+    Button buttons[33];
 } App;
 
 static void reveal_cursor(App *a);
@@ -116,6 +123,11 @@ static void library_import_poll(App *a);
 static bool library_prompt_accept(App *a, const char *value);
 static bool library_cache_save(App *a);
 static bool library_cache_load(App *a, bool startup);
+static bool library_source_begin(App *a, const char *kind, const char *location);
+static void library_source_refresh(App *a);
+static void library_source_poll(App *a);
+static char *library_source_config(const char *kind,const char *location);
+static cJSON *library_source_read(App *a);
 static void document_import_begin(App *a);
 static bool document_import_prepare(App *a, const PlatformImportFile *file);
 static void document_import_finish(App *a);
@@ -188,7 +200,7 @@ static bool edit_style(App *a,size_t start,size_t end,CeMark mark,const char *va
 }
 static bool edit_clear(App *a,size_t start,size_t end) {
     CeDocument *candidate=edit_candidate(a);
-    return edit_commit(a,candidate,candidate && ce_document_clear_formatting(candidate,start,end),NULL,false);
+    return edit_commit(a,candidate,candidate && ce_document_clear_block_formatting(candidate,start,end),NULL,false);
 }
 static bool edit_alignment(App *a,size_t start,size_t end,const char *alignment) {
     CeDocument *candidate=edit_candidate(a);
@@ -234,6 +246,9 @@ static void citation_refresh(App *a) {
 static CeRichCitationStatus citation_resolve(void *context,const cJSON *atom,
     const CeCitationCache **cache,char *error,size_t capacity) {
     App *a=context; (void)error; (void)capacity;
+    if(ce_bibliography_archive_eligible(atom)) {
+        *cache=NULL; return CE_RICH_CITATION_ARCHIVED;
+    }
     const CeCitationPrepared *prepared=ce_citation_session_prepared(a->citation_session);
     if(!prepared) return CE_RICH_CITATION_UNSUPPORTED;
     const cJSON *type=cJSON_GetObjectItemCaseSensitive(atom,"type");
@@ -579,14 +594,27 @@ static void action(App *a, Action which) {
         }
         case ACT_CLEAR: {
             size_t start, end; get_selection(a, &start, &end);
+            if(!edit_clear(a,start,end)) { message(a,a->edit_error); break; }
+            mark_changed(a);
             if (start == end) {
                 a->typing_mask=CE_MARK_BOLD|CE_MARK_ITALIC|CE_MARK_UNDERLINE|CE_MARK_COLOR|CE_MARK_HIGHLIGHT|CE_MARK_LINK;
                 a->typing_enabled=0; a->typing_anchor=start; a->typing_revision=a->citation_revision;
-                message(a,"接下来输入的文字不带格式"); break;
+                message(a,"已清除段落格式，接下来输入的文字不带格式"); break;
             }
-            if (edit_clear(a, start, end)) mark_changed(a);
-            else message(a, a->edit_error);
             break;
+        }
+        case ACT_INDENT: case ACT_OUTDENT: {
+            size_t start,end; get_selection(a,&start,&end); bool changed=false;
+            int cursor=a->edit->cursor,selection1=a->edit->highlight1,selection2=a->edit->highlight2;
+            CeDocument *candidate=edit_candidate(a);
+            if(!candidate) { message(a,a->edit_error); break; }
+            if(!ce_document_adjust_list_depth(candidate,start,end,which==ACT_INDENT?1:-1,&changed)) {
+                message(a,ce_document_error(candidate)); ce_document_free(candidate); break;
+            }
+            if(!changed) { ce_document_free(candidate); message(a,"当前位置没有可调整层级的列表项"); break; }
+            if(!edit_commit(a,candidate,true,NULL,false)) { message(a,a->edit_error); break; }
+            sync_view(a); a->edit->cursor=cursor; a->edit->highlight1=selection1; a->edit->highlight2=selection2;
+            mark_changed(a); reveal_cursor(a); break;
         }
         case ACT_LEFT: case ACT_CENTER: case ACT_RIGHT: case ACT_JUSTIFY: {
             const char *alignment = which == ACT_LEFT ? "left" : which == ACT_CENTER ? "center" : which == ACT_RIGHT ? "right" : "justify";
@@ -808,6 +836,14 @@ static void library_show(App *a) {
     size_t end; get_selection(a,&a->library_insert_offset,&end);
     a->library_citation_mode=a->active && citation_context_capture(a);
     if(!a->active) citation_context_clear(a);
+    if(a->active && !a->library_citation_mode && end>a->library_insert_offset) {
+        CeDocumentSlice *slice=NULL; char *plain=NULL;
+        if(ce_document_slice_capture(a->doc,a->library_insert_offset,end,&slice,NULL,a->edit_error,sizeof a->edit_error) &&
+           ce_document_slice_plain(slice,clipboard_atom_text,a,&plain,a->edit_error,sizeof a->edit_error)) {
+            if(plain && *plain) { free(a->insert_note); a->insert_note=plain; plain=NULL; }
+        } else message(a,"未能读取选中文字，已有摘录保持不变");
+        free(plain); ce_document_slice_free(slice);
+    }
     a->library_open=true; a->library_dragging=false;
     a->library_outer_scroll=0;
     EditBox_SetFocus(a->edit,false); a->rich_dirty=true;
@@ -821,11 +857,19 @@ static void library_prompt(App *a,Prompt kind) {
     if(kind==PROMPT_LIBRARY_SEARCH) value=a->library.query?a->library.query:"";
     else if(kind==PROMPT_CITATION_PAGE) value=a->library_citation_mode?a->citation_page:a->insert_page;
     else if(kind==PROMPT_CITATION_NOTE) value=a->library_citation_mode?a->citation_note:a->insert_note;
+    cJSON *source=NULL;
+    if(kind==PROMPT_LIBRARY_SOURCE) {
+        source=library_source_read(a);
+        value=!strcmp(json_string(source,"kind"),"http")?json_string(source,"location"):
+            "http://127.0.0.1:23119/better-bibtex/export/library?/translator=csljson";
+    }
     show_prompt(a,kind); EditBox_SetText(a->prompt,value?value:"");
     a->prompt->cursor=(int)strlen(value?value:"");
     EditBox_SelectAll(a->prompt);
+    cJSON_Delete(source);
 }
 static bool library_prompt_accept(App *a,const char *value) {
+    if(a->prompt_mode==PROMPT_LIBRARY_SOURCE) return library_source_begin(a,"http",value);
     if(a->prompt_mode==PROMPT_LIBRARY_SEARCH) {
         if(!ce_library_panel_query(&a->library,value)) { message(a,"内存不足，搜索条件保持不变"); return false; }
     } else {
@@ -870,7 +914,7 @@ static void library_action(App *a,LibraryAction action) {
         return;
     }
     if(action==LIB_IMPORT) {
-        if(a->import_job || a->pending_note_json || a->library_cache_saving) { message(a,"正在导入或保存，请稍候"); return; }
+        if(a->import_job || a->source_job || a->pending_note_json || a->library_cache_saving) { message(a,"正在读取或保存，请稍候"); return; }
         a->import_kind=PLATFORM_IMPORT_ZOTERO;
         a->import_job=platform_import_open(a->window,PLATFORM_IMPORT_ZOTERO);
         message(a,a->import_job?"选择 Zotero 的 CSL JSON 或 SQLite 数据库":"无法打开文件选择器"); return;
@@ -885,6 +929,22 @@ static void library_action(App *a,LibraryAction action) {
     if(action==LIB_COLLECTIONS) { if(!ce_library_panel_collections(&a->library,!a->library.collections_view)) message(a,"无法更新分类列表"); return; }
     if(action==LIB_ALL) { if(!ce_library_panel_collection(&a->library,SIZE_MAX)) message(a,"无法更新条目列表"); return; }
     if(action==LIB_DESCENDANTS) { if(!ce_library_panel_descendants(&a->library,!a->library.include_descendants)) message(a,"无法更新子分类"); return; }
+    if(action==LIB_CHECK_ALL) {
+        if(!ce_library_panel_check_visible(&a->library,true)) message(a,"请先返回文献条目列表");
+        return;
+    }
+    if(action==LIB_CHECK_NONE) { ce_library_panel_uncheck_all(&a->library); return; }
+    if(action==LIB_SOURCE) { library_prompt(a,PROMPT_LIBRARY_SOURCE); return; }
+    if(action==LIB_SOURCE_REFRESH) { library_source_refresh(a); return; }
+    if(action==LIB_SOURCE_CANCEL) {
+        if(a->source_job) {
+            platform_library_source_cancel(a->source_job); platform_library_source_free(a->source_job); a->source_job=NULL;
+            free(a->source_pending_config); a->source_pending_config=NULL;
+            message(a,"已取消来源读取，原文献库保留");
+        }
+        else message(a,"当前没有正在读取的来源");
+        return;
+    }
     if(action==LIB_PAGE || action==LIB_NOTE) { library_prompt(a,action==LIB_PAGE?PROMPT_CITATION_PAGE:PROMPT_CITATION_NOTE); return; }
     if(action==LIB_RETRY) {
         if(a->library_cache_saving) message(a,"正在保存文献库，请稍候");
@@ -902,6 +962,27 @@ static void library_action(App *a,LibraryAction action) {
     }
     if(!a->active) { message(a,"请先新建或打开笔记，再插入引用或同步尾注"); return; }
     char error[256];
+    if(action==LIB_BIBLIOGRAPHY) {
+        size_t count=a->library.checked_count, at=0;
+        const CeZoteroItem **items=count?calloc(count,sizeof *items):NULL;
+        if(count && !items) { message(a,"内存不足，参考文献保持不变"); return; }
+        for(size_t i=0;i<a->library.library.item_count;i++) if(a->library.checked && a->library.checked[i]) {
+            if(at<count) items[at++]=&a->library.library.items[i];
+        }
+        if(at!=count) { free(items); message(a,"文献选择已改变，请重新选择"); return; }
+        size_t ordinal=0,relative=0; bool anchored=library_anchor(a,&ordinal,&relative);
+        CeDocument *candidate=edit_candidate(a);
+        bool ok=candidate && ce_bibliography_select(candidate,items,count,error,sizeof error);
+        free(items);
+        if(!ok) { message(a,candidate?error:a->edit_error); ce_document_free(candidate); return; }
+        if(!edit_commit(a,candidate,true,NULL,true)) { message(a,a->edit_error); return; }
+        sync_view(a); mark_changed(a);
+        if(anchored) library_restore_anchor(a,ordinal,relative);
+        a->library_insert_offset=(size_t)a->edit->cursor;
+        library_close(a); reveal_cursor(a);
+        message(a,count?"已按勾选条目更新独立书目，正文引用保留，可撤销":"已清空独立书目选择，正文引用保留，可撤销");
+        return;
+    }
     if(action==LIB_STYLE) {
         CeCitationProfile profile=(CeCitationProfile)((a->citation_style+1)%3);
         CeDocument *candidate=edit_candidate(a);
@@ -952,7 +1033,7 @@ static void document_import_clear(App *a) {
     a->pending_note_json=a->pending_note_stem=NULL;
 }
 static void document_import_begin(App *a) {
-    if(a->import_job || a->pending_note_json) { message(a,"正在导入，请先完成当前文件选择"); return; }
+    if(a->import_job || a->source_job || a->pending_note_json) { message(a,"正在读取，请先完成当前操作"); return; }
     EditBox_CancelComposition(a->edit); SDL_ClearComposition(a->window); platform_web_input_cancel(); a->rich_dirty=true;
     a->import_kind=PLATFORM_IMPORT_DOCUMENT;
     a->import_job=platform_import_open(a->window,PLATFORM_IMPORT_DOCUMENT);
@@ -1068,11 +1149,14 @@ static bool library_cache_load(App *a,bool startup) {
     message(a,summary); update_title(a); return true;
 }
 
+#include "app_library_source.inc"
 static void library_import_poll(App *a) {
     if(!a->import_job) return;
     const char *status=NULL;
     PlatformImportStatus result=platform_import_status(a->import_job,&status);
     if(result==PLATFORM_IMPORT_PENDING) return;
+    if(result==PLATFORM_IMPORT_DONE && (a->library_cache_saving || a->prompt_mode==PROMPT_CITATION_PAGE ||
+       a->prompt_mode==PROMPT_CITATION_NOTE)) return;
     if(result!=PLATFORM_IMPORT_DONE) message(a,status?status:"导入已取消");
     else {
         PlatformImportFile file={0}; CeZoteroLibrary imported={0}; char error[256]="无法读取所选文件";
@@ -1087,6 +1171,11 @@ static void library_import_poll(App *a) {
         } else if(ok) {
             if(!file.data || memchr(file.data,0,file.size)) { SDL_strlcpy(error,"CSL JSON 包含二进制内容，未导入",sizeof error); ok=false; }
             else ok=ce_zotero_import_csl((const char *)file.data,&imported,error,sizeof error);
+        }
+        if(ok) {
+            imported.client_state_json=library_source_config(file.kind==PLATFORM_IMPORT_SQLITE && file.native_path?"sqlite":"file",
+                file.kind==PLATFORM_IMPORT_SQLITE && file.native_path?file.native_path:file.filename?file.filename:"");
+            if(!imported.client_state_json) { SDL_strlcpy(error,"内存不足或文件名过长，原文献库保持不变",sizeof error); ok=false; }
         }
         if(ok && !ce_library_panel_replace(&a->library,&imported)) { SDL_strlcpy(error,"内存不足，原文献库保持不变",sizeof error); ok=false; }
         if(ok) {
@@ -1103,12 +1192,13 @@ static void library_layout(App *a) {
     a->library_button=(SDL_FRect){a->width-94.0f,3,82,42};
     float width=SDL_min((float)a->width,480.0f),left=a->width-width,height=a->height-30.0f;
     a->library_area=(SDL_FRect){left,0,width,height};
-    a->library_content_height=SDL_max(height,600);
+    float base_height=SDL_max(height,600);
+    a->library_content_height=base_height+150;
     a->library_outer_scroll=SDL_clamp(a->library_outer_scroll,0,a->library_content_height-height);
     for(size_t i=0;i<LIB_BUTTON_COUNT;i++) a->library_buttons[i]=(SDL_FRect){0};
     float x=left+12,w=width-24;
     a->library_buttons[LIB_CLOSE]=(SDL_FRect){left+width-68,8,56,40};
-    if(height<600) a->library_buttons[LIB_VIEW]=(SDL_FRect){left+width-168,8,92,40};
+    if(height<a->library_content_height) a->library_buttons[LIB_VIEW]=(SDL_FRect){left+width-168,8,92,40};
     a->library_buttons[LIB_IMPORT]=(SDL_FRect){x,58,w/3-4,42};
     a->library_buttons[LIB_ITEMS]=(SDL_FRect){x+w/3+2,58,w/3-4,42};
     a->library_buttons[LIB_CURRENT]=(SDL_FRect){x+2*w/3+4,58,w/3-4,42};
@@ -1118,7 +1208,10 @@ static void library_layout(App *a) {
         a->library_buttons[LIB_ALL]=(SDL_FRect){x+w/3+2,160,w/3-4,42};
         a->library_buttons[LIB_DESCENDANTS]=(SDL_FRect){x+2*w/3+4,160,w/3-4,42};
     }
-    float bottom=a->library_content_height-220;
+    a->library_buttons[LIB_SOURCE]=(SDL_FRect){x,base_height+52,w/3-4,42};
+    a->library_buttons[LIB_SOURCE_REFRESH]=(SDL_FRect){x+w/3+2,base_height+52,w/3-4,42};
+    a->library_buttons[LIB_SOURCE_CANCEL]=(SDL_FRect){x+2*w/3+4,base_height+52,w/3-4,42};
+    float bottom=base_height-220;
     a->library_rows=(SDL_FRect){x,232,w,SDL_max(32,bottom-244)};
     a->library_buttons[LIB_PAGE]=(SDL_FRect){x,bottom+45,w/2-3,42};
     a->library_buttons[LIB_NOTE]=(SDL_FRect){x+w/2+3,bottom+45,w/2-3,42};
@@ -1128,6 +1221,11 @@ static void library_layout(App *a) {
     a->library_buttons[LIB_STYLE]=(SDL_FRect){x,bottom+166,w*.46f-3,42};
     a->library_buttons[LIB_SYNC]=(SDL_FRect){x+w*.46f+3,bottom+166,w*.54f-3,42};
     if(*a->library_warning) a->library_buttons[LIB_RETRY]=(SDL_FRect){x+w-106,bottom+2,106,38};
+    if(!a->library_citation_mode) {
+        a->library_buttons[LIB_CHECK_ALL]=(SDL_FRect){x,base_height+2,w/3-4,42};
+        a->library_buttons[LIB_CHECK_NONE]=(SDL_FRect){x+w/3+2,base_height+2,w/3-4,42};
+        a->library_buttons[LIB_BIBLIOGRAPHY]=(SDL_FRect){x+2*w/3+4,base_height+2,w/3-4,42};
+    }
     a->library_rows.y-=a->library_outer_scroll;
     for(size_t i=0;i<LIB_BUTTON_COUNT;i++)
         if(i!=LIB_CLOSE && i!=LIB_VIEW) a->library_buttons[i].y-=a->library_outer_scroll;
@@ -1150,7 +1248,7 @@ static void library_draw(App *a) {
     SDL_SetRenderDrawBlendMode(a->renderer,SDL_BLENDMODE_NONE);
     SDL_Color bg=paper(a),text=ink(a),surface=a->dark?(SDL_Color){42,49,57,255}:(SDL_Color){234,240,236,255};
     fill(a,a->library_area,bg);
-    const char *names[LIB_BUTTON_COUNT]={"关闭","导入文件","文献库","当前引用","搜索","分类列表","全部条目","含子分类","页码","摘录","插入引用","原条目","PDF","APA 7","更新参考文献","操作 ↓","重试保存"};
+    const char *names[LIB_BUTTON_COUNT]={"关闭","导入文件","文献库","当前引用","搜索","分类列表","全部条目","含子分类","页码","摘录","插入引用","原条目","PDF","APA 7","更新参考文献","操作 ↓","重试保存","勾选结果","清空勾选","设为书目","连接来源","刷新来源","取消读取"};
     names[LIB_VIEW]=a->library_outer_scroll>0?"列表 ↑":"操作 ↓";
     names[LIB_RETRY]=a->library_restore_failed?"重试恢复":"重试保存";
     char search[512],page[256],note[256],style[64];
@@ -1168,14 +1266,14 @@ static void library_draw(App *a) {
         fill(a,button,surface); clipped_label(a,names[i],(SDL_FRect){button.x+8,button.y+10,button.w-16,24},text);
     }
     float offset=a->library_outer_scroll;
-    float x=a->library_area.x+12,w=a->library_area.w-24,bottom=a->library_content_height-220-offset;
+    float x=a->library_area.x+12,w=a->library_area.w-24,bottom=SDL_max(a->library_area.h,600)-220-offset;
     if(a->library_citation_mode) {
         clipped_label(a,a->citation_title && *a->citation_title?a->citation_title:"当前未选中引用块",(SDL_FRect){x,120-offset,w,30},text);
         label(a,"在正文中点击引用块，再打开此面板。",x,166-offset,text);
         label(a,"页码和摘录按“保存引用”后写入，可撤销。",x,198-offset,text);
     } else {
         const char *collection=a->library.collection<a->library.library.collection_count?a->library.library.collections[a->library.collection].name:"全部文献";
-        char summary[512]; SDL_snprintf(summary,sizeof summary,"%s · %zu %s",collection?collection:"分类",a->library.row_count,a->library.collections_view?"个分类":"条结果");
+        char summary[512]; SDL_snprintf(summary,sizeof summary,"%s · %zu %s · 已勾选 %zu",collection?collection:"分类",a->library.row_count,a->library.collections_view?"个分类":"条结果",a->library.checked_count);
         clipped_label(a,summary,(SDL_FRect){x,208-offset,w,24},text);
         SDL_Rect clip={(int)a->library_rows.x,(int)a->library_rows.y,(int)a->library_rows.w,(int)a->library_rows.h};
         SDL_SetRenderClipRect(a->renderer,&clip);
@@ -1192,9 +1290,10 @@ static void library_draw(App *a) {
             } else {
                 const CeZoteroItem *item=&a->library.library.items[index];
                 if(a->library.selected_item==index) fill(a,(SDL_FRect){x,y,w,60},surface);
-                clipped_label(a,item->title && *item->title?item->title:"未命名文献",(SDL_FRect){x+8,y+7,w-16,24},text);
+                label(a,a->library.checked && a->library.checked[index]?"☑":"☐",x+8,y+18,text);
+                clipped_label(a,item->title && *item->title?item->title:"未命名文献",(SDL_FRect){x+40,y+7,w-48,24},text);
                 char detail[512]; SDL_snprintf(detail,sizeof detail,"%s · %s",item->author?item->author:"",item->year?item->year:"");
-                clipped_label(a,detail,(SDL_FRect){x+8,y+33,w-16,24},text);
+                clipped_label(a,detail,(SDL_FRect){x+40,y+33,w-48,24},text);
             }
         }
         if(!a->library.row_count) {
@@ -1207,6 +1306,13 @@ static void library_draw(App *a) {
     if(*a->library_warning) clipped_label(a,a->library_warning,(SDL_FRect){x,bottom+8,w-114,30},(SDL_Color){190,55,45,255});
     else clipped_label(a,title && *title?title:"选择文献后插入到正文光标处",(SDL_FRect){x,bottom+8,w,30},text);
     clipped_label(a,*a->citation_warning?a->citation_warning:"引用和参考文献随编辑自动更新。",(SDL_FRect){x,bottom+142,w,22},text);
+    const char *source_hint=a->source_job?"正在读取来源，当前文献库仍可使用…":
+#ifdef __EMSCRIPTEN__
+        "浏览器无法直连 Better BibTeX，可导入其导出文件。";
+#else
+        "连接读取 CSL JSON；来源仅在点击刷新时重新读取。";
+#endif
+    clipped_label(a,source_hint,(SDL_FRect){x,SDL_max(a->library_area.h,600)+102-offset,w,40},text);
     fill(a,(SDL_FRect){a->library_area.x,0,a->library_area.w,56},bg);
     clipped_label(a,"Zotero 文献",(SDL_FRect){x+4,16,a->library_buttons[LIB_VIEW].w?140:w-72,30},text);
     const LibraryAction fixed[]={LIB_CLOSE,LIB_VIEW};
@@ -1220,6 +1326,9 @@ static void library_event(App *a,SDL_Event *event) {
         if(event->key.key==SDLK_ESCAPE) library_close(a);
         else if(event->key.key==SDLK_F && (event->key.mod&(SDL_KMOD_CTRL|SDL_KMOD_GUI))) { a->library_citation_mode=false; library_prompt(a,PROMPT_LIBRARY_SEARCH); }
         else if(event->key.key==SDLK_RETURN && !a->library.collections_view) library_action(a,LIB_INSERT);
+        else if(!a->library_citation_mode && !a->library.collections_view && event->key.key==SDLK_A && (event->key.mod&(SDL_KMOD_CTRL|SDL_KMOD_GUI))) library_action(a,LIB_CHECK_ALL);
+        else if(!a->library_citation_mode && !a->library.collections_view && event->key.key==SDLK_SPACE && a->library.selected_item<a->library.library.item_count)
+            ce_library_panel_check(&a->library,a->library.selected_item,!a->library.checked[a->library.selected_item]);
         else if(!a->library_citation_mode && !a->library.collections_view && (event->key.key==SDLK_UP || event->key.key==SDLK_DOWN) && a->library.row_count) {
             size_t row=0;
             for(size_t i=0;i<a->library.row_count;i++) if(a->library.rows[i]==a->library.selected_item) row=i;
@@ -1232,7 +1341,7 @@ static void library_event(App *a,SDL_Event *event) {
         }
     } else if(event->type==SDL_EVENT_MOUSE_WHEEL && !a->library_citation_mode) {
         a->library.scroll=SDL_max(0,a->library.scroll-event->wheel.y*62);
-    } else if(event->type==SDL_EVENT_MOUSE_BUTTON_DOWN) {
+    } else if(event->type==SDL_EVENT_MOUSE_BUTTON_DOWN && event->button.button==SDL_BUTTON_LEFT) {
         if(event->button.y>=a->library_area.h) return;
         if(event->button.y<56) {
             if(contains(a->library_buttons[LIB_CLOSE],event->button.x,event->button.y)) library_action(a,LIB_CLOSE);
@@ -1244,20 +1353,26 @@ static void library_event(App *a,SDL_Event *event) {
         }
         if(!a->library_citation_mode && contains(a->library_rows,event->button.x,event->button.y)) {
             a->library_pressed_row=(size_t)((event->button.y-a->library_rows.y+a->library.scroll)/62);
+            a->library_pressed_check=event->button.x<a->library_rows.x+36;
             a->library_dragging=true; a->library_drag_moved=false;
             a->library_drag_y=a->library_drag_origin=event->button.y;
+            a->library_drag_origin_x=event->button.x;
         }
     } else if(event->type==SDL_EVENT_MOUSE_MOTION && a->library_dragging) {
-        if(SDL_fabsf(event->motion.y-a->library_drag_origin)>5) a->library_drag_moved=true;
+        if(SDL_fabsf(event->motion.y-a->library_drag_origin)>5 || SDL_fabsf(event->motion.x-a->library_drag_origin_x)>5) a->library_drag_moved=true;
         a->library.scroll=SDL_max(0,a->library.scroll+a->library_drag_y-event->motion.y); a->library_drag_y=event->motion.y;
-    } else if(event->type==SDL_EVENT_MOUSE_BUTTON_UP) {
+    } else if(event->type==SDL_EVENT_MOUSE_BUTTON_UP && event->button.button==SDL_BUTTON_LEFT) {
         if(a->library_dragging && !a->library_drag_moved && a->library_pressed_row<a->library.row_count &&
            contains(a->library_rows,event->button.x,event->button.y)) {
             size_t index=a->library.rows[a->library_pressed_row];
             if(a->library.collections_view) {
                 /* A collection-name search should not hide all its items. */
                 if(!ce_library_panel_query(&a->library,"") || !ce_library_panel_collection(&a->library,index)) message(a,"无法打开分类");
-            } else a->library.selected_item=index;
+            } else {
+                a->library.selected_item=index;
+                if(a->library_pressed_check && event->button.x<a->library_rows.x+36)
+                    ce_library_panel_check(&a->library,index,!a->library.checked[index]);
+            }
         }
         a->library_dragging=false;
     } else if(event->type==SDL_EVENT_WINDOW_FOCUS_LOST) a->library_dragging=false;
@@ -1540,7 +1655,7 @@ static void draw(App *a) {
         fill(a,(SDL_FRect){0,0,(float)a->width,(float)a->height},(SDL_Color){0,0,0,110});
         SDL_SetRenderDrawBlendMode(a->renderer,SDL_BLENDMODE_NONE);
         fill(a,a->prompt_area,bg);
-        const char *title=a->prompt_mode==PROMPT_NEW?"新建笔记 · 输入文件名":a->prompt_mode==PROMPT_FIND?"查找文字":a->prompt_mode==PROMPT_LINK?"链接地址（留空移除）":a->prompt_mode==PROMPT_LIBRARY_SEARCH?"搜索文献或分类（留空显示全部）":a->prompt_mode==PROMPT_CITATION_PAGE?"引用页码（留空清除）":a->prompt_mode==PROMPT_CITATION_NOTE?"引用摘录（留空清除）":"确认删除当前笔记？";
+        const char *title=a->prompt_mode==PROMPT_NEW?"新建笔记 · 输入文件名":a->prompt_mode==PROMPT_FIND?"查找文字":a->prompt_mode==PROMPT_LINK?"链接地址（留空移除）":a->prompt_mode==PROMPT_LIBRARY_SEARCH?"搜索文献或分类（留空显示全部）":a->prompt_mode==PROMPT_CITATION_PAGE?"引用页码（留空清除）":a->prompt_mode==PROMPT_CITATION_NOTE?"引用摘录（留空清除）":a->prompt_mode==PROMPT_LIBRARY_SOURCE?"文献来源地址 · 连接并读取":"确认删除当前笔记？";
         label(a,title,24,a->prompt_area.y+18,text);
         if(a->prompt_mode!=PROMPT_DELETE) {
             fill(a,a->prompt_input_area,surface);
@@ -1650,6 +1765,7 @@ SDL_AppResult SDL_AppInit(void **state, int argc, char **argv) {
         {"清格式",ACT_CLEAR,{0}}, {"左对齐",ACT_LEFT,{0}}, {"居中",ACT_CENTER,{0}},
         {"右对齐",ACT_RIGHT,{0}}, {"两端",ACT_JUSTIFY,{0}}, {"上一个",ACT_FIND_PREVIOUS,{0}},
         {"下一个",ACT_FIND_NEXT,{0}}, {"段上移",ACT_MOVE_UP,{0}}, {"段下移",ACT_MOVE_DOWN,{0}},
+        {"增缩进",ACT_INDENT,{0}}, {"减缩进",ACT_OUTDENT,{0}},
         {"更多 ›",ACT_MORE,{0}}
     };
     SDL_COMPILE_TIME_ASSERT(button_count, SDL_arraysize(buttons) == SDL_arraysize(a->buttons));
@@ -1760,6 +1876,13 @@ SDL_AppResult SDL_AppEvent(void *state, SDL_Event *event) {
         /* The upstream sample uses Ctrl; map Command on macOS for clipboard. */
         if(event->key.mod&SDL_KMOD_GUI) event->key.mod|=SDL_KMOD_CTRL;
     }
+    if(a->active && event->type==SDL_EVENT_KEY_DOWN && event->key.key==SDLK_TAB && !a->edit->composition_length &&
+       !(event->key.mod&(SDL_KMOD_CTRL|SDL_KMOD_GUI|SDL_KMOD_ALT))) {
+        CeBlockInfo block; size_t start,end; get_selection(a,&start,&end); (void)end;
+        if(ce_document_block_at(a->doc,start,&block) && block.depth>0) {
+            action(a,event->key.mod&SDL_KMOD_SHIFT?ACT_OUTDENT:ACT_INDENT); return SDL_APP_CONTINUE;
+        }
+    }
     if(a->active) {
         size_t prior_start,prior_end; get_selection(a,&prior_start,&prior_end);
         if(event->type==SDL_EVENT_TEXT_INPUT && a->edit->composition_snapshot) {
@@ -1789,6 +1912,7 @@ SDL_AppResult SDL_AppIterate(void *state) {
     App *a=state;
     touch_tick(a);
     library_import_poll(a);
+    library_source_poll(a);
     document_import_finish(a);
     if (a->export_job) {
         const char *result = NULL;
@@ -1817,6 +1941,7 @@ void SDL_AppQuit(void *state, SDL_AppResult result) {
     free(a->saving_name); free(a->saving_snapshot);
     platform_export_free(a->export_job);
     platform_import_free(a->import_job);
+    platform_library_source_free(a->source_job); free(a->source_pending_config);
     document_import_clear(a);
     ce_library_panel_destroy(&a->library); citation_context_clear(a);
     free(a->insert_page); free(a->insert_note);

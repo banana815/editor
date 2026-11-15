@@ -62,6 +62,26 @@ bool ce_document_style(CeDocument *doc, size_t start, size_t end, CeMark mark, c
                        bool enabled);
 /* Clear text marks only; node attributes and text are preserved. */
 bool ce_document_clear_formatting(CeDocument *doc, size_t start, size_t end);
+/* Change selected list items by one level: direction +1 indents under the
+ * preceding item, -1 lifts. Ranges are half-open; a caret selects its item.
+ * Ancestor/descendant selections act on their common list, once. Non-list
+ * blocks and first items that cannot indent are unchanged. Optional changed
+ * is written only on success. Text offsets remain unchanged. Each call is
+ * atomic and creates at most one undo step, preserving the savepoint.
+ * Matches ProseMirror list numbering: a new nested list starts at 1, split
+ * suffix lists retain the original start; joining an existing trailing list
+ * retains that destination's start. Unknown wrapper metadata that
+ * would be discarded causes explicit failure. Limits: 16 MiB JSON, 250,000
+ * JSON values, 128 container levels and bounded traversal work. */
+bool ce_document_adjust_list_depth(CeDocument *doc, size_t start, size_t end,
+                                   int direction, bool *changed);
+/* Clear selected text marks, convert selected headings to paragraphs, remove
+ * known level/textAlign attributes and lift selected list items out of known
+ * list wrappers. Citation/unknown subtrees and other block attributes survive.
+ * A caret changes only block structure, not unselected text marks. Unknown
+ * wrapper metadata cannot be silently discarded. Same atomicity/limits as
+ * adjust_list_depth; existing clear_formatting remains marks-only. */
+bool ce_document_clear_block_formatting(CeDocument *doc, size_t start, size_t end);
 /* Align paragraph/heading blocks intersecting [start,end), or the caret block.
  * Atomic blocks are skipped. Each call is one undo transaction. */
 bool ce_document_set_alignment(CeDocument *doc, size_t start, size_t end,

@@ -28,6 +28,30 @@ bool platform_import_take_result(PlatformImport *job,PlatformImportFile *file) {
 }
 void platform_import_file_free(PlatformImportFile *file) { SDL_free(file->filename);SDL_free(file->data);SDL_free(file->native_path);memset(file,0,sizeof *file); }
 void platform_import_free(PlatformImport *job) { SDL_free(job); }
+struct PlatformLibrarySource { bool taken; PlatformLibrarySourceStatus state; };
+static unsigned source_started;
+static const char *source_fixture="[{\"id\":\"new-source\",\"type\":\"book\",\"title\":\"Fetched library\"}]";
+static size_t source_fixture_size=SIZE_MAX;
+PlatformLibrarySource *platform_library_source_fetch(const char *url,const PlatformLibrarySourceOptions *options,char *error,size_t capacity) {
+    (void)options;
+    if(!url || !*url) { SDL_strlcpy(error,"Invalid test URL",capacity); return NULL; }
+    PlatformLibrarySource *job=calloc(1,sizeof *job); if(job) ++source_started; return job;
+}
+PlatformLibrarySource *platform_library_source_reopen_sqlite(const char *path,char *error,size_t capacity) {
+    return platform_library_source_fetch(path,NULL,error,capacity);
+}
+PlatformLibrarySourceStatus platform_library_source_status(PlatformLibrarySource *job,const char **status) {
+    if(status) *status="test source"; return job->state;
+}
+bool platform_library_source_take_result(PlatformLibrarySource *job,PlatformLibrarySourceResult *result) {
+    if(job->taken || job->state!=PLATFORM_LIBRARY_SOURCE_DONE) return false;
+    job->taken=true; result->size=source_fixture_size==SIZE_MAX?strlen(source_fixture):source_fixture_size;
+    result->data=malloc(result->size+1); assert(result->data);
+    memcpy(result->data,source_fixture,result->size); result->data[result->size]=0; result->http_status=200; return true;
+}
+void platform_library_source_result_free(PlatformLibrarySourceResult *result) { free(result->data); free(result->native_path); memset(result,0,sizeof *result); }
+void platform_library_source_cancel(PlatformLibrarySource *job) { if(job) job->state=PLATFORM_LIBRARY_SOURCE_CANCELED; }
+void platform_library_source_free(PlatformLibrarySource *job) { free(job); }
 static void press(App *app,LibraryAction which) {
     layout(app); SDL_FRect button=app->library_buttons[which]; assert(button.w);
     SDL_Event event={0}; event.type=SDL_EVENT_MOUSE_BUTTON_DOWN; event.button.button=SDL_BUTTON_LEFT;
@@ -73,6 +97,85 @@ static void bibliography_is(App *a,const char *expected) {
     char error[256];CeCslOutputString text={0};assert(ce_csl_output_plain(entry->rows[0].body,&text,error,sizeof error));
     if(strcmp(text.data,expected)) fprintf(stderr,"bibliography expected <%s> actual <%s>\n",expected,text.data);
     assert(!strcmp(text.data,expected));ce_csl_output_string_free(&text);
+}
+static void test_selected_bibliography_ui(App *a) {
+    char *before=doc_json(a); size_t cursor=(size_t)a->edit->cursor;
+    layout(a); SDL_Event pointer={0}; pointer.type=SDL_EVENT_MOUSE_BUTTON_DOWN;
+    pointer.button.button=SDL_BUTTON_RIGHT; pointer.button.x=a->library_rows.x+16; pointer.button.y=a->library_rows.y+20;
+    library_event(a,&pointer); pointer.type=SDL_EVENT_MOUSE_BUTTON_UP; library_event(a,&pointer);
+    assert(!a->library.checked_count && !a->library_dragging);
+    pointer.type=SDL_EVENT_MOUSE_BUTTON_DOWN; pointer.button.button=SDL_BUTTON_LEFT; library_event(a,&pointer);
+    SDL_Event motion={0}; motion.type=SDL_EVENT_MOUSE_MOTION; motion.motion.x=pointer.button.x+30; motion.motion.y=pointer.button.y;
+    library_event(a,&motion); pointer.type=SDL_EVENT_MOUSE_BUTTON_UP; library_event(a,&pointer);
+    assert(!a->library.checked_count && !a->library_dragging);
+    pointer.type=SDL_EVENT_MOUSE_BUTTON_DOWN; library_event(a,&pointer);
+    pointer.type=SDL_EVENT_MOUSE_BUTTON_UP; library_event(a,&pointer); assert(a->library.checked_count==1);
+    key(a,SDLK_SPACE,0); assert(!a->library.checked_count);
+    a->library.selected_item=0; key(a,SDLK_SPACE,0); assert(a->library.checked_count==1);
+    assert(ce_library_panel_query(&a->library,"Other"));
+    key(a,SDLK_A,SDL_KMOD_CTRL); assert(a->library.checked_count==2);
+    assert(ce_library_panel_query(&a->library,""));
+    press(a,LIB_VIEW); press(a,LIB_BIBLIOGRAPHY); assert(!a->library_open);
+    const CeCitationProcessStats *stats=ce_citation_prepared_stats(ce_citation_session_prepared(a->citation_session));
+    assert(stats && stats->citation_count==0 && stats->reference_count==2 && stats->selected_count==2);
+    char *selected=doc_json(a); assert(strstr(selected,"selectedItemsJson") && !strstr(selected,"zoteroCitationBlock"));
+    library_show(a); library_action(a,LIB_STYLE);
+    stats=ce_citation_prepared_stats(ce_citation_session_prepared(a->citation_session));
+    assert(stats->reference_count==2 && a->citation_style==CE_CITATION_PROFILE_IEEE);
+    action(a,ACT_UNDO); unchanged(a,selected); free(selected);
+    library_action(a,LIB_CHECK_NONE); assert(!a->library.checked_count);
+    library_action(a,LIB_BIBLIOGRAPHY); assert(!a->library_open);
+    stats=ce_citation_prepared_stats(ce_citation_session_prepared(a->citation_session));
+    assert(stats->reference_count==0 && stats->citation_count==0);
+    action(a,ACT_UNDO); action(a,ACT_UNDO); unchanged(a,before); free(before);
+    /* Opening the library reads the current prose selection into its quote
+     * field; it does not insert a citation or mutate the document. */
+    a->edit->highlight1=0; a->edit->highlight2=3; a->edit->cursor=3;
+    library_show(a); assert(a->insert_note && !strcmp(a->insert_note,"前")); library_close(a);
+    free(a->insert_note); a->insert_note=NULL;
+    a->edit->highlight1=a->edit->highlight2=-1; a->edit->cursor=(int)cursor; library_show(a);
+}
+static void test_library_source_controller(App *a) {
+    char error[256]; char *saved=ce_zotero_cache_export(&a->library.library,error,sizeof error); assert(saved);
+    char *doc=doc_json(a); CeZoteroItem *retained=a->library.library.items;
+    unsigned calls=source_started;
+    library_source_refresh(a); /* File source deliberately reopens the picker. */
+    assert(a->import_job && source_started==calls); platform_import_free(a->import_job); a->import_job=NULL;
+    assert(library_source_begin(a,"http","https://example.invalid/library")); assert(a->source_job);
+    library_action(a,LIB_IMPORT); assert(!a->import_job);
+    document_import_begin(a); assert(!a->import_job);
+    library_action(a,LIB_SOURCE_CANCEL); assert(!a->source_job && !a->source_pending_config);
+    assert(a->library.library.items==retained);
+    const char *good=source_fixture;
+    source_fixture="not JSON";
+    assert(library_source_begin(a,"http","https://example.invalid/bad")); a->source_job->state=PLATFORM_LIBRARY_SOURCE_DONE;
+    library_source_poll(a); assert(!a->source_job && a->library.library.items==retained);
+    source_fixture="a\0b"; source_fixture_size=3;
+    assert(library_source_begin(a,"http","https://example.invalid/binary")); a->source_job->state=PLATFORM_LIBRARY_SOURCE_DONE;
+    library_source_poll(a); assert(!a->source_job && a->library.library.items==retained);
+    char *unchanged_cache=ce_zotero_cache_export(&a->library.library,error,sizeof error);
+    assert(unchanged_cache && !strcmp(unchanged_cache,saved)); free(unchanged_cache);
+    source_fixture=good; source_fixture_size=SIZE_MAX;
+    assert(library_source_begin(a,"http","https://example.invalid/finished-but-canceled"));
+    a->source_job->state=PLATFORM_LIBRARY_SOURCE_DONE; library_action(a,LIB_SOURCE_CANCEL);
+    assert(!a->source_job && a->library.library.items==retained);
+    assert(library_source_begin(a,"http","https://example.invalid/library")); a->source_job->state=PLATFORM_LIBRARY_SOURCE_DONE;
+    a->library_cache_saving=true; library_source_poll(a); assert(a->source_job && a->library.library.items==retained);
+    a->library_cache_saving=false;
+    a->library_citation_mode=true; free(a->citation_note); a->citation_note=copy_string("existing note");
+    char *draft=a->insert_note; library_prompt(a,PROMPT_CITATION_NOTE);
+    EditBox_SetText(a->prompt,"edited current note"); library_source_poll(a);
+    assert(a->source_job && a->library.library.items==retained && a->library_citation_mode);
+    key(a,SDLK_RETURN,SDL_KMOD_CTRL);
+    assert(a->prompt_mode==PROMPT_NONE && !strcmp(a->citation_note,"edited current note") && a->insert_note==draft);
+    library_source_poll(a);
+    assert(!a->source_job && a->library.library.item_count==1 && !strcmp(a->library.library.items[0].title,"Fetched library"));
+    cJSON *config=library_source_read(a); assert(config && !strcmp(json_string(config,"location"),"https://example.invalid/library")); cJSON_Delete(config);
+    calls=source_started; assert(library_cache_load(a,false)); assert(source_started==calls && !a->source_job);
+    library_source_refresh(a); assert(a->source_job && source_started==calls+1);
+    library_action(a,LIB_SOURCE_CANCEL); unchanged(a,doc); free(doc);
+    CeZoteroLibrary restored={0}; assert(ce_zotero_cache_import(saved,&restored,error,sizeof error)); free(saved);
+    assert(ce_library_panel_replace(&a->library,&restored)); a->library_unsaved=true; assert(library_cache_save(a));
 }
 static void test_missing_snapshot(App *a) {
     char *restore=doc_json(a);char error[256];
@@ -193,6 +296,8 @@ int main(int argc,char **argv) {
     free(a->active); a->active=copy_string("Ui.json"); sync_view(a); a->edit->cursor=3; EditBox_SetFocus(a->edit,true);
     char *before=doc_json(a); library_show(a); assert(!a->edit->has_focus && !a->library_citation_mode);
     press(a,LIB_IMPORT); library_import_poll(a); assert(a->library.library.item_count==2);
+    test_selected_bibliography_ui(a);
+    test_library_source_controller(a);
     unchanged(a,before); a->library.selected_item=0;
     press(a,LIB_PAGE); input(a,"12–14"); key(a,SDLK_RETURN,0); assert(a->library_open && a->prompt_mode==PROMPT_NONE);
     press(a,LIB_NOTE); input(a,"中文摘录"); key(a,SDLK_RETURN,0); assert(a->prompt_mode==PROMPT_CITATION_NOTE);

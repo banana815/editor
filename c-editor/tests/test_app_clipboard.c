@@ -22,6 +22,37 @@ static void key(App *a,SDL_Keycode code,SDL_Keymod mod) {
     SDL_Event event={0}; event.type=SDL_EVENT_KEY_DOWN; event.key.key=code; event.key.mod=mod;
     assert(SDL_AppEvent(a,&event)==SDL_APP_CONTINUE);
 }
+static void test_list_and_clear_actions(App *a) {
+    reset_document(a,"<ul><li><p>A</p></li><li><p>B</p></li><li><p>C</p></li></ul>",CE_FORMAT_HTML);
+    char *before=snapshot(a); CeBlockInfo block;
+    assert(ce_document_block_at(a->doc,2,&block)); unsigned depth=block.depth;
+    action(a,ACT_INDENT); unchanged(a,before); assert(!ce_document_can_undo(a->doc));
+    select_range(a,2,5); key(a,SDLK_TAB,0);
+    assert(!strcmp(ce_document_text(a->doc),"A\nB\nC"));
+    assert(a->edit->highlight1==2 && a->edit->highlight2==5);
+    assert(ce_document_block_at(a->doc,2,&block) && block.depth==depth+1);
+    char *nested=snapshot(a); assert(strcmp(before,nested));
+    action(a,ACT_UNDO); unchanged(a,before); action(a,ACT_REDO); unchanged(a,nested);
+    select_range(a,2,5); key(a,SDLK_TAB,SDL_KMOD_SHIFT); unchanged(a,before);
+    free(before); free(nested);
+    reset_document(a,"<ul><li><p>A</p></li><li><p>B</p><h2>C</h2></li></ul>",CE_FORMAT_HTML);
+    before=snapshot(a); a->edit->cursor=4; key(a,SDLK_TAB,0);
+    assert(ce_document_block_at(a->doc,4,&block) && block.kind==CE_BLOCK_HEADING && block.depth==2);
+    key(a,SDLK_TAB,SDL_KMOD_SHIFT); unchanged(a,before); free(before);
+    reset_document(a,"<h2 style=\"text-align:center\"><strong>A</strong>B</h2><ul><li><p><em>C</em>D</p></li></ul>",CE_FORMAT_HTML);
+    before=snapshot(a); select_range(a,1,4); action(a,ACT_CLEAR);
+    assert(!strcmp(ce_document_text(a->doc),"AB\nCD"));
+    assert(ce_document_style_at(a->doc,0).marks&CE_MARK_BOLD);
+    assert(!(ce_document_style_at(a->doc,3).marks&CE_MARK_ITALIC));
+    assert(ce_document_block_at(a->doc,0,&block) && block.kind==CE_BLOCK_PARAGRAPH);
+    assert(ce_document_block_at(a->doc,3,&block) && block.kind==CE_BLOCK_PARAGRAPH);
+    action(a,ACT_UNDO); unchanged(a,before); free(before);
+    a->edit->cursor=0; a->edit->highlight1=a->edit->highlight2=-1; action(a,ACT_CLEAR);
+    assert(ce_document_style_at(a->doc,0).marks&CE_MARK_BOLD);
+    assert(ce_document_block_at(a->doc,0,&block) && block.kind==CE_BLOCK_PARAGRAPH);
+    input(a,"x"); assert(!(ce_document_style_at(a->doc,0).marks&CE_MARK_BOLD));
+    assert(ce_document_style_at(a->doc,1).marks&CE_MARK_BOLD);
+}
 static void test_typing(App *a) {
     reset_document(a,"aa",CE_FORMAT_TEXT);
     char *before=snapshot(a);
@@ -147,6 +178,6 @@ int main(int argc,char **argv) {
     char *args[]={"clipboard-test","--notes",argv[1],"--font",argv[2]};
     assert(SDL_AppInit(&state,5,args)==SDL_APP_CONTINUE); App *a=state;
     free(a->active); a->active=copy_string("clipboard.json"); assert(a->active);
-    test_typing(a); test_clipboard(a); test_citation_clipboard(a);
+    test_typing(a); test_list_and_clear_actions(a); test_clipboard(a); test_citation_clipboard(a);
     SDL_AppQuit(a,SDL_APP_SUCCESS); puts("application typing and clipboard transactions passed"); return 0;
 }
