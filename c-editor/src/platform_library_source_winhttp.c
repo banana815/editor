@@ -68,6 +68,36 @@ static WCHAR *wide_url(const char *value) {
     if(result && !MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,value,-1,result,length)) { free(result);result=NULL; }
     return result;
 }
+static bool response_length(PlatformLibrarySource *job,HINTERNET request,bool *known,size_t *expected) {
+    WCHAR value[32];DWORD bytes=sizeof value;
+    *known=false;*expected=0;
+    /* WinHTTP removes Content-Length when it decompresses a response. A
+     * remaining length therefore describes the bytes returned by ReadData.
+     * An absent length is valid for chunked and connection-delimited bodies. */
+    if(!WinHttpQueryHeaders(request,WINHTTP_QUERY_CONTENT_LENGTH,WINHTTP_HEADER_NAME_BY_INDEX,
+        value,&bytes,WINHTTP_NO_HEADER_INDEX)) {
+        DWORD error=GetLastError();
+        if(error==ERROR_WINHTTP_HEADER_NOT_FOUND) return true;
+        win_error(job,error);return false;
+    }
+    size_t count=bytes/sizeof *value,at=0,total=0,limit=platform_library_source_byte_limit(job);
+    if(bytes%sizeof *value || count>=sizeof value/sizeof *value) goto invalid;
+    while(at<count && (value[at]==L' ' || value[at]==L'\t')) ++at;
+    size_t start=at;
+    while(at<count && value[at]>=L'0' && value[at]<=L'9') {
+        unsigned digit=(unsigned)(value[at++]-L'0');
+        if(total>limit/10 || (total==limit/10 && digit>limit%10)) {
+            platform_library_source_error(job,"Library source exceeds the configured byte limit");return false;
+        }
+        total=total*10+digit;
+    }
+    if(at==start) goto invalid;
+    while(at<count && (value[at]==L' ' || value[at]==L'\t')) ++at;
+    if(at!=count) goto invalid;
+    *known=true;*expected=total;return true;
+invalid:
+    platform_library_source_error(job,"Invalid HTTP Content-Length");return false;
+}
 static int SDLCALL win_worker(void *userdata) {
     WinSource *source=userdata;PlatformLibrarySource *job=source->job;
     HINTERNET session=NULL,connection=NULL,request=NULL;
@@ -126,12 +156,21 @@ static int SDLCALL win_worker(void *userdata) {
     if(!WinHttpQueryHeaders(request,WINHTTP_QUERY_STATUS_CODE|WINHTTP_QUERY_FLAG_NUMBER,
         WINHTTP_HEADER_NAME_BY_INDEX,&status,&length,WINHTTP_NO_HEADER_INDEX)) { win_error(job,GetLastError());goto done; }
     if(!platform_library_source_response(job,(unsigned)status)) goto done;
+    bool length_known=false;size_t expected=0,total=0;
+    if(!response_length(job,request,&length_known,&expected)) goto done;
     while(active(source)) {
         if(!WinHttpReadData(request,source->bytes,sizeof source->bytes,NULL)) { win_error(job,GetLastError());goto done; }
         if(!wait_for(source,WINHTTP_CALLBACK_STATUS_READ_COMPLETE)) goto done;
         SDL_LockSpinlock(&source->lock);DWORD received=source->received;SDL_UnlockSpinlock(&source->lock);
-        if(!received) { success=true;break; }
+        if(!received) {
+            /* A premature connection close can produce a successful zero-byte
+             * WinHTTP completion. Do not expose the partial body as a library. */
+            if(length_known && total!=expected) platform_library_source_error(job,"Incomplete HTTP response body");
+            else success=true;
+            break;
+        }
         if(received>sizeof source->bytes || !platform_library_source_append(job,source->bytes,received)) goto done;
+        total+=received; /* append already enforces the bounded decoded-byte cap. */
     }
 done:
     /* Only this worker calls WinHTTP APIs or closes handles. Any pending ASYNC

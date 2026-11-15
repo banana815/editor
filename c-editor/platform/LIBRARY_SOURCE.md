@@ -60,6 +60,13 @@ all metadata interpretation stays in C. Linux uses the installed TLS backend and
 trust store, not a newly vendored OpenSSL build. Browser routing/proxy behavior
 remains controlled by the browser; JavaScript cannot override that system policy.
 
+Windows checks any remaining `Content-Length` against the accumulated body before
+reporting success: WinHTTP can report zero-byte completion after a premature
+connection close. Invalid or over-limit lengths fail before reading. WinHTTP
+removes the length header when automatically decompressing, so the encoded size
+is never compared with decoded bytes. Chunked and connection-delimited responses
+without a length remain supported; every body still has the decoded-byte cap.
+
 Android's public HttpURLConnection API lacks a per-request authenticator switch.
 This implementation therefore depends on the closed application invariant that
 neither NoteLab nor its SDL Java sources install a VM-wide `Authenticator`, alter
@@ -105,12 +112,14 @@ with native ASan/UBSan and as actual WebAssembly; no global allocator is changed
 
 `tests/test_library_source_native_http.py <native-http-executable>` starts private
 localhost HTTP/TLS fixtures for `test_library_source_native_http.c`. It tests
-plain/gzip/chunked bytes, redirects/auth/errors/truncated body, decoded caps,
+plain/gzip/chunked/connection-delimited bytes, redirects/auth/errors/truncated
+bodies (including zero received bytes), lengths above 32 bits, decoded caps,
 timeouts/cancel/free while pending, absent cookies and a self-signed certificate
 that must be rejected. If its openssl test tool is unavailable, it explicitly
-reports the TLS fixture as skipped. It never contacts the user's Zotero. Apple
-and system-libcurl transport versions have passed this fixture locally; Windows
-still requires actual Windows CI evidence.
+reports the TLS fixture as skipped. It never contacts the user's Zotero. The
+native fixture runs on Windows, macOS and Linux in `.github/workflows/c-editor.yml`;
+the current branch's results are available in [PR #3 checks](https://github.com/banana815/editor/pull/3/checks).
+Local Apple/libcurl results do not substitute for actual Windows execution.
 
 `TestLibraryHttpSource.java` compiles with the exact Android transport source and
 runs the same fixture in an isolated JDK JVM, additionally exercising global
@@ -144,6 +153,9 @@ no cookies or redirect, and result bytes. Neither reads a user browser profile.
 - [SDL_net API scope](https://wiki.libsdl.org/SDL3_net/CategoryAPIFunction)
 - [curl removal of Secure Transport](https://curl.se/dev/deprecate.html)
 - [WinHTTP concurrency](https://learn.microsoft.com/en-us/windows/win32/winhttp/concurrency-in-winhttp)
+- [WinHTTP read completion](https://learn.microsoft.com/en-us/windows/win32/api/winhttp/nf-winhttp-winhttpreaddata)
+- [Microsoft .NET WinHTTP incomplete-body check](https://github.com/dotnet/runtime/blob/main/src/libraries/System.Net.Http.WinHttpHandler/src/System/Net/Http/WinHttpRequestCallback.cs)
+- [Microsoft .NET WinHTTP response header handling](https://github.com/dotnet/runtime/blob/main/src/libraries/System.Net.Http.WinHttpHandler/src/System/Net/Http/WinHttpResponseParser.cs)
 - [NSURLSession proxy configuration](https://developer.apple.com/documentation/foundation/urlsessionconfiguration/connectionproxydictionary)
 - [Apple local networking and ATS IP exceptions](https://developer.apple.com/documentation/bundleresources/information-property-list/nsapptransportsecurity/nsallowslocalnetworking)
 - [Android HttpURLConnection cookie/auth handling](https://developer.android.com/reference/java/net/HttpURLConnection)

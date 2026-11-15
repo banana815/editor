@@ -41,9 +41,11 @@ static void fails(const char *base,const char *path,size_t limit,uint32_t timeou
 int main(int argc,char **argv) {
     assert(argc==2 || argc==3);assert(SDL_Init(0));
     succeeds(argv[1],"/ok",expected);succeeds(argv[1],"/gzip",expected);succeeds(argv[1],"/chunked",expected);succeeds(argv[1],"/empty","");
+    succeeds(argv[1],"/close-delimited",expected);
     succeeds(argv[1],"/cookie",expected);succeeds(argv[1],"/ok",expected);
     if(argc==3) fails(argv[2],"/ok",4096,3000); /* Self-signed TLS is never trusted. */
     fails(argv[1],"/auth",4096,3000);fails(argv[1],"/redirect",4096,3000);fails(argv[1],"/missing",4096,3000);fails(argv[1],"/truncated",4096,3000);
+    fails(argv[1],"/truncated-empty",4096,3000);fails(argv[1],"/oversized-length",4096,3000);
     fails(argv[1],"/large",32,3000);fails(argv[1],"/gzip",32,3000);fails(argv[1],"/slow",4096,100);
     PlatformLibrarySource *job=request(argv[1],"/slow",4096,3000);SDL_Delay(20);
     Uint64 start=SDL_GetTicks();platform_library_source_cancel(job);assert(SDL_GetTicks()-start<100);

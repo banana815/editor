@@ -57,7 +57,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.send_header('Content-Length', '0')
                 self.end_headers()
                 return
-            body = b'' if path == '/empty' else BODY
+            body = b'' if path in ('/empty', '/truncated-empty') else BODY
             if path == '/large':
                 body = b'x' * 256
             self.send_response(200)
@@ -75,7 +75,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     self.wfile.write(f'{len(block):x}\r\n'.encode() + block + b'\r\n')
                 self.wfile.write(b'0\r\n\r\n')
                 return
-            self.send_header('Content-Length', str(len(body) + (100 if path == '/truncated' else 0)))
+            if path != '/close-delimited':
+                extra = 100 if path in ('/truncated', '/truncated-empty') else 0
+                if path == '/oversized-length':
+                    extra = 2**32  # A 32-bit length conversion must not wrap.
+                self.send_header('Content-Length', str(len(body) + extra))
+            else:
+                self.send_header('Connection', 'close')
             self.end_headers()
             if path == '/drip':
                 for byte in body:
@@ -85,7 +91,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             else:
                 self.wfile.write(body)
                 self.wfile.flush()
-            if path == '/truncated':
+            if path in ('/truncated', '/truncated-empty', '/oversized-length', '/close-delimited'):
                 self.connection.shutdown(socket.SHUT_RDWR)
                 self.connection.close()
                 self.close_connection = True
