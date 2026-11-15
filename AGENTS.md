@@ -1,81 +1,56 @@
-# Agent Guide for test-app (Tauri Editor)
+# Agent Guide for Note Lab
 
-This repository contains a desktop markdown editor built with **Tauri v2** (Rust) and **React** (TypeScript/Vite).
+Note Lab is a C11 rich-text editor for Windows, macOS, Linux, Android, iOS and WebAssembly. The active project lives in `c-editor/`. Read `c-editor/PROJECT_STATUS.md` for verified behavior, current work and remaining acceptance criteria.
 
-## 🚀 Quick Start
+## Build and test
 
-### Prerequisites
-- Node.js (v20+ recommended)
-- Rust (stable)
-- OS-specific build tools (Xcode for macOS, VS C++ Build Tools for Windows, libwebkit2gtk for Linux)
+Run from the repository root with CMake 3.24+, a C/C++ toolchain and Python 3.8+:
 
-### Commands
+```sh
+cmake -S c-editor -B c-editor/build -DCMAKE_BUILD_TYPE=Debug
+cmake --build c-editor/build --config Debug --parallel 4
+ctest --test-dir c-editor/build -C Debug --output-on-failure
+```
 
-**Frontend (React/Vite)**
-- `npm install` - Install dependencies
-- `npm run dev` - Start frontend dev server only (rarely used alone)
+Launch `./c-editor/build/notelab` on macOS/Linux or the executable in the selected configuration directory on Windows. Use temporary notes or `--notes /absolute/path/to/test-notes` for manual validation.
 
-**Tauri (Desktop App)**
-- `npm run tauri dev` - Start the app in development mode (hot reload)
-- `npm run tauri build` - Build production binary
-- `npm run tauri android` - Android development (requires Android Studio)
-- `npm run tauri ios` - iOS development (requires Xcode)
+For C core memory checks:
 
-## 📂 Code Structure
+```sh
+cmake -S c-editor -B c-editor/build-core -DEDITOR_BUILD_APP=OFF -DEDITOR_SANITIZERS=ON -DCMAKE_BUILD_TYPE=Debug
+cmake --build c-editor/build-core --parallel 4
+ctest --test-dir c-editor/build-core --output-on-failure
+```
 
-### Frontend (`test-app/src`)
-- `App.tsx`: Main logic. Handles state, UI, shortcuts, and invokes Rust commands.
-- `App.css`: Styles for the editor (dark/light themes).
-- `components/`: (None currently, all logic is in App.tsx)
-- **Key Libraries**:
-  - `@uiw/react-codemirror`: The editor component.
-  - `react-markdown`: For the preview pane.
-  - `@tauri-apps/api`: For communicating with the Rust backend.
+Platform prerequisites and commands are documented in `c-editor/README.md` and `c-editor/platform/{android,ios,web}/README.md`. Linux needs system libcurl 7.84+ and window-system development packages. Dependencies, fonts and CSL styles are pinned by the CMake modules; preserve their versions and checksums unless the task calls for an update.
 
-### Backend (`test-app/src-tauri`)
-- `src/main.rs`: **Entry point & Logic**. Contains all file system operations.
-- `src/lib.rs`: Mobile entry point (currently minimal).
-- `tauri.conf.json`: App configuration (permissions, windows, bundle settings).
-- `capabilities/`: Permission sets (Tauri v2 security model).
+## Code map
 
-## 🧩 Key Patterns
+| Path | Responsibility |
+| --- | --- |
+| `c-editor/src/app.c`, `app_*.inc` | Application state, UI, input and controllers |
+| `c-editor/src/document.c`, `document_slice.c` | Rich documents, undo and clipboard slices |
+| `c-editor/src/note_store.c` | Note persistence and file operations |
+| `c-editor/src/zotero.c`, `library_panel.c` | Library parsing, filtering and selection |
+| `c-editor/src/citation_*.c`, `bibliography_*.c` | Citation integration and bibliography state |
+| `c-editor/csl/` | C citation processor, pinned profiles and fixtures |
+| `c-editor/src/platform_*`, `c-editor/platform/` | OS access, mobile glue and browser bridge |
+| `c-editor/include/` | Public C interfaces |
+| `c-editor/tests/` | Native, browser, HTTP and packaged-startup tests |
+| `c-editor/cmake/`, `c-editor/tools/` | Dependencies, packaging and generated data |
 
-### 1. IPC (Inter-Process Communication)
-The frontend calls Rust functions using `invoke("command_name", { args })`.
-- **Rust Side**: Defined in `main.rs` with `#[tauri::command]`.
-- **React Side**: Called in `App.tsx`.
+## Implementation contracts
 
-| Command | Rust Function | Description |
-| :--- | :--- | :--- |
-| `get_notes` | `get_notes` | Lists `.md`/`.txt` files in `~/Documents/MyNotes` |
-| `read_note` | `read_note` | Reads file content |
-| `save_note` | `save_note` | Writes content to file |
-| `create_note`| `create_note`| Creates empty file |
-| `delete_note`| `delete_note`| Deletes file |
+- Keep application decisions, document/storage behavior, library parsing and citation processing in C. Objective-C, Java/JNI and browser JavaScript connect platform capabilities. Third-party dependencies may use other languages; keep their notices and attribution intact.
+- Prepare and validate document/library changes before committing them. Failed allocation, parsing, persistence or download operations must preserve the existing note and library.
+- Preserve unknown legacy metadata where representable. Keep legacy HTML/JSON imports and their regression fixtures even though the previous application has been retired.
+- Regenerate citation display from authoritative source snapshots; imported render caches are not trusted output. Do not substitute approximate formatting for unsupported active CSL constructs.
+- Network access requires an explicit source action. Preserve TLS, cancellation, size/deadline limits and the no-automatic-refresh contract in `c-editor/platform/LIBRARY_SOURCE.md`.
+- Tests must use isolated notes, fixture servers and browser profiles. Do not read the user's actual notes, Zotero profile, credentials or clipboard for automated validation.
+- Browser tests must wait for navigation, rendered state and persistence completion. Keep the slow-CPU library regression and its failure diagnostics enabled.
 
-### 2. File Storage
-- **Location**: Hardcoded to `~/Documents/MyNotes` (via `dirs` crate).
-- **Behavior**: Auto-creates directory if missing.
-- **Limitation**: Only supports flat structure (no subfolders).
+## Repository and validation
 
-### 3. Editor Features
-- **Typewriter Mode**: Custom CodeMirror extension in `App.tsx` forces cursor to center.
-- **Theming**: Toggles `data-theme` attribute on `<html>`.
+The two workflows are `.github/workflows/c-editor.yml` (application builds, tests, packaging and startup) and `.github/workflows/csl.yml` (citation processor checks). Run the checks relevant to a change and distinguish local results from actual platform CI. A successful build does not establish complete feature parity or physical-device behavior.
 
-## ⚠️ Gotchas & Limitations
-
-1. **Path Handling**: The backend manually constructs paths using `dirs::document_dir()`. It does **not** use Tauri's `fs` scope scope permissions in `tauri.conf.json`, but rather raw Rust `std::fs`. This bypasses Tauri's allowlist but requires careful security handling.
-2. **Security**: Input filenames are directly appended to paths. Potential path traversal risk if not sanitized (though `read_dir` listing limits what users see).
-3. **State Sync**: Frontend state (`files`, `activeFile`) is manually synced after operations. No file watchers implemented.
-4. **Mobile Support**: `lib.rs` exists but `main.rs` contains the logic. Mobile builds might fail because `dirs` crate behavior on mobile needs verification, and logic is currently in `main` not `lib`.
-
-## 🧪 Testing
-
-- **Manual Testing**: Run `npm run tauri dev` and interact with the UI.
-- **Unit Tests**: None currently implemented.
-
-## 📦 Build & Release
-
-- GitHub Actions workflow defined in `.github/workflows/release.yml`.
-- builds for macOS (Universal) and Windows.
-- Linux builds require system dependencies (`libwebkit2gtk-4.0-dev`, etc.).
+Keep generated builds and toolchains in ignored directories. Update the relevant README, platform contract or project status when behavior or build entry points change. `docs/design/` holds reference artwork; `c-editor/licenses/` and `THIRD_PARTY.md` record redistributable dependencies and unresolved licensing work.

@@ -1,0 +1,11 @@
+# Operating-system metadata
+.DS_Store
+Thumbs.db
+
+# Local editor files
+*.swp
+*.swo
+
+# Optional builds started at the repository root
+/build*/
+/dist/
