@@ -235,7 +235,7 @@ jobs:
           node c-editor/tests/test_browser.mjs c-editor/build-web "$(command -v google-chrome)"
           node c-editor/tests/test_browser_touch.mjs c-editor/build-web "$(command -v google-chrome)"
           node c-editor/tests/test_library_source_browser.mjs c-editor/build-web/test_library_source_web.cjs "$(command -v google-chrome)"
-          node c-editor/tests/test_browser_library.mjs c-editor/build-web "$(command -v google-chrome)"
+          EDITOR_TEST_CPU_THROTTLE=6 node c-editor/tests/test_browser_library.mjs c-editor/build-web "$(command -v google-chrome)"
       - name: Run C core fixtures in WebAssembly
         run: |
           source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
@@ -253,4 +253,6 @@ jobs:
             c-editor/build-web/THIRD_PARTY.md
             c-editor/build-web/licenses/
             c-editor/build-web/*validation.png
+            c-editor/build-web/browser-library-*.png
+            c-editor/build-web/browser-library-*.json
           if-no-files-found: error

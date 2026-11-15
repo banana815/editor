@@ -8,11 +8,12 @@
 | --- | --- |
 | 原 Tauri 应用 | 保留在 `../test-app`，原 GitHub 编译问题已通过 PR #2 修复并合并 |
 | 已提交的 C 重写 | [草稿 PR #3](https://github.com/banana815/editor/pull/3)，分支 `codex/c-editor-platforms`；未合并 |
-| 已通过全部 CI 的提交 | `59f0db1ab159f288c3b3e4bc2a37e8a0671f8bea` |
+| 早期完整通过检查点 | `59f0db1ab159f288c3b3e4bc2a37e8a0671f8bea` |
+| 最近已完成检查 | `6b287da`：应用 7/8、引用处理 9/9 通过；浏览器文献库自动测试超时，修复见下文 |
 | 本轮新增功能 | 随本次更新提交到 PR #3；下述本机验证已完成，新一轮远端结果以该 PR 当前检查为准 |
 | 当前分支验证 | [PR #3 当前检查](https://github.com/banana815/editor/pull/3/checks)，包含 8 项应用检查与 9 项引用处理检查；以检查对应的提交为准 |
 
-上一提交的 [8 项应用检查](https://github.com/banana815/editor/actions/runs/43652657027) 与 [9 项引用处理检查](https://github.com/banana815/editor/actions/runs/43652657000) 全部通过。证据包括 Windows 编译与测试、Linux 内存泄漏检查、桌面发行包启动、浏览器测试，以及 Android/iOS 模拟器实际启动。不要把上一提交的远端结果当成本轮更新的新 CI 结果。
+早期检查点的 [8 项应用检查](https://github.com/banana815/editor/actions/runs/43652657027) 与 [9 项引用处理检查](https://github.com/banana815/editor/actions/runs/43652657000) 全部通过。证据包括 Windows 编译与测试、Linux 内存泄漏检查、桌面发行包启动、浏览器测试，以及 Android/iOS 模拟器实际启动。不要把历史提交的远端结果当成本轮更新的新 CI 结果。
 
 ## 目标与实现边界
 
@@ -69,6 +70,12 @@ f25cb1f91c877f0fd9b557414645529df07c0e0892a3fb4988aaf35d303f639c
 - Android 首次在 Maven 构建依赖解析时失败；重试成功下载依赖并进入 Java/C 编译。没有因此修改依赖版本、仓库或 TLS 设置，最终打包与模拟器启动仍以当前提交的完整检查结果为准。
 
 回归用例保留原有压缩、分块、TLS、取消与大小限制检查，增加无长度的正常关闭响应、零字节截断和超过 32 位的长度。修复发布前，本机公共传输/Apple HTTP 测试 2/2 通过，使用同一服务端夹具的 Android Java 测试通过。六平台结果以本页顶部当前分支检查为准。
+
+后续提交 `6b287da` 的 [应用检查](https://github.com/banana815/editor/actions/runs/43683110378) 确认 Windows 编译、测试、打包及发行包启动通过，Android 打包与模拟器启动通过；macOS、Linux、iOS 和核心内存检查也通过。[引用处理检查](https://github.com/banana815/editor/actions/runs/43683110376) 9/9 通过。唯一失败为浏览器文献库测试，普通浏览器、触摸及 HTTP/WASM 测试均已通过。
+
+浏览器失败在本机通过 6 倍 CPU 减速复现：测试使用固定延时，页面重载与 SDL 布局尚未完成时就点击下一项，最终把来源 URL 输入正文，服务端收到 0 次请求。修复仅调整测试同步：重载后核对新的页面加载标识，输入和点击后等待动画帧，输入 URL 前确认来源输入框已获得焦点，并检查正文没有被写入 URL。原超时和功能断言保留，没有跳过失败用例。
+
+修复后的完整文献库测试在相同 6 倍减速条件下 8 组全部通过，构建文件哈希保持不变。CI 也以该减速条件运行，并上传 `browser-library-*.json` 记录及截图，方便定位后续异常。按用户要求，推送修复并触发编译后结束本轮；新提交的远端结果仍以当前分支检查为准。
 
 ## 尚未完成
 

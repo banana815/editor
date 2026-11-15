@@ -10,6 +10,8 @@ import {join,extname,resolve,sep} from 'node:path';
 const build=resolve(process.argv[2]||'c-editor/build-web');
 const executable = process.argv[3] || process.env.CHROME_BIN ||
     (process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : 'chromium');
+const cpuThrottle = Number(process.env.EDITOR_TEST_CPU_THROTTLE || 1);
+assert.ok(Number.isFinite(cpuThrottle) && cpuThrottle >= 1 && cpuThrottle <= 20, 'CPU throttle must be between 1 and 20');
 const profile = await mkdtemp(join(tmpdir(), 'notelab-browser-'));
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function until(fn, label, timeout = 30000) {
@@ -29,7 +31,7 @@ const items = [
 let responseItems=items.slice(0,2), responseStatus=200, fixtureRequests=0;
 const artifactNames=['notelab.html','notelab.js','notelab.wasm','notelab.data'];
 async function artifactHashes(){return Object.fromEntries(await Promise.all(artifactNames.map(async name=>[name,createHash('sha256').update(await readFile(join(build,name))).digest('hex')])));}
-const proof={started:new Date().toISOString(),artifacts:await artifactHashes(),checks:[],screenshots:[]};
+const proof={started:new Date().toISOString(),cpuThrottle,artifacts:await artifactHashes(),checks:[],screenshots:[]};
 const server = createServer(async (req, res) => {
     try {
         if (req.url === '/fixture/library.json') {
@@ -100,7 +102,21 @@ try {
         if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
         return result.result.value;
     };
-    const ready=()=>until(()=>evaluate("typeof FS!=='undefined' && document.getElementById('status').hidden && !!Module.editorClipboardStart"),'app ready');
+    // CDP input completion only means the event was dispatched. SDL updates
+    // panel geometry in its animation loop; fixed sleeps can miss that update
+    // on a busy runner and send the following click to the previous layout.
+    const rendered=()=>evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))');
+    const ready=async()=>{
+        await until(()=>evaluate("typeof FS!=='undefined' && document.getElementById('status').hidden && !!Module.editorClipboardStart && !!Module.editorInputArea"),'app ready');
+        await rendered();
+    };
+    async function reload(){
+        const previous=(await cdp('Page.getFrameTree')).frameTree.frame.loaderId;
+        await cdp('Page.reload');
+        // Page.reload can return while the old document still satisfies ready.
+        await until(async()=>(await cdp('Page.getFrameTree')).frameTree.frame.loaderId!==previous,'new document after reload');
+        await cdp('Page.bringToFront');await ready();
+    }
     const files=['/notes/000 Selected.json','/notes/001 Target.json','/notes/002 Legacy.json','/notes/003 List.json'];
     const blank={type:'doc',content:[{type:'paragraph',content:[]}]};
     const list={type:'doc',content:[{type:'bulletList',content:[{type:'listItem',content:[{type:'paragraph',content:[{type:'text',text:'A'}]}]},{type:'listItem',content:[{type:'paragraph',content:[{type:'text',text:'B'}]},{type:'heading',attrs:{level:2},content:[{type:'text',text:'C'}]}]}]}]};
@@ -125,9 +141,9 @@ try {
         await cdp('Input.dispatchKeyEvent',{type:'rawKeyDown',key,code,windowsVirtualKeyCode:virtual,modifiers});
         await cdp('Input.dispatchKeyEvent',{type:'keyUp',key,code,windowsVirtualKeyCode:virtual,modifiers});
         for(const [,key,code,v] of held.reverse())await cdp('Input.dispatchKeyEvent',{type:'keyUp',key,code,windowsVirtualKeyCode:v,modifiers:0});
-        await sleep(100);
+        await rendered();
     }
-    async function click(x,y){await cdp('Input.dispatchMouseEvent',{type:'mousePressed',x,y,button:'left',clickCount:1});await cdp('Input.dispatchMouseEvent',{type:'mouseReleased',x,y,button:'left',clickCount:1});await sleep(120);}
+    async function click(x,y){await cdp('Input.dispatchMouseEvent',{type:'mousePressed',x,y,button:'left',clickCount:1});await cdp('Input.dispatchMouseEvent',{type:'mouseReleased',x,y,button:'left',clickCount:1});await rendered();}
     async function screenshot(name){await writeFile(join(build,name),Buffer.from((await cdp('Page.captureScreenshot')).data,'base64'));proof.screenshots.push(name);}
     function pass(name){proof.checks.push(name);console.log(`PASS: ${name}`);}
     async function selected(path,count){return until(async()=>{const d=await read(path),s=sections(d)[0];return s?.attrs.bibliographyMode==='selected'&&JSON.parse(s.attrs.selectedItemsJson).length===count&&cache(d).entries.length===count&&await idle()&&d;},`selected bibliography (${count})`);}
@@ -137,12 +153,15 @@ try {
     const openNote=index=>click(100,200+40*index);
     await cdp('Page.enable');await cdp('Runtime.enable');await cdp('Network.enable');
     await cdp('Emulation.setDeviceMetricsOverride',{width:1100,height:760,deviceScaleFactor:1,mobile:false});
+    if(cpuThrottle>1)await cdp('Emulation.setCPUThrottlingRate',{rate:cpuThrottle});
     await cdp('Page.navigate',{url:origin+'/notelab.html'});await cdp('Page.bringToFront');await ready();
     await evaluate(`new Promise((resolve,reject)=>{${files.map((f,i)=>`FS.writeFile(${JSON.stringify(f)},${JSON.stringify(JSON.stringify(i===2?archived:i===3?list:blank))});`).join('')}FS.syncfs(false,e=>e?reject(e):resolve());})`);
-    await cdp('Page.reload');await ready();await cdp('Page.bringToFront');await openNote(0);
+    await reload();await openNote(0);
     await openLibrary();await scrollActions();await click(706,653);
-    await key('a','KeyA',65,2);await cdp('Input.insertText',{text:origin+'/fixture/library.json'});await key('Enter','Enter',13);
-    await until(async()=>(await read(cacheFile)).items.length===2&&await idle(),'HTTP library loaded and saved');
+    await until(()=>evaluate("document.activeElement.id==='editor-input' && Module.editorInputArea.x<100 && Module.editorInputArea.h<100"),'HTTP source prompt focused');
+    await key('a','KeyA',65,2);await cdp('Input.insertText',{text:origin+'/fixture/library.json'});await rendered();await key('Enter','Enter',13);
+    await until(async()=>(await read(cacheFile))?.items?.length===2&&await idle(),'HTTP library loaded and saved');
+    assert.deepEqual(await read(files[0]),blank,'source URL must not be typed into the note');
     assert.equal(JSON.parse((await read(cacheFile)).clientStateJson).location,origin+'/fixture/library.json');
     pass('App HTTP source connects and persists two library items');
     await click(706,603);await click(1014,603);
@@ -191,7 +210,7 @@ try {
     const archiveCopy=await evaluate(`(()=>{const d=new DataTransfer();canvas.focus();canvas.dispatchEvent(new ClipboardEvent('copy',{clipboardData:d,bubbles:true,cancelable:true}));return d.getData('text/plain');})()`);
     assert.match(archiveCopy,/Archived 中文🙂 book/);assert.match(archiveCopy,/Old & preserved/);assert.doesNotMatch(archiveCopy,/DO NOT DISPLAY THIS CACHE/);
     assert.deepEqual(await read(files[2]),archived);
-    await cdp('Page.reload');await ready();await openNote(2);await sleep(300);assert.deepEqual(await read(files[2]),archived);
+    await reload();await openNote(2);await sleep(300);assert.deepEqual(await read(files[2]),archived);
     assert.equal((await read(cacheFile)).items.length,3);
     await openNote(0);await selected(files[0],2);assert.equal((await read(files[0])).attrs.citationProfile,'apa');
     pass('Legacy archive renders and copies safely without changing original metadata; reload restores cache and selected profile');
