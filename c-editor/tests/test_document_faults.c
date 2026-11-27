@@ -116,11 +116,13 @@ static void sweep(Operation operation, bool large_undo) {
         assert(json && html);
         const char *text=ce_document_text(d); CeStyle style=ce_document_style_at(d,1);
         size_t blocks=ce_document_block_count(d),spans=ce_document_span_count(d);
+        uint64_t revision=ce_document_revision(d);
         size_t live=fault_live,bytes=fault_bytes;
         fault_calls=fault_rejected=fault_reallocs=0;fault_at=failure;
         bool ok=invoke(d,operation);fault_at=0;
         if(ok) fprintf(stderr,"operation %d unexpectedly succeeded at allocation %zu/%zu\n",operation,failure,calls);
         assert(!ok && *ce_document_error(d));
+        assert(ce_document_revision(d)==revision);
         repeated+=fault_rejected>1;failed_realloc+=fault_reallocs!=0;
         assert(fault_live==live && fault_bytes==bytes);
         assert(ce_document_text(d)==text && ce_document_block_count(d)==blocks && ce_document_span_count(d)==spans);

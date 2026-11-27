@@ -32,6 +32,7 @@ struct CeDocument {
     size_t nblocks, cblocks;
     char *undo[CE_HISTORY], *redo[CE_HISTORY];
     size_t nundo, nredo;
+    uint64_t revision, last_edit_revision, prior_edit_revision;
     char *saved;
     char error[256];
 };
@@ -350,6 +351,7 @@ void ce_document_mark_saved(CeDocument *d) {
         if (s) {
             free(d->saved);
             d->saved = s;
+            ++d->revision; d->last_edit_revision=0;
         }
     }
 }
@@ -415,6 +417,8 @@ static bool finish(CeDocument *d, char *before, bool ok) {
         return fail(d, "Out of memory");
     }
     if (strcmp(after, before)) {
+        d->prior_edit_revision=d->last_edit_revision;
+        d->last_edit_revision=++d->revision;
         push(d->undo, &d->nundo, before);
         clear_stack(d->redo, &d->nredo);
     } else
@@ -444,6 +448,8 @@ bool ce_document_apply_json(CeDocument *d, const char *json) {
          * the history snapshot. Commit without allocating or reparsing the
          * old state. Candidate takes ownership of the previous content. */
         swap_content(d, candidate);
+        d->prior_edit_revision=d->last_edit_revision;
+        d->last_edit_revision=++d->revision;
         push(d->undo, &d->nundo, before);
         before = NULL;
         clear_stack(d->redo, &d->nredo);
@@ -455,6 +461,14 @@ bool ce_document_apply_json(CeDocument *d, const char *json) {
 }
 bool ce_document_can_undo(const CeDocument *d) { return d && d->nundo; }
 bool ce_document_can_redo(const CeDocument *d) { return d && d->nredo; }
+uint64_t ce_document_revision(const CeDocument *d) { return d ? d->revision : 0; }
+bool ce_document_join_undo(CeDocument *d,uint64_t previous) {
+    if(!d || !previous || d->nundo<2 || d->nredo || d->revision!=previous+1 ||
+       d->last_edit_revision!=d->revision || d->prior_edit_revision!=previous) return false;
+    free(d->undo[--d->nundo]); d->undo[d->nundo]=NULL;
+    d->prior_edit_revision=0; /* A particular boundary can be joined only once. */
+    return true;
+}
 static bool history(CeDocument *d, bool redo) {
     char **a = redo ? d->redo : d->undo, **b = redo ? d->undo : d->redo;
     size_t *na = redo ? &d->nredo : &d->nundo, *nb = redo ? &d->nundo : &d->nredo;
@@ -469,6 +483,7 @@ static bool history(CeDocument *d, bool redo) {
     }
     free(a[--*na]);
     push(b, nb, now);
+    ++d->revision; d->last_edit_revision=0;
     d->error[0] = 0;
     return true;
 }
@@ -2191,6 +2206,7 @@ bool ce_document_import(CeDocument *d, const char *data, CeFormat f, char *error
     clear_stack(d->redo, &d->nredo);
     free(d->saved);
     d->saved = saved;
+    ++d->revision; d->last_edit_revision=0;
     if (error && cap)
         *error = 0;
     return true;

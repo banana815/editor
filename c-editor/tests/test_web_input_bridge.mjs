@@ -42,12 +42,18 @@ function commandEvent(key,modifiers={}) {
 for(const focused of [canvas,input]) {
     document.activeElement=focused;
     for(const modifier of ['ctrlKey','metaKey']) {
+        const link=commandEvent('k',{[modifier]:true});window.dispatch('keydown',link);
+        assert.ok(link.prevented&&!link.stopped,'edit link shortcut reaches SDL without opening browser search');
+        for(const shiftKey of [false,true]) {
+            const e=commandEvent(shiftKey?'H':'h',{[modifier]:true,shiftKey}); window.dispatch('keydown',e);
+            assert.ok(e.prevented&&!e.stopped,'replace and replace-all cancel browser history while reaching SDL');
+        }
         for(const key of ['0','1','2','3','4','5','6']) {
             const e=commandEvent(key,{[modifier]:true,altKey:true}); window.dispatch('keydown',e);
             assert.ok(e.prevented,`heading ${key} cancels browser action`);
             assert.ok(!e.stopped,'heading shortcut still reaches SDL');
         }
-        for(const key of ['F','O','T']) {
+        for(const key of ['F','O','T','P','M']) {
             const e=commandEvent(key,{[modifier]:true,shiftKey:true}); window.dispatch('keydown',e);
             assert.ok(e.prevented,`workspace ${key} cancels browser action`);
             assert.ok(!e.stopped,'workspace shortcut still reaches SDL');
@@ -58,9 +64,26 @@ for(const e of [commandEvent('1',{ctrlKey:true}),commandEvent('f',{shiftKey:true
     commandEvent('7',{ctrlKey:true,altKey:true}),commandEvent('1',{ctrlKey:true,altKey:true,isComposing:true})]) {
     window.dispatch('keydown',e);assert.ok(!e.prevented&&!e.stopped,'unowned shortcuts and IME remain untouched');
 }
+for(const modifier of ['ctrlKey','metaKey']) {
+    for(const key of ['h','p','m']) {
+        for(const modifiers of [{[modifier]:true,altKey:true},{[modifier]:true,shiftKey:true,altKey:true},
+            {[modifier]:true,shiftKey:true,isComposing:true},{[modifier]:true,shiftKey:true,keyCode:229},{shiftKey:true}]) {
+            const e=commandEvent(key,modifiers);window.dispatch('keydown',e);
+            assert.ok(!e.prevented&&!e.stopped,'unowned Alt variants and IME search/management keys remain untouched');
+        }
+    }
+    for(const key of ['p','m']) {
+        const e=commandEvent(key,{[modifier]:true});window.dispatch('keydown',e);
+        assert.ok(!e.prevented&&!e.stopped,'unshifted print/minimize keys remain browser-owned');
+    }
+}
 document.activeElement=null;
 const outside=commandEvent('F',{ctrlKey:true,shiftKey:true});window.dispatch('keydown',outside);
 assert.ok(!outside.prevented,'shortcuts outside editor remain browser-owned');
+for(const key of ['h','p','m']) {
+    const e=commandEvent(key,{ctrlKey:true,shiftKey:true});window.dispatch('keydown',e);
+    assert.ok(!e.prevented&&!e.stopped,'search and management shortcuts outside editor remain untouched');
+}
 document.activeElement=canvas;
 canvas.dispatch('pointerdown',{pointerType:'touch'});assert.equal(begins,1);
 canvas.dispatch('pointerup',{pointerType:'touch',clientX:30,clientY:30});assert.equal(input.focusCount,0,'swipe does not open keyboard');

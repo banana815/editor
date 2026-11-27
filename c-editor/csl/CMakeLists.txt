@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.24)
 project(NoteLabCSL LANGUAGES C)
+if(MSVC)
+  # Dependencies also contain UTF-8 source; do not interpret their comments or
+  # literals with the host's legacy Windows code page in standalone builds.
+  add_compile_options(/utf-8)
+endif()
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)

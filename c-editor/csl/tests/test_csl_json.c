@@ -89,6 +89,21 @@ static void test_number_fidelity(void) {
     }
     cJSON_Delete(tree);
 }
+static void test_extended_limit(void) {
+    size_t length=CE_CSL_INPUT_MAX_BYTES+2;
+    char *json=malloc(length); assert(json); memset(json,'x',length); json[0]=json[length-1]='"';
+    cJSON *tree=NULL; accepted(&tree,"null",4); cJSON *original=tree;
+    assert(!ce_csl_json_parse_strict(json,length,&tree,error,sizeof error) && tree==original);
+    assert(!ce_csl_json_parse_strict_with_limit(json,length,length-1,&tree,error,sizeof error) && tree==original);
+    assert(!ce_csl_json_parse_strict_with_limit("{}",2,0,&tree,error,sizeof error) && tree==original);
+    assert(!ce_csl_json_parse_strict_with_limit("{}",2,128u*1024u*1024u+1u,&tree,error,sizeof error) && tree==original);
+    assert(ce_csl_json_parse_strict_with_limit(json,length,length,&tree,error,sizeof error));
+    assert(strlen(tree->valuestring)==CE_CSL_INPUT_MAX_BYTES); cJSON_Delete(tree); tree=NULL;
+    const char *bad[]={"{\"x\":1,\"x\":2}","\"\\u0000\"","{} trailing","\"\\ud800\""};
+    for(size_t i=0;i<sizeof bad/sizeof *bad;i++)
+        assert(!ce_csl_json_parse_strict_with_limit(bad[i],strlen(bad[i]),128u*1024u*1024u,&tree,error,sizeof error) && !tree);
+    free(json); cases+=9;
+}
 static void *deny_allocation(size_t bytes) { (void)bytes; return NULL; }
 static void test_exact_print(void) {
     const double numbers[]={4503599627370496.0,4503599627370497.0,4503599627370501.0,
@@ -130,6 +145,6 @@ static void test_exact_print(void) {
     assert(setlocale(LC_NUMERIC,saved));
 }
 int main(void) {
-    test_values(); test_limits(); test_number_fidelity(); test_exact_print();
+    test_values(); test_limits(); test_number_fidelity(); test_exact_print(); test_extended_limit();
     printf("Shared strict JSON passed (%zu cases)\n",cases); return 0;
 }

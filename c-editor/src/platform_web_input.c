@@ -217,13 +217,15 @@ EM_JS(void, init_js, (void), {
     // Toolbar clicks can leave DOM focus on the canvas while SDL retains the
     // selection. Route clipboard shortcuts before SDL's global key listener.
     window.addEventListener('keydown', function(e) {
-        if (!ownsFocus() || composing || e.isComposing) return;
+        if (!ownsFocus() || composing || e.isComposing || e.keyCode === 229) return;
         // SDL owns writing commands, including when toolbar clicks leave focus
         // on the canvas. Cancel browser actions without stopping SDL delivery.
         var command = e.ctrlKey || e.metaKey;
         var heading = e.altKey && (/^[0-6]$/.test(e.key) || /^Digit[0-6]$/.test(e.code || ''));
-        var workspace = !e.altKey && e.shiftKey && ['f','o','t'].includes(e.key.toLowerCase());
-        if (command && (heading || workspace)) e.preventDefault();
+        var workspace = !e.altKey && e.shiftKey && ['f','o','t','p','m'].includes(e.key.toLowerCase());
+        var replace = !e.altKey && e.key.toLowerCase() === 'h';
+        var link = !e.altKey && e.key.toLowerCase() === 'k';
+        if (command && (heading || workspace || replace || link)) e.preventDefault();
         if ((e.ctrlKey || e.metaKey) && !e.altKey && ['c','x','v'].includes(e.key.toLowerCase())) {
             input.focus({preventScroll:true}); e.stopPropagation();
             if (e.key.toLowerCase() !== 'v') {

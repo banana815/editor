@@ -1065,7 +1065,47 @@ void EditBox_Delete(EditBox *edit)
     if (end>edit->cursor && ReplaceRange(edit,edit->text->text,edit->cursor,end,"")) edit->cursor_trailing=false;
 }
 
-static bool HandleMouseDown(EditBox *edit, float x, float y)
+static void SelectionUnit(EditBox *edit,int position,int unit,int *start,int *end)
+{
+    const char *text=edit->text->text?edit->text->text:"";
+    int length=(int)SDL_strlen(text),pos=ClampPosition(text,position);
+    if(unit==2) {
+        *start=*end=pos;
+        while(*start>0 && text[*start-1]!='\n') --*start;
+        while(*end<length && text[*end]!='\n') ++*end;
+        if(*end<length) ++*end;
+        return;
+    }
+    if(pos==length && pos>0) pos=ClusterBoundary(edit,pos,-1);
+    *start=pos; *end=ClusterBoundary(edit,pos,1);
+    if(pos==length || CrossesLine(text,*start,*end)) return;
+    int token=WordClass(text,pos);
+    if(token==3) return; /* One complete shaped emoji cluster. */
+    while(*start>0) {
+        int previous=ClusterBoundary(edit,*start,-1);
+        if(previous==*start || CrossesLine(text,previous,*start) || WordClass(text,previous)!=token) break;
+        *start=previous;
+    }
+    while(*end<length) {
+        int next=ClusterBoundary(edit,*end,1);
+        if(next==*end || CrossesLine(text,*end,next) || WordClass(text,*end)!=token) break;
+        *end=next;
+    }
+}
+
+static int SelectionHit(EditBox *edit,float x,float y)
+{
+    int position=edit->cursor; SDL_FRect caret;
+    /* Hit-testing returns the nearest insertion caret. A double click in the
+     * right half of a word's last glyph must still select that glyph's word,
+     * rather than the whitespace after it (likewise for a wrapped line end). */
+    if(position>0 && EditBox_CaretRect(edit,position,&caret) &&
+       (caret.y>y || (y<caret.y+caret.h && x<caret.x)))
+        position=ClusterBoundary(edit,position,-1);
+    return position;
+}
+
+static bool HandleMouseDown(EditBox *edit, float x, float y, int clicks)
 {
     SDL_FPoint pt = { x, y };
     if (!SDL_PointInRectFloat(&pt, &edit->rect)) {
@@ -1096,6 +1136,12 @@ static bool HandleMouseDown(EditBox *edit, float x, float y)
     edit->highlighting = true;
     edit->highlight1 = edit->cursor;
     edit->highlight2 = -1;
+    edit->selection_unit=clicks>=3?2:clicks==2?1:0;
+    if(edit->selection_unit) {
+        SelectionUnit(edit,SelectionHit(edit,textX,textY),edit->selection_unit,&edit->selection_anchor_start,&edit->selection_anchor_end);
+        edit->highlight1=edit->selection_anchor_start;
+        edit->highlight2=edit->cursor=edit->selection_anchor_end;
+    }
 
     return true;
 }
@@ -1120,6 +1166,17 @@ static bool HandleMouseMotion(EditBox *edit, float x, float y)
         SetCursorPosition(edit,GetCursorTextIndex((int)textX,&substring));
     }
     edit->highlight2 = edit->cursor;
+    if(edit->selection_unit) {
+        int start,end;
+        SelectionUnit(edit,SelectionHit(edit,textX,textY),edit->selection_unit,&start,&end);
+        if(edit->cursor<edit->selection_anchor_start) {
+            edit->highlight1=edit->selection_anchor_end; edit->highlight2=edit->cursor=start;
+        } else if(edit->cursor>=edit->selection_anchor_end) {
+            edit->highlight1=edit->selection_anchor_start; edit->highlight2=edit->cursor=end;
+        } else {
+            edit->highlight1=edit->selection_anchor_start; edit->highlight2=edit->cursor=edit->selection_anchor_end;
+        }
+    }
 
     return true;
 }
@@ -1254,7 +1311,7 @@ bool EditBox_HandleEvent(EditBox *edit, SDL_Event *event)
 
     switch (event->type) {
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
-        return HandleMouseDown(edit, event->button.x, event->button.y);
+        return event->button.button==SDL_BUTTON_LEFT && HandleMouseDown(edit, event->button.x, event->button.y,event->button.clicks);
 
     case SDL_EVENT_MOUSE_MOTION:
         return HandleMouseMotion(edit, event->motion.x, event->motion.y);

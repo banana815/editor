@@ -37,7 +37,7 @@ static char export_delegate_key;
     (void)controller;
     /* UIKit's exporting picker coordinates the copy to the chosen provider;
      * it calls this only after the export operation has completed. */
-    if (urls.count == 1) [self finish:PLATFORM_EXPORT_DONE message:"JSON 文档已导出"];
+    if (urls.count == 1) [self finish:PLATFORM_EXPORT_DONE message:"文档已导出"];
     else [self finish:PLATFORM_EXPORT_FAILED message:"未能完成文件导出"];
 }
 - (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {

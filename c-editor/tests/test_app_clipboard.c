@@ -63,8 +63,7 @@ static void test_typing(App *a) {
     input(a,"中文🙂"); assert(ce_document_style_at(a->doc,1).marks&CE_MARK_BOLD);
     action(a,ACT_BOLD); input(a,"x"); assert(!(ce_document_style_at(a->doc,11).marks&CE_MARK_BOLD));
     action(a,ACT_UNDO); assert(!strstr(ce_document_text(a->doc),"x"));
-    action(a,ACT_UNDO); assert(!strcmp(ce_document_text(a->doc),"aaa"));
-    action(a,ACT_UNDO); unchanged(a,before); free(before);
+    action(a,ACT_UNDO); unchanged(a,before); assert(!ce_document_can_undo(a->doc)); free(before);
     reset_document(a,"<p><strong>aa</strong></p>",CE_FORMAT_HTML); a->edit->cursor=1;
     action(a,ACT_CLEAR); input(a,"z"); assert(!strcmp(ce_document_text(a->doc),"aza"));
     assert(ce_document_style_at(a->doc,0).marks&CE_MARK_BOLD);

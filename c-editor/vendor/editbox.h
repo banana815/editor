@@ -56,6 +56,8 @@ typedef struct EditBox {
     bool highlighting;
     int highlight1;
     int highlight2;
+    int selection_unit; /* 0: character, 1: word, 2: logical paragraph */
+    int selection_anchor_start, selection_anchor_end;
 
     /* IME composition */
     int composition_start;

@@ -20,6 +20,11 @@
  * hooks must remain compatible until all returned trees have been released. */
 bool ce_csl_json_parse_strict(const char *text, size_t size, cJSON **out,
     char *error, size_t capacity);
+/* Explicit byte budget for application-owned recovery envelopes. max_bytes
+ * must be 1..128 MiB. All UTF-8, duplicate-key, depth, node-count and ownership
+ * checks above still apply; the existing APIs retain their 16 MiB limit. */
+bool ce_csl_json_parse_strict_with_limit(const char *text, size_t size,
+    size_t max_bytes, cJSON **out, char *error, size_t capacity);
 
 /* Same parsing/ownership contract, with an optional numeric fidelity report.
  * On success *all_numbers_exact is true iff every ORIGINAL numeric token is

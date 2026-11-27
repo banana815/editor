@@ -91,7 +91,13 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           cat > release-notes.txt <<'NOTES'
-          Note Lab now centers the workspace on writing: a quieter editor, focus mode, an article outline and writing statistics, plus H1–H6 keyboard commands and Markdown heading input.
+          Note Lab 0.4.0 expands the writing workspace with six improvements:
+          - Smoother editing: adjacent typing undo groups, existing-link editing, and word/paragraph mouse selection.
+          - Article organization: single-level logical folders, tags, pinning and draft/revision/published status.
+          - Copy Markdown or blog HTML source, and export actual .md or UTF-8 .html files. Citations are regenerated from authoritative sources.
+          - Replace the next match or all matches, and search article bodies with snippets and navigation. ASCII letters ignore case; other UTF-8 text matches exactly.
+          - Paragraph focus, typewriter positioning and per-article non-whitespace character goals.
+          - Automatic pre-save history snapshots, preview/undoable restoration and a recoverable trash area.
 
           This development preview is published only after the desktop builds/tests/package-startup checks, C core sanitizers, Android and iOS builds/startup checks, and browser integration tests succeed for this tag.
 
@@ -102,7 +108,7 @@ jobs:
           - iOS: device and simulator archives contain unsigned app bundles; device installation requires signing and provisioning. These are not App Store packages.
           - SHA256SUMS.txt records every package's SHA-256 checksum.
 
-          Existing citation and library workflows remain available. This release does not add direct publishing to a blog service. Full accessibility, physical-device behavior and the remaining third-party licensing review are not established by these checks; see the bundled project documentation and notices.
+          Existing citation and library workflows remain available. Markdown may contain inline HTML for formatting or evaluated citations; unknown structures and unsafe links fail explicitly instead of being silently omitted. Published status is local metadata, not a blog-service upload. Snapshots preserve the previous saved content before the first changed save and then at most once per 60 seconds during saving, with duplicate content omitted; they are not a record of every keystroke. Full accessibility, physical-device behavior and the remaining third-party licensing review are not established by these checks; see the bundled project documentation and notices.
           NOTES
           if gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft' > release-draft.txt; then
             if [ "$(cat release-draft.txt)" != "true" ]; then
@@ -292,6 +298,7 @@ jobs:
           node c-editor/tests/test_browser_touch.mjs c-editor/build-web "$(command -v google-chrome)"
           node c-editor/tests/test_library_source_browser.mjs c-editor/build-web/test_library_source_web.cjs "$(command -v google-chrome)"
           EDITOR_TEST_CPU_THROTTLE=6 node c-editor/tests/test_browser_library.mjs c-editor/build-web "$(command -v google-chrome)"
+          node c-editor/tests/test_browser_writing.mjs c-editor/build-web "$(command -v google-chrome)"
       - name: Run C core fixtures in WebAssembly
         run: |
           source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
@@ -311,4 +318,6 @@ jobs:
             c-editor/build-web/*validation.png
             c-editor/build-web/browser-library-*.png
             c-editor/build-web/browser-library-*.json
+            c-editor/build-web/browser-writing-*.png
+            c-editor/build-web/browser-writing-*.json
           if-no-files-found: error

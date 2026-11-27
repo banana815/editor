@@ -52,6 +52,14 @@ NoteResult note_store_create(NoteStore *store, const char *name,
  * missing note. A failed write never truncates the previous file. */
 NoteResult note_store_save(NoteStore *store, const char *name,
                            const void *data, size_t size);
+/* Explicitly selected publication output only. Same portable flat-name and
+ * regular-file checks, adding .html to the note extensions. Create exclusively
+ * or atomically replace an existing file; a failed write never truncates an
+ * existing destination. This does not add HTML to note listing/read/create/save
+ * or normalization contracts. No implicit output location is selected. */
+int note_store_valid_export_name(const char *name);
+NoteResult note_store_export(NoteStore *store, const char *name,
+                             const void *data, size_t size);
 NoteResult note_store_delete(NoteStore *store, const char *name);
 void note_store_free(void *allocation);
 

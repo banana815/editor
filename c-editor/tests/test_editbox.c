@@ -82,7 +82,7 @@ static void test_layout_hooks(EditBox *edit) {
     key(edit,SDLK_BACKSPACE); expect(edit,"acd"); /* Selection wins over 2-byte cluster hook. */
     assert(EditBox_SetText(edit,"abcd")); probe.step=0;
     SDL_Event event; SDL_zero(event);
-    event.type=SDL_EVENT_MOUSE_BUTTON_DOWN; event.button.x=101; event.button.y=10;
+    event.type=SDL_EVENT_MOUSE_BUTTON_DOWN; event.button.button=SDL_BUTTON_LEFT; event.button.x=101; event.button.y=10;
     assert(EditBox_HandleEvent(edit,&event)); assert(edit->highlight1==0);
     event.type=SDL_EVENT_MOUSE_MOTION; event.motion.x=119; event.motion.y=60;
     assert(EditBox_HandleEvent(edit,&event)); assert(edit->highlight2==4);

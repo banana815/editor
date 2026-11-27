@@ -121,6 +121,11 @@ static int valid_base_name(const char *name) {
 int note_store_valid_name(const char *name) {
     return valid_base_name(name) && supported_extension(name);
 }
+int note_store_valid_export_name(const char *name) {
+    if(!valid_base_name(name)) return 0;
+    const char *dot=strrchr(name,'.');
+    return supported_extension(name) || (dot && equal_ci(dot,".html"));
+}
 
 NoteResult note_store_normalize_name(const char *input, char **name) {
     size_t length;
@@ -143,6 +148,11 @@ void note_store_free(void *allocation) { free(allocation); }
 static NoteResult validate(NoteStore *store, const char *name) {
     if (!store || !store->internal) return fail(store, NOTE_IO_ERROR, "Note storage is not open");
     if (!note_store_valid_name(name)) return fail(store, NOTE_INVALID_NAME, "Invalid note filename");
+    return NOTE_OK;
+}
+static NoteResult validate_export(NoteStore *store,const char *name) {
+    if(!store || !store->internal) return fail(store,NOTE_IO_ERROR,"Export directory is not open");
+    if(!note_store_valid_export_name(name)) return fail(store,NOTE_INVALID_NAME,"Invalid export filename");
     return NOTE_OK;
 }
 
@@ -395,10 +405,10 @@ static NoteResult windows_write(NoteStore *store, HANDLE file, const void *data,
     return NOTE_OK;
 }
 
-NoteResult note_store_create(NoteStore *store, const char *name, const void *data, size_t size) {
+static NoteResult create_file(NoteStore *store, const char *name, const void *data, size_t size,int exporting) {
     wchar_t *path;
     HANDLE file;
-    NoteResult result = validate(store, name);
+    NoteResult result = exporting?validate_export(store,name):validate(store, name);
     if (result != NOTE_OK) return result;
     if (size && !data) return fail(store, NOTE_IO_ERROR, "Missing note data");
     path = note_path((StoreState *)store->internal, name);
@@ -419,11 +429,11 @@ static NoteResult check_windows_target(NoteStore *store, const wchar_t *path) {
     return NOTE_OK;
 }
 
-NoteResult note_store_save(NoteStore *store, const char *name, const void *data, size_t size) {
+static NoteResult save_file(NoteStore *store, const char *name, const void *data, size_t size,int exporting) {
     StoreState *state;
     wchar_t *path, *temporary = NULL;
     HANDLE file = INVALID_HANDLE_VALUE;
-    NoteResult result = validate(store, name);
+    NoteResult result = exporting?validate_export(store,name):validate(store, name);
     if (result != NOTE_OK) return result;
     if (size && !data) return fail(store, NOTE_IO_ERROR, "Missing note data");
     state = (StoreState *)store->internal;
@@ -609,10 +619,10 @@ static NoteResult posix_write(NoteStore *store, int fd, const void *data, size_t
     return NOTE_OK;
 }
 
-NoteResult note_store_create(NoteStore *store, const char *name, const void *data, size_t size) {
+static NoteResult create_file(NoteStore *store, const char *name, const void *data, size_t size,int exporting) {
     StoreState *state;
     int fd;
-    NoteResult result = validate(store, name);
+    NoteResult result = exporting?validate_export(store,name):validate(store, name);
     if (result != NOTE_OK) return result;
     if (size && !data) return fail(store, NOTE_IO_ERROR, "Missing note data");
     state = (StoreState *)store->internal;
@@ -631,12 +641,12 @@ static NoteResult check_posix_target(NoteStore *store, const char *name, struct 
     return NOTE_OK;
 }
 
-NoteResult note_store_save(NoteStore *store, const char *name, const void *data, size_t size) {
+static NoteResult save_file(NoteStore *store, const char *name, const void *data, size_t size,int exporting) {
     StoreState *state;
     struct stat info;
     char temporary[96];
     int fd = -1;
-    NoteResult result = validate(store, name);
+    NoteResult result = exporting?validate_export(store,name):validate(store, name);
     if (result != NOTE_OK) return result;
     if (size && !data) return fail(store, NOTE_IO_ERROR, "Missing note data");
     state = (StoreState *)store->internal;
@@ -671,3 +681,14 @@ NoteResult note_store_delete(NoteStore *store, const char *name) {
     return success(store);
 }
 #endif
+
+NoteResult note_store_create(NoteStore *store,const char *name,const void *data,size_t size) {
+    return create_file(store,name,data,size,0);
+}
+NoteResult note_store_save(NoteStore *store,const char *name,const void *data,size_t size) {
+    return save_file(store,name,data,size,0);
+}
+NoteResult note_store_export(NoteStore *store,const char *name,const void *data,size_t size) {
+    NoteResult result=create_file(store,name,data,size,1);
+    return result==NOTE_EXISTS?save_file(store,name,data,size,1):result;
+}

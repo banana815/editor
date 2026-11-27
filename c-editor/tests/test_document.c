@@ -640,7 +640,24 @@ static void test_document_json_transaction_oom(void) {
     assert(!ce_document_can_redo(d) && !strcmp(ce_document_text(d), "129"));
     ce_document_free(d); assert(!transaction_live); cJSON_InitHooks(NULL);
 }
+static void test_joined_history(void) {
+    CeDocument *d=load("",CE_FORMAT_TEXT);
+    assert(ce_document_insert(d,0,"a")); uint64_t first=ce_document_revision(d);
+    assert(ce_document_insert(d,1,"b")); assert(ce_document_join_undo(d,first));
+    assert(!ce_document_join_undo(d,first));
+    uint64_t second=ce_document_revision(d);
+    assert(ce_document_insert(d,2,"c")); assert(ce_document_join_undo(d,second));
+    assert(ce_document_undo(d) && !*ce_document_text(d) && !ce_document_can_undo(d));
+    assert(ce_document_redo(d) && !strcmp(ce_document_text(d),"abc"));
+    uint64_t history=ce_document_revision(d);
+    assert(ce_document_insert(d,3,"d") && !ce_document_join_undo(d,history));
+    ce_document_mark_saved(d); uint64_t saved=ce_document_revision(d);
+    assert(ce_document_insert(d,4,"e") && !ce_document_join_undo(d,saved));
+    assert(ce_document_undo(d) && !strcmp(ce_document_text(d),"abcd") && !ce_document_is_modified(d));
+    ce_document_free(d);
+}
 int main(void) {
+    test_joined_history();
     test_exact_unknown_integers();
     test_edit();
     test_format();

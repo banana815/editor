@@ -2,6 +2,7 @@
 #define CE_DOCUMENT_H
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -112,6 +113,12 @@ bool ce_document_undo(CeDocument *doc);
 bool ce_document_redo(CeDocument *doc);
 bool ce_document_can_undo(const CeDocument *doc);
 bool ce_document_can_redo(const CeDocument *doc);
+/* Monotonic history/savepoint identity. A failed transaction does not advance it.
+ * join_undo merges only two immediately adjacent edits, never across import,
+ * undo/redo or a savepoint. It allocates nothing and leaves document data intact.
+ * The controller decides whether timing, caret and input origin permit joining. */
+uint64_t ce_document_revision(const CeDocument *doc);
+bool ce_document_join_undo(CeDocument *doc, uint64_t previous_revision);
 void ce_document_mark_saved(CeDocument *doc);
 bool ce_document_is_modified(const CeDocument *doc);
 /* Case-insensitive ASCII search, exact UTF-8 matching otherwise; wraps at document ends. */

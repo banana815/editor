@@ -272,10 +272,10 @@ static bool prepare(CeCslInput *input,Reader *r) {
     }
     return true;
 }
-bool ce_csl_json_parse_strict_with_numbers(const char *text,size_t size,cJSON **out,
+static bool parse_json_limit(const char *text,size_t size,size_t max_bytes,cJSON **out,
     bool *all_numbers_exact,char *error,size_t capacity) {
     if(error && capacity) *error=0;
-    if(!out || !text || !size || size>CE_CSL_INPUT_MAX_BYTES || memchr(text,0,size) ||
+    if(!out || !text || !size || !max_bytes || max_bytes>128u*1024u*1024u || size>max_bytes || memchr(text,0,size) ||
        ce_csl_unicode_validate(text,size,NULL)!=CE_CSL_UNICODE_OK)
         return fail(error,capacity,"Invalid or oversized strict JSON input");
     Reader reader={0}; reader.source=text; reader.size=size;
@@ -298,6 +298,14 @@ bool ce_csl_json_parse_strict_with_numbers(const char *text,size_t size,cJSON **
     cJSON *old=*out; *out=root;
     if(all_numbers_exact) *all_numbers_exact=exact;
     cJSON_Delete(old); return true;
+}
+bool ce_csl_json_parse_strict_with_numbers(const char *text,size_t size,cJSON **out,
+    bool *all_numbers_exact,char *error,size_t capacity) {
+    return parse_json_limit(text,size,CE_CSL_INPUT_MAX_BYTES,out,all_numbers_exact,error,capacity);
+}
+bool ce_csl_json_parse_strict_with_limit(const char *text,size_t size,size_t max_bytes,
+    cJSON **out,char *error,size_t capacity) {
+    return parse_json_limit(text,size,max_bytes,out,NULL,error,capacity);
 }
 bool ce_csl_json_parse_strict(const char *text,size_t size,cJSON **out,char *error,size_t capacity) {
     return ce_csl_json_parse_strict_with_numbers(text,size,out,NULL,error,capacity);

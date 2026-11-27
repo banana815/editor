@@ -3,6 +3,7 @@
 #include <SDL3/SDL.h>
 
 typedef struct PlatformExport PlatformExport;
+typedef enum { PLATFORM_EXPORT_JSON, PLATFORM_EXPORT_MARKDOWN, PLATFORM_EXPORT_HTML } PlatformExportKind;
 typedef enum {
     PLATFORM_EXPORT_PENDING, PLATFORM_EXPORT_DONE,
     PLATFORM_EXPORT_CANCELED, PLATFORM_EXPORT_FAILED
@@ -13,6 +14,8 @@ typedef enum {
  * may complete on another thread. Neither the document nor App is borrowed. */
 PlatformExport *platform_export_json(SDL_Window *window, const char *filename,
                                      const char *json);
+PlatformExport *platform_export_text(SDL_Window *window, const char *filename,
+                                     const char *data, PlatformExportKind kind);
 PlatformExportStatus platform_export_status(PlatformExport *job, const char **message);
 void platform_export_free(PlatformExport *job);
 #endif

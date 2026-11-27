@@ -1,7 +1,7 @@
 # Note Lab — focused writing in C
 
 This directory is the active implementation of Note Lab for **Windows, macOS,
-Linux, Android, iOS and the browser**. Version 0.3.2 brings a writing-first
+Linux, Android, iOS and the browser**. Version 0.4.0 expands the writing-first
 workspace for notes and articles, alongside the existing rich-text and Zotero
 workflows. The retired Tauri application is available in Git history. Legacy
 note import remains supported; feature parity and final acceptance work are
@@ -46,6 +46,10 @@ library and editor adapt to smaller screens.
 | Toggle full formatting toolbar | Ctrl/Cmd+Shift+T |
 | Set H1–H6 | Ctrl/Cmd+Alt+1 through Ctrl/Cmd+Alt+6 |
 | Return to a body paragraph | Ctrl/Cmd+Alt+0 |
+| Edit the current link | Ctrl/Cmd+K; clear the address to remove it |
+| Replace next / replace all | Ctrl/Cmd+H / Ctrl/Cmd+Shift+H |
+| Search all article bodies | Ctrl/Cmd+Shift+P |
+| Article management | Ctrl/Cmd+Shift+M |
 
 At the beginning of a top-level body paragraph, type one to six `#` characters
 and then a space to turn it into the corresponding heading. The conversion is
@@ -55,8 +59,55 @@ to the entire selection removes that list formatting; otherwise it applies the
 chosen type. Metadata that cannot safely survive the change causes an explicit
 failure and preserves the original document.
 
-These changes support article drafting and organization. Direct publishing to
-blog services and a new publication-ready HTML export are not included.
+Version 0.4.0 adds six parts of the writing workflow:
+
+1. **Editing.** Adjacent ordinary typing within 500 ms can share an undo step.
+   Navigation, selection, formatting, deletion, IME composition and savepoints
+   end a group. Double-click selects a word; triple-click selects a logical
+   paragraph, with corresponding drag extension. A single click on an existing
+   link opens its address editor after the double-click interval, or use
+   Ctrl/Cmd+K immediately. Editing/removing the link preserves other marks.
+2. **Organization.** Open **管理** for a single-level logical folder, free-form
+   tags, pinned-first ordering and 草稿 / 待修改 / 已发布 status. Folder assignment
+   does not move the note file into a physical directory. Folder/status filters
+   are exact; tag filtering is a case-sensitive substring of the stored tag
+   text. 已发布 is a local workflow label and does not upload anything.
+3. **Publication.** **复制MD** and **复制HTML** copy the whole article as literal
+   source for a blog's Markdown/HTML source editor. **导出MD** and **导出HTML**
+   create `.md` and UTF-8 `.html` files through the platform save/download flow.
+   The HTML copy is a body fragment; the HTML file includes a document wrapper
+   and charset declaration. Headings, nested lists, text marks, links and
+   alignment are supported. Markdown uses HTML where needed for styled spans,
+   aligned blocks and evaluated citations. Unknown structures, unsafe links or
+   unsupported formatting fail explicitly. Citations and bibliographies are
+   regenerated from source snapshots; imported render caches are not trusted.
+   Publication omits source metadata and is not a lossless backup: keep JSON for
+   archival interchange. Browser copying needs a permitted user gesture; a
+   rejected copy reports failure and file export remains available. No direct
+   blog-service publishing is included.
+4. **Search.** **替换** / **全替换** replace literal single-line text in the current
+   article, retaining unmatched formatting and committing one undo step. ASCII
+   letters ignore case; other UTF-8 characters match exactly. Searches do not
+   cross paragraphs or atomic citation blocks, and replacements are not searched
+   again. **搜文章** searches all article bodies, using current unsaved text for
+   the open article and saved content for others. Results show the first match
+   per article with a snippet and jump to the match. Unreadable files are counted
+   in the result message; there is no regex or linguistic Unicode case folding.
+5. **Focus and goals.** **管理 → 段落聚焦** dims surrounding content; **打字机**
+   keeps the caret near the center while writing. Each article can have a goal of
+   0–10,000,000 non-whitespace Unicode scalar characters; 0 disables the goal.
+   The progress bar always uses the full article, even when the footer shows
+   selection statistics. This is a document goal, not a daily writing counter.
+6. **Recovery.** Before the first changed save, then at most once per 60 seconds
+   during subsequent saves, history keeps the previous saved source bytes;
+   unchanged snapshots are deduplicated. It is not a recording of every edit or
+   a timed capture of unsaved content. **管理 → 历史版本** previews without changing
+   the current note; restoration first preserves current saved content and is
+   undoable. Deleting a note writes a recovery copy before removing the original.
+   **回收站** previews and restores to an unused name, keeping its recovery copy.
+   History/trash are stored under `.notelab-writing/` within the selected notes
+   root, are not cloud backups, and are not automatically pruned. Browser changes
+   still need the normal persistent-storage flush to survive a reload.
 
 ## Build and run on the development machine
 
@@ -109,8 +160,8 @@ it fails without cutting. Browser-native copy/cut events remain supported, and
 plain-only prompts can use `writeText`.
 
 Formatting at an empty caret sets the marks for subsequent typing without
-creating a document edit. Each committed text input remains one undo step,
-including IME input. On touch screens, dragging scrolls without moving the
+creating a document edit. Consecutive ordinary input may merge into the bounded
+typing undo group described above; IME commits remain separate. On touch screens, dragging scrolls without moving the
 caret; tapping focuses input, and a long press selects text for the floating
 copy/cut/paste/select-all menu. Mouse and pen input retain their normal behavior.
 
@@ -177,9 +228,12 @@ isolated directory and starts that copy with temporary notes and bundled fonts.
 It does not install anything or change the user's notes. Dependency versions,
 attribution and license texts are recorded in [THIRD_PARTY.md](THIRD_PARTY.md).
 
-The application workflow also accepts version tags such as `v0.3.2`. A tag must
+The application workflow also accepts version tags such as `v0.4.0`. A tag must
 match the CMake project version exactly. Only after all desktop, sanitizer,
 Android, iOS and browser jobs succeed does it publish a GitHub **Pre-release**.
+This is eight application checks across the six target platforms: three desktop,
+one sanitizer, one Android, two iOS targets and one browser job. The separate
+CSL workflow is not a release-job dependency.
 Release assets include three desktop archives, an unsigned Android APK,
 unsigned iOS device/simulator archives, a Web archive and `SHA256SUMS.txt`.
 The Web archive must be served over HTTP(S), opening `notelab.html`; `file://`
@@ -209,7 +263,7 @@ tests cover stale selections, IME cancellation/commit and clipboard edge cases.
 ## Current implementation and remaining acceptance work
 
 The platform results below describe the earlier verified checkpoint linked
-after the table. The 0.3.2 changes need their own local and remote checks; their
+after the table. The 0.4.0 changes need their own local and remote checks; their
 current status is tracked in [PROJECT_STATUS.md](PROJECT_STATUS.md).
 
 | Area | Current evidence / remaining work |
