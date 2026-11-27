@@ -3,6 +3,7 @@ name: C editor
 on:
   push:
     branches: [main]
+    tags: ['v*']
     paths: ['c-editor/**', '!c-editor/csl/**', '!c-editor/cmake/CSLDependencies.cmake', '.github/workflows/c-editor.yml']
   pull_request:
     paths: ['c-editor/**', '!c-editor/csl/**', '!c-editor/cmake/CSLDependencies.cmake', '.github/workflows/c-editor.yml']
@@ -13,7 +14,7 @@ permissions:
 
 concurrency:
   group: c-editor-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
   desktop:
@@ -59,6 +60,61 @@ jobs:
           name: c-editor-tests-${{ runner.os }}
           path: c-editor/build/Testing/Temporary/LastTest.log
           retention-days: 7
+
+  release:
+    name: Publish tested release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [desktop, sanitizers, android, ios, browser]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: notelab-*
+          path: release-input
+      - name: Validate and assemble release packages
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python c-editor/tests/test_release.py
+          python c-editor/tools/prepare_release.py --artifacts release-input --output release-assets --tag "$RELEASE_TAG"
+      - name: Publish development preview after all platform checks pass
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          cat > release-notes.txt <<'NOTES'
+          Note Lab now centers the workspace on writing: a quieter editor, focus mode, an article outline and writing statistics, plus H1–H6 keyboard commands and Markdown heading input.
+
+          This development preview is published only after the desktop builds/tests/package-startup checks, C core sanitizers, Android and iOS builds/startup checks, and browser integration tests succeed for this tag.
+
+          Downloads:
+          - Windows, macOS and Linux: extract the archive and run Note Lab. Desktop packages are not code-signed or notarized.
+          - Web: extract the Web archive and serve it over HTTP(S), then open notelab.html. Opening it through file:// is not supported.
+          - Android: the release APK is unsigned and must be signed before installation.
+          - iOS: device and simulator archives contain unsigned app bundles; device installation requires signing and provisioning. These are not App Store packages.
+          - SHA256SUMS.txt records every package's SHA-256 checksum.
+
+          Existing citation and library workflows remain available. This release does not add direct publishing to a blog service. Full accessibility, physical-device behavior and the remaining third-party licensing review are not established by these checks; see the bundled project documentation and notices.
+          NOTES
+          if gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft' > release-draft.txt; then
+            if [ "$(cat release-draft.txt)" != "true" ]; then
+              echo 'Refusing to overwrite an already published release.' >&2
+              exit 1
+            fi
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --prerelease \
+              --title "Note Lab $RELEASE_TAG — Focused writing preview" --notes-file release-notes.txt
+          fi
+          gh release upload "$RELEASE_TAG" release-assets/* --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --prerelease --notes-file release-notes.txt
 
   sanitizers:
     name: C core sanitizers

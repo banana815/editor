@@ -6,7 +6,7 @@ if(EDITOR_DISTRIBUTION)
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
   set(EDITOR_USE_SYSTEM_SDL OFF CACHE BOOL "" FORCE)
 endif()
-project(NoteLab VERSION 0.2.0 LANGUAGES C CXX)
+project(NoteLab VERSION 0.3.0 LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -47,7 +47,7 @@ include(cmake/Notices.cmake)
 add_library(editor_core STATIC src/document.c src/document_slice.c src/note_store.c src/zotero.c src/citations.c src/library_panel.c
   src/bibliography_archive.c src/bibliography_selection.c
   src/citation_styles.c src/citation_digest.c src/citation_cache.c
-  src/citation_process.c src/citation_session.c src/touch_gesture.c "${EDITOR_CSL_DATA}")
+  src/citation_process.c src/citation_session.c src/touch_gesture.c src/writing_stats.c "${EDITOR_CSL_DATA}")
 set_target_properties(editor_core PROPERTIES C_EXTENSIONS OFF POSITION_INDEPENDENT_CODE ON)
 target_include_directories(editor_core PUBLIC include)
 target_include_directories(editor_core PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -63,6 +63,7 @@ if(EDITOR_SANITIZERS AND NOT MSVC)
 endif()
 
 if(BUILD_TESTING AND NOT ANDROID AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+  add_test(NAME release_packaging COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_release.py")
   add_executable(test_document tests/test_document.c)
   target_link_libraries(test_document PRIVATE editor_core)
   add_test(NAME document COMMAND test_document)
@@ -93,7 +94,7 @@ if(BUILD_TESTING AND NOT ANDROID AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
   add_test(NAME citation_styles COMMAND test_citation_styles)
   add_test(NAME citation_style_embedding COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_citation_style_embedding.py")
-  foreach(module citation_digest citation_cache citation_process citation_session touch_gesture document_slice document_list_edit bibliography_archive bibliography_selection)
+  foreach(module writing_stats citation_digest citation_cache citation_process citation_session touch_gesture document_slice document_list_edit bibliography_archive bibliography_selection)
     add_executable(test_${module} tests/test_${module}.c)
     target_link_libraries(test_${module} PRIVATE editor_core)
     add_test(NAME ${module} COMMAND test_${module})
@@ -116,7 +117,7 @@ if(BUILD_TESTING AND NOT ANDROID AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
       add_test(NAME web_input_bridge COMMAND "${EDITOR_NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_web_input_bridge.mjs")
     endif()
   endif()
-  foreach(test_target test_document test_document_faults test_note_store test_zotero test_citations test_citation_styles test_citation_digest test_citation_cache test_citation_process test_citation_session test_touch_gesture test_document_slice test_document_list_edit test_bibliography_archive test_bibliography_selection test_library_panel test_persistence_native test_persistence_queue)
+  foreach(test_target test_writing_stats test_document test_document_faults test_note_store test_zotero test_citations test_citation_styles test_citation_digest test_citation_cache test_citation_process test_citation_session test_touch_gesture test_document_slice test_document_list_edit test_bibliography_archive test_bibliography_selection test_library_panel test_persistence_native test_persistence_queue)
     if(NOT TARGET ${test_target})
       continue()
     endif()
@@ -249,7 +250,7 @@ if(EDITOR_BUILD_APP)
     endif()
     add_test(NAME app_library COMMAND test_app_library "${CMAKE_CURRENT_BINARY_DIR}/app-library-notes" "${EDITOR_FONT_PATH}")
     set_tests_properties(app_library PROPERTIES ENVIRONMENT "SDL_VIDEODRIVER=dummy")
-    foreach(module touch clipboard)
+    foreach(module touch clipboard writing workspace)
       add_executable(test_app_${module} tests/test_app_${module}.c src/platform_import.c src/platform_persistence.c
         src/platform_web_input.c src/platform_export.c src/rich_layout.c vendor/editbox.c)
       target_include_directories(test_app_${module} PRIVATE vendor)
@@ -357,7 +358,7 @@ if(EDITOR_BUILD_APP)
       MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/platform/macos/Info.plist.in"
       MACOSX_BUNDLE_GUI_IDENTIFIER "org.notelab.editor"
       MACOSX_BUNDLE_BUNDLE_NAME "NoteLab"
-      MACOSX_BUNDLE_BUNDLE_VERSION "2"
+      MACOSX_BUNDLE_BUNDLE_VERSION "3"
       MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}")
     target_sources(notelab PRIVATE "${EDITOR_ASSETS_DIR}/font.otf" "${EDITOR_ASSETS_DIR}/OFL.txt"
       "${EDITOR_EMOJI_BUNDLED_PATH}" "${EDITOR_EMOJI_LICENSE_PATH}")

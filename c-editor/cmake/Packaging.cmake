@@ -24,7 +24,7 @@ install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/licenses/"
 set(CPACK_PACKAGE_NAME "NoteLab")
 set(CPACK_PACKAGE_VENDOR "NoteLab contributors")
 set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
-set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "C note editor — development preview")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Focused writing editor — development preview")
 set(CPACK_PACKAGE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/packages")
 set(_editor_package_arch "${CMAKE_SYSTEM_PROCESSOR}")
 if(APPLE AND CMAKE_OSX_ARCHITECTURES)

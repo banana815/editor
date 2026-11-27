@@ -218,6 +218,12 @@ EM_JS(void, init_js, (void), {
     // selection. Route clipboard shortcuts before SDL's global key listener.
     window.addEventListener('keydown', function(e) {
         if (!ownsFocus() || composing || e.isComposing) return;
+        // SDL owns writing commands, including when toolbar clicks leave focus
+        // on the canvas. Cancel browser actions without stopping SDL delivery.
+        var command = e.ctrlKey || e.metaKey;
+        var heading = e.altKey && (/^[0-6]$/.test(e.key) || /^Digit[0-6]$/.test(e.code || ''));
+        var workspace = !e.altKey && e.shiftKey && ['f','o','t'].includes(e.key.toLowerCase());
+        if (command && (heading || workspace)) e.preventDefault();
         if ((e.ctrlKey || e.metaKey) && !e.altKey && ['c','x','v'].includes(e.key.toLowerCase())) {
             input.focus({preventScroll:true}); e.stopPropagation();
             if (e.key.toLowerCase() !== 'v') {

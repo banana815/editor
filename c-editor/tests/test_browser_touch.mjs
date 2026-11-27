@@ -109,7 +109,7 @@ try {
     await until(async()=>cites(await read())[0]?.attrs.cslRenderJson && await idle(),'initial formal cache');
     const baseline=await read();
     await evaluate(`(()=>{const update=Module.editorInputUpdate;Module.editorInputUpdate=(...args)=>{window.lastInputTarget=args[0];return update(...args);};window.touchStack=false;window.touchStacks=[];window.addEventListener('pointerup',()=>{touchStack=true;},true);window.addEventListener('pointerup',()=>{touchStack=false;});})()`);
-    await tap(40,65);await tap(60,242);await tap(40,65);
+    await tap(40,65);await tap(60,202);await tap(40,65);
     await until(()=>evaluate('lastInputTarget===0'),'failed note open leaves original C editor unfocused');
     assert.deepEqual(await read(),baseline,'failed note open preserves the original document');
 

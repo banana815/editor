@@ -34,6 +34,34 @@ context._platform_web_clipboard_rich_paste_available=()=>1;
 context._platform_web_clipboard_paste_data=(...pointers)=>{pasted.push(pointers.map(text));for(const p of pointers)if(p)freed.push(p);return 1;};
 vm.runInContext(`(function() { ${body[1]} })();`,context);
 Module.editorInputUpdate(1,20,20,500,400);input.focusCount=0;document.activeElement=canvas;
+function commandEvent(key,modifiers={}) {
+    return {key,code:'',ctrlKey:false,metaKey:false,altKey:false,shiftKey:false,
+        prevented:false,stopped:false,...modifiers,
+        preventDefault(){this.prevented=true;},stopPropagation(){this.stopped=true;}};
+}
+for(const focused of [canvas,input]) {
+    document.activeElement=focused;
+    for(const modifier of ['ctrlKey','metaKey']) {
+        for(const key of ['0','1','2','3','4','5','6']) {
+            const e=commandEvent(key,{[modifier]:true,altKey:true}); window.dispatch('keydown',e);
+            assert.ok(e.prevented,`heading ${key} cancels browser action`);
+            assert.ok(!e.stopped,'heading shortcut still reaches SDL');
+        }
+        for(const key of ['F','O','T']) {
+            const e=commandEvent(key,{[modifier]:true,shiftKey:true}); window.dispatch('keydown',e);
+            assert.ok(e.prevented,`workspace ${key} cancels browser action`);
+            assert.ok(!e.stopped,'workspace shortcut still reaches SDL');
+        }
+    }
+}
+for(const e of [commandEvent('1',{ctrlKey:true}),commandEvent('f',{shiftKey:true}),
+    commandEvent('7',{ctrlKey:true,altKey:true}),commandEvent('1',{ctrlKey:true,altKey:true,isComposing:true})]) {
+    window.dispatch('keydown',e);assert.ok(!e.prevented&&!e.stopped,'unowned shortcuts and IME remain untouched');
+}
+document.activeElement=null;
+const outside=commandEvent('F',{ctrlKey:true,shiftKey:true});window.dispatch('keydown',outside);
+assert.ok(!outside.prevented,'shortcuts outside editor remain browser-owned');
+document.activeElement=canvas;
 canvas.dispatch('pointerdown',{pointerType:'touch'});assert.equal(begins,1);
 canvas.dispatch('pointerup',{pointerType:'touch',clientX:30,clientY:30});assert.equal(input.focusCount,0,'swipe does not open keyboard');
 requested=true;canvas.dispatch('pointerup',{pointerType:'touch'});assert.equal(input.focusCount,1);
@@ -80,4 +108,4 @@ grow=true;document.dispatch('paste',event(dt));assert.deepEqual(pasted.at(-1),ri
 const pastedBefore=pasted.length;failAt=allocations+2;document.dispatch('paste',event(dt));assert.equal(pasted.length,pastedBefore);failAt=0;
 const invalid=transfer();invalid.setData('text/plain','bad\0text');document.dispatch('paste',event(invalid));assert.equal(pasted.length,pastedBefore);
 prepared=0;const count=finishes.length;document.dispatch('copy',event(transfer()));assert.equal(finishes.length,count,'failed prepare does not own a finish');
-console.log('Web input bridge: trusted touch focus, rich DOM clipboard acceptance, async formats/Unicode, optional custom MIME, UTF-8/NUL/size errors, allocation cleanup and late cancellation passed');
+console.log('Web input bridge: writing shortcuts, trusted touch focus, rich DOM clipboard acceptance, async formats/Unicode, optional custom MIME, UTF-8/NUL/size errors, allocation cleanup and late cancellation passed');

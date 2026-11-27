@@ -1,20 +1,62 @@
-# Note Lab — C editor
+# Note Lab — focused writing in C
 
 This directory is the active implementation of Note Lab for **Windows, macOS,
-Linux, Android, iOS and the browser**, including rich-text notes and Zotero
+Linux, Android, iOS and the browser**. Version 0.3.0 brings a writing-first
+workspace for notes and articles, alongside the existing rich-text and Zotero
 workflows. The retired Tauri application is available in Git history. Legacy
 note import remains supported; feature parity and final acceptance work are
 tracked in the project status document.
 
-For the pause checkpoint, verified results and remaining work, see
+For the current work, verified results and remaining acceptance criteria, see
 [项目状态与交接](PROJECT_STATUS.md). Local validation and remote CI results
-are recorded separately; further feature development remains paused.
+are recorded separately. Writing improvements resumed on 2026-11-28; the earlier
+pause checkpoint remains historical evidence, not the status of this version.
 
 Application code and document/storage logic are C11. The iOS file picker uses
 the platform's Objective-C API behind a C interface. SDL3 handles windows and
 input; SDL_ttf, FreeType and HarfBuzz handle Unicode shaping. HarfBuzz is a C API
 implemented in C++, and the platform SDKs supply their required native glue.
 The new application does not depend on React, TypeScript, Node or Rust at runtime.
+
+## Writing workspace
+
+The default toolbar keeps frequent writing actions visible. **格式** opens the
+full formatting toolbar; **文献** keeps the existing citation tools within reach.
+The text column stays at a comfortable width on wide windows, while the article
+library and editor adapt to smaller screens.
+
+- **专注** hides the sidebar and formatting controls. Use **退出专注** or Escape
+  to return to the workspace without changing the document.
+- **大纲** replaces the article list with the current document's H1–H6 headings.
+  Select a heading to jump to it; **文章库** returns to the note list.
+- The footer shows statistics for the document, or just the selected text:
+  non-whitespace characters, approximate words, non-empty text paragraphs and
+  estimated reading time. Characters are counted as Unicode scalar values,
+  not user-perceived grapheme clusters; combining marks and emoji sequences can
+  therefore contribute more than one character. Invisible formatting controls
+  and embedded citation placeholders are excluded. Word estimation counts each
+  CJK character as a unit and groups other letter/number runs; reading time is
+  rounded up at 200 units per minute. This is a drafting aid, not linguistic
+  segmentation or a measured reading speed.
+
+| Action | Keyboard shortcut |
+| --- | --- |
+| Toggle focus | Ctrl/Cmd+Shift+F; Escape exits |
+| Toggle outline / article library | Ctrl/Cmd+Shift+O |
+| Toggle full formatting toolbar | Ctrl/Cmd+Shift+T |
+| Set H1–H6 | Ctrl/Cmd+Alt+1 through Ctrl/Cmd+Alt+6 |
+| Return to a body paragraph | Ctrl/Cmd+Alt+0 |
+
+At the beginning of a top-level body paragraph, type one to six `#` characters
+and then a space to turn it into the corresponding heading. The conversion is
+one undo step; undo restores the hash prefix. Pasted text and active IME
+composition do not trigger this rule. Selecting a list type that already applies
+to the entire selection removes that list formatting; otherwise it applies the
+chosen type. Metadata that cannot safely survive the change causes an explicit
+failure and preserves the original document.
+
+These changes support article drafting and organization. Direct publishing to
+blog services and a new publication-ready HTML export are not included.
 
 ## Build and run on the development machine
 
@@ -24,10 +66,13 @@ application does not need Python.
 
 ```sh
 cmake -S c-editor -B c-editor/build -DCMAKE_BUILD_TYPE=Debug
-cmake --build c-editor/build --parallel 4
-ctest --test-dir c-editor/build --output-on-failure
+cmake --build c-editor/build --config Debug --parallel 4
+ctest --test-dir c-editor/build -C Debug --output-on-failure
 ./c-editor/build/notelab
 ```
+
+On Windows with a multi-configuration generator, run
+`c-editor/build/Debug/notelab.exe` instead.
 
 The first configuration downloads pinned source archives, Noto Sans CJK SC and
 a monochrome Noto Emoji fallback font. Versions and checksums are in
@@ -132,6 +177,19 @@ isolated directory and starts that copy with temporary notes and bundled fonts.
 It does not install anything or change the user's notes. Dependency versions,
 attribution and license texts are recorded in [THIRD_PARTY.md](THIRD_PARTY.md).
 
+The application workflow also accepts version tags such as `v0.3.0`. A tag must
+match the CMake project version exactly. Only after all desktop, sanitizer,
+Android, iOS and browser jobs succeed does it publish a GitHub **Pre-release**.
+Release assets include three desktop archives, an unsigned Android APK,
+unsigned iOS device/simulator archives, a Web archive and `SHA256SUMS.txt`.
+The Web archive must be served over HTTP(S), opening `notelab.html`; `file://`
+is not supported. Android installation requires signing the APK, and iOS device
+installation requires signing and provisioning. These are development previews,
+not signed installers or app-store releases. Signing, accessibility and the
+remaining third-party licensing review are not established by a successful CI
+run. Incomplete package sets fail before publication; test screenshots and
+fixtures are not included in the Web distribution.
+
 ## Tests
 
 ```sh
@@ -149,6 +207,10 @@ atomic-write failure, symlink rejection and filename portability. The input
 tests cover stale selections, IME cancellation/commit and clipboard edge cases.
 
 ## Current implementation and remaining acceptance work
+
+The platform results below describe the earlier verified checkpoint linked
+after the table. The 0.3.0 changes need their own local and remote checks; their
+current status is tracked in [PROJECT_STATUS.md](PROJECT_STATUS.md).
 
 | Area | Current evidence / remaining work |
 | --- | --- |
