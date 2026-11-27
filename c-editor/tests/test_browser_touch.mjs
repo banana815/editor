@@ -80,7 +80,21 @@ try {
         if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
         return result.result.value;
     };
-    const ready=()=>until(()=>evaluate("typeof FS!=='undefined' && document.getElementById('status').hidden && !!Module.editorClipboardStart"),'app ready');
+    const ready=async()=>{
+        await until(()=>evaluate("typeof FS!=='undefined' && document.getElementById('status').hidden && !!Module.editorClipboardStart && !!Module.editorInputArea"),'app ready');
+        await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+    };
+    async function navigate(method,params={}) {
+        const previous=(await cdp('Page.getFrameTree')).frameTree.frame.loaderId;
+        await cdp(method,params);
+        // Reload acknowledgement can precede navigation; do not inspect the old
+        // runtime's ready flags or persisted state as evidence of the new page.
+        await until(async()=>{
+            const frame=(await cdp('Page.getFrameTree')).frameTree.frame;
+            return frame.loaderId!==previous && frame.url===origin+'/notelab.html';
+        },'new touch page navigation');
+        await ready();
+    }
     const file='/notes/000 Touch.json';
     const item={id:'touch-source',type:'book',title:'Touch reference',author:[{family:'Doe',given:'Jane'}],issued:{'date-parts':[[2020]]}};
     const original={type:'doc',attrs:{citationProfile:'apa',unknownTouchMetadata:4503599627370501},content:[
@@ -103,9 +117,9 @@ try {
     await cdp('Page.enable');await cdp('Runtime.enable');
     await cdp('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:2,mobile:true});
     await cdp('Emulation.setTouchEmulationEnabled',{enabled:true,maxTouchPoints:5});
-    await cdp('Page.navigate',{url:origin+'/notelab.html'});await cdp('Page.bringToFront');await ready();
+    await navigate('Page.navigate',{url:origin+'/notelab.html'});await cdp('Page.bringToFront');
     await evaluate(`new Promise((resolve,reject)=>{FS.writeFile(${JSON.stringify(file)},${JSON.stringify(JSON.stringify(original))});FS.writeFile('/notes/zzz-invalid.json','{bad');FS.syncfs(false,e=>e?reject(e):resolve());})`);
-    await cdp('Page.reload');await ready();await cdp('Page.bringToFront');
+    await navigate('Page.reload');await cdp('Page.bringToFront');
     await until(async()=>cites(await read())[0]?.attrs.cslRenderJson && await idle(),'initial formal cache');
     const baseline=await read();
     await evaluate(`(()=>{const update=Module.editorInputUpdate;Module.editorInputUpdate=(...args)=>{window.lastInputTarget=args[0];return update(...args);};window.touchStack=false;window.touchStacks=[];window.addEventListener('pointerup',()=>{touchStack=true;},true);window.addEventListener('pointerup',()=>{touchStack=false;});})()`);
@@ -159,7 +173,7 @@ try {
     await until(async()=>cites(await read()).length===2&&await idle(),'HTML envelope citation paste');
     assert.notEqual(...cites(await read()).map(n=>n.attrs.citationId));
     await key('z','KeyZ',90,2);await until(async()=>JSON.stringify(await read())===JSON.stringify(baseline)&&await idle(),'HTML citation paste one undo');
-    await cdp('Page.reload');await ready();await until(async()=>JSON.stringify(await read())===JSON.stringify(baseline)&&await idle(),'IndexedDB reload after rich clipboard undo');
+    await navigate('Page.reload');await until(async()=>JSON.stringify(await read())===JSON.stringify(baseline)&&await idle(),'IndexedDB reload after rich clipboard undo');
     assert.deepEqual(exceptions,[]);
     await Promise.all([rm(join(build,'browser-touch-failure.json'),{force:true}),rm(join(build,'browser-touch-failure.png'),{force:true})]);
     console.log('PASS: actual DPR2 Chrome touch swipe/tap/long-press, trusted clipboard activation, typed/HTML citation ID repair, one-step undo and durable reload');

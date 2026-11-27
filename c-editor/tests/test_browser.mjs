@@ -153,13 +153,25 @@ try {
         await until(async () => await read() === expected && await evaluate('!Module.editorUnsaved && !Module.editorPersistencePending'), 'durable save');
         assert.equal(await durableRead(), expected);
     }
-    const ready = async () => { await until(() => evaluate("typeof FS !== 'undefined' && document.getElementById('status').hidden && !!Module.editorInputUpdate"), 'application initialization');
+    const rendered = () => evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))');
+    const ready = async () => {
+        await until(() => evaluate("typeof FS !== 'undefined' && document.getElementById('status').hidden && !!Module.editorInputUpdate && !!Module.editorInputArea"), 'application initialization');
+        await rendered();
         // Existing format regressions exercise the expanded toolbar.
-        if (await evaluate('Module.editorInputArea && Module.editorInputArea.y * canvas.getBoundingClientRect().height / canvas.height < 160')) {
+        if (await evaluate('Module.editorInputArea.y * canvas.getBoundingClientRect().height / canvas.height < 160')) {
             await key('t','KeyT',84,10);
             await until(() => evaluate('Module.editorInputArea.y * canvas.getBoundingClientRect().height / canvas.height >= 160'), 'expanded writing tools');
         }
     };
+    async function reload(initialize = true) {
+        const previous = (await cdp('Page.getFrameTree')).frameTree.frame.loaderId;
+        await cdp('Page.reload');
+        // Page.reload acknowledges the request before navigation commits. The
+        // old application can still satisfy ready() and have expanded tools.
+        await until(async () => (await cdp('Page.getFrameTree')).frameTree.frame.loaderId !== previous, 'new document after reload');
+        await cdp('Page.bringToFront');
+        if (initialize) await ready();
+    }
     await cdp('Page.enable'); await cdp('Runtime.enable');
     await cdp('Emulation.setDeviceMetricsOverride', {width:1100,height:760,deviceScaleFactor:1,mobile:false});
     await cdp('Page.navigate', {url: origin + '/notelab.html'});
@@ -222,9 +234,8 @@ try {
     console.log('PASS: failed IndexedDB write preserves prior storage; retry succeeds');
 
     const oldTime = await evaluate('performance.timeOrigin');
-    await cdp('Page.reload');
-    await until(() => evaluate(`performance.timeOrigin !== ${oldTime}`), 'new page context');
-    await ready(); await cdp('Page.bringToFront');
+    await reload();
+    assert.notEqual(await evaluate('performance.timeOrigin'), oldTime);
     assert.equal(await read(), '<p>Hello 中文🙂你好 AB retry</p>');
     await writeFile(join(build,'browser-validation.png'), Buffer.from((await cdp('Page.captureScreenshot')).data,'base64'));
     console.log('PASS: full reload restores persisted note');
@@ -239,12 +250,12 @@ try {
     console.log('PASS: JSON export downloads the current structured document');
 
     const {identifier} = await cdp('Page.addScriptToEvaluateOnNewDocument', {source:`indexedDB.open=()=>{throw new DOMException('test blocked storage','SecurityError');};`});
-    await cdp('Page.reload');
+    await reload(false);
     await until(() => evaluate("document.getElementById('status').textContent.includes('无法读取浏览器存储')"), 'blocked storage error');
     assert.equal(await evaluate("document.getElementById('status').hidden"), false);
     assert.equal(await evaluate('!!Module.editorInputUpdate'), false);
     await cdp('Page.removeScriptToEvaluateOnNewDocument', {identifier});
-    await cdp('Page.reload'); await ready();
+    await reload();
     assert.equal(await read(), '<p>Hello 中文🙂你好 AB retry</p>');
     await until(() => evaluate("document.activeElement.id === 'editor-input'"), 'restored editor focus');
     await key('End','End',35);
@@ -264,7 +275,7 @@ try {
     await writeFile(join(build,'browser-mobile-validation.png'), Buffer.from((await cdp('Page.captureScreenshot')).data,'base64'));
     console.log('PASS: browser canvas follows a narrow mobile viewport');
     await cdp('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:3,mobile:true});
-    await cdp('Page.reload'); await ready();
+    await reload();
     await until(() => evaluate('canvas.width === 1170 && canvas.height === 2532'), 'mobile DPR 3 drawing buffer');
     await click(125,65); await until(() => evaluate("document.activeElement.id === 'editor-input'"), 'DPR 3 filename hit test');
     const promptPosition = await evaluate("({left:parseFloat(document.getElementById('editor-input').style.left),top:parseFloat(document.getElementById('editor-input').style.top)})");
@@ -502,7 +513,7 @@ try {
     await writeFile(join(build,'browser-citation-validation.png'),Buffer.from((await cdp('Page.captureScreenshot')).data,'base64'));
     await click(1060,30); // Close the panel before checking reload serialization.
     const citationHTML = (await citationState()).html;
-    await cdp('Page.reload'); await ready(); await cdp('Page.bringToFront');
+    await reload();
     await until(() => evaluate('document.title.includes("000References")'), 'reloaded citation document');
     assert.equal(await evaluate(citationRead),citationHTML);
     formal=formalState(await citationState(),'ieee'); assert.equal(formal.citation.sourceDigest,page44Digest);
@@ -520,7 +531,7 @@ try {
         FS.writeFile(${JSON.stringify(citationFile)},doc.body.innerHTML);FS.syncfs(false,e=>e?reject(e):resolve());
     })`);
     assert.ok((await evaluate(citationRead)).includes('FORGED-CACHE-TEXT'));
-    await cdp('Page.reload'); await ready(); await cdp('Page.bringToFront');
+    await reload();
     await until(async()=>{const s=await citationState();return s.saved && s.cite && !s.html.includes('FORGED-CACHE-TEXT');},'untrusted cache is freshly regenerated and durably replaced');
     formal=formalState(await citationState(),'ieee'); assert.equal(formal.citation.sourceDigest,page44Digest);
     assert.equal(controlledRuns(formal.citation.runs),'[1, p. 44]');
@@ -568,14 +579,14 @@ try {
     async function replaceCache(text) {
         await evaluate(`new Promise((resolve,reject)=>{FS.writeFile(${JSON.stringify(cachePath)},${JSON.stringify(text)});FS.syncfs(false,e=>e?reject(e):resolve());})`);
     }
-    await replaceCache('{broken'); await cdp('Page.reload'); await ready();
+    await replaceCache('{broken'); await reload();
     await until(() => evaluate('document.title.includes("000References")'), 'notes remain available with invalid cache');
     assert.equal(await evaluate(citationRead),beforeBadCache);
     assert.equal(await evaluate(`FS.readFile(${JSON.stringify(cachePath)},{encoding:'utf8'})`),'{broken');
     await click(1047,24); await click(860,79); await click(700,263); await click(700,627); await sleep(500);
     assert.equal(await evaluate(citationRead),beforeBadCache, 'invalid cache must not expose a phantom selectable item');
     await writeFile(join(build,'browser-library-invalid-cache.png'),Buffer.from((await cdp('Page.captureScreenshot')).data,'base64'));
-    await replaceCache(validCache); await cdp('Page.reload'); await ready();
+    await replaceCache(validCache); await reload();
     await until(() => evaluate('document.title.includes("000References")'), 'valid cache recovery');
     assert.equal(await evaluate(citationRead),beforeBadCache);
     console.log('PASS: private library cache survives reload; corrupt cache preserves notes and its original bytes');
@@ -662,14 +673,14 @@ try {
     }
     await until(()=>evaluate('!Module.editorUnsaved && !Module.editorPersistencePending'),'idle before standalone bibliography fixture');
     await evaluate(`new Promise((resolve,reject)=>{FS.writeFile(${JSON.stringify(standalonePath)},${JSON.stringify(JSON.stringify(standaloneDoc))});FS.syncfs(false,e=>e?reject(e):resolve());})`);
-    await cdp('Page.reload'); await ready(); await cdp('Page.bringToFront');
+    await reload();
     await until(()=>evaluate('document.title.includes("0000Standalone Legacy")'),'startup opens independent legacy bibliography');
     standalonePreserved(await standaloneRead());
     await click(400,185); await key('Home','Home',36); await cdp('Input.insertText',{text:'Edited '});
     await until(async()=>descendants(await standaloneRead()).filter(node=>node.type==='text').map(node=>node.text).join('')==='Edited Standalone bibliography' &&
         await evaluate('!Module.editorUnsaved && !Module.editorPersistencePending'),'save ordinary edit without deleting legacy bibliography');
     standalonePreserved(await standaloneRead());
-    await cdp('Page.reload'); await ready(); await cdp('Page.bringToFront');
+    await reload();
     await until(()=>evaluate('document.title.includes("0000Standalone Legacy")'),'reload independent legacy bibliography from IndexedDB');
     const restoredStandalone=await standaloneRead(); standalonePreserved(restoredStandalone);
     assert.equal(descendants(restoredStandalone).filter(node=>node.type==='text').map(node=>node.text).join(''),'Edited Standalone bibliography');
@@ -684,7 +695,7 @@ try {
         {type:'zoteroCitationBlock',attrs:{citationId:'restored-legacy-source',sourceId:importedItem.id,page:'5',note:'保留摘录'}}]};
     await until(()=>evaluate('!Module.editorUnsaved && !Module.editorPersistencePending'),'idle before startup fallback fixture');
     await evaluate(`new Promise((resolve,reject)=>{FS.writeFile(${JSON.stringify(cachedLegacyPath)},${JSON.stringify(JSON.stringify(cachedLegacy))});FS.syncfs(false,e=>e?reject(e):resolve());})`);
-    await cdp('Page.reload'); await ready(); await cdp('Page.bringToFront');
+    await reload();
     await until(()=>evaluate('document.title.includes("0000Cached Legacy")'),'startup opens first-sorted legacy citation');
     const readCachedLegacy=()=>evaluate(`JSON.parse(FS.readFile(${JSON.stringify(cachedLegacyPath)},{encoding:'utf8'}))`);
     await until(async()=>{
