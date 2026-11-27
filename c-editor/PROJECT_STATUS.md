@@ -8,7 +8,7 @@
 | --- | --- |
 | 当前应用 | `c-editor/` 是唯一应用源码入口；旧 Tauri 实现可从 Git 历史查看 |
 | 本轮起点 | `4289301`（0.3.2，等待浏览器重载导航完成的修正） |
-| 本轮版本 | 0.4.0 / 平台构建号 6；Windows 应用 Debug 46/46、独立 CSL Release 43/43 通过；真实浏览器新功能与对应提交的远端 CI 尚待验证 |
+| 本轮版本 | 0.4.0 / 平台构建号 6；本机 Windows 应用 Debug 46/46、独立 CSL Release 43/43、真实 Chrome 新写作测试 5 组通过；最终构建与公开状态以 [`v0.4.0` 标签工作流](https://github.com/banana815/editor/actions/workflows/c-editor.yml?query=branch%3Av0.4.0) 和 [GitHub Releases](https://github.com/banana815/editor/releases) 为准 |
 | 历史检查点 | `8edc978de1dfedb09937dd569417600992444f29` 的应用 8/8、引用处理 9/9 通过，仅证明当时提交 |
 
 ## 0.4.0 六项写作能力
@@ -28,15 +28,18 @@
 | --- | --- |
 | 本机编译 | Windows MSVC Debug 应用全目标构建通过；独立 CSL Release 全目标构建通过 |
 | 发布与存储专项 | `document_publish`、`app_publish`、`platform_publish`、`note_store`、`export_bridge` 共 5/5 通过，包含真实隔离文件导出、失败保留及引用缓存不可信回归；已包含在下方应用全量测试中 |
-| 发布组包与工作流 | 0.4.0 发布准备检查通过：组包回归 4/4、YAML 解析、8 项任务门禁、权限范围、发布 Bash 语法及平台版本一致性；尚未执行远端发布 |
-| 本机最终全量测试 | Windows MSVC Debug 46/46 通过，耗时 54.44 秒；此前搜索测试夹具写入失败已修复后完整重跑。下方 37/37 和 34/34 仍是历史结果 |
+| 发布组包与工作流 | 0.4.0 发布准备检查通过：组包回归 4/4、YAML 解析、8 项任务门禁、权限范围、发布 Bash 语法及平台版本一致性；实际发布结果以对应标签工作流及 Release 页面为准 |
+| 本机最终全量测试 | Windows MSVC Debug 46/46 通过，耗时 54.44 秒；此前搜索测试夹具写入偶发失败未重现，根因未查明；改用每次独立目录并保留诊断后完整重跑 46/46。下方 37/37 和 34/34 仍是历史结果 |
 | 独立 CSL 本机测试 | Windows MSVC Release 43/43 通过，耗时 14.22 秒，包含严格 JSON 解析限额及真实样式/文档回归；修复 standalone 中文 Windows 的 UTF-8 编译设置后，已清除本地额外编译参数重新验证 |
 | 本机视觉检查 | 已检查文章管理桌面及 390px 窄屏布局、段落聚焦画面；不等同于实体设备交互或无障碍验收 |
-| 新增真实浏览器写作测试 | `test_browser_writing.mjs` 已接入工作流，尚未在真实浏览器完成本轮验证；等待 WASM 构建和实际浏览器运行，不以本机原生/桥接测试代替 |
-| 对应提交的远端 CI | 尚未运行 0.4.0 标签检查；本机结果不能替代 Linux/macOS、Android/iOS 和 Web 的实际 CI |
-| GitHub Pre-release | 尚未发布 0.4.0；只有 `v0.4.0` 标签对应的全部应用检查成功后才能公开 |
+| 新增真实浏览器写作测试 | 本机实际 WASM 构建在隔离 Chrome 中运行 `test_browser_writing.mjs`，5 组全部通过；该脚本已接入 CI，`26900b0` 的浏览器任务也已成功；不等同于其他浏览器或实体设备验证 |
+| 对应源码的远端 CSL CI | `26900b025368823df8c350ad155618f9d0caa12f` 的 [独立 CSL 检查 9/9 通过](https://github.com/banana815/editor/actions/runs/46049022984)，覆盖三种桌面、sanitizer、WASM、两个 Android ABI 及两个 iOS 目标 |
+| 修复前源码的远端应用 CI 检查点 | `26900b0` 的 [应用检查 7/8 通过](https://github.com/banana815/editor/actions/runs/46049022841)：桌面三项、sanitizer、Android、iOS 设备和浏览器成功；iOS 模拟器两次运行均在安装应用前的宿主启动准备阶段失败，未计作通过；该结果只对应修复前检查点 |
+| GitHub Pre-release | 公开状态以 [`v0.4.0` 标签工作流](https://github.com/banana815/editor/actions/workflows/c-editor.yml?query=branch%3Av0.4.0) 与 [GitHub Releases](https://github.com/banana815/editor/releases) 为准；只有该标签对应的全部应用检查成功后才能公开 |
 
-现有应用工作流在标签上运行 8 项检查（桌面 3、核心 sanitizer 1、Android 1、iOS 模拟器/设备 2、浏览器 1），覆盖六类目标平台；Release 依赖全部五组任务成功，包含每组矩阵的全部实例。独立 CSL 工作流不是 Release 依赖；本轮因增加严格 JSON 解析限额 API，发布前还须等待同一提交的独立 CSL CI 通过，再创建发布标签。本机 43/43 不能替代该远端结果。
+现有应用工作流在标签上运行 8 项检查（桌面 3、核心 sanitizer 1、Android 1、iOS 模拟器/设备 2、浏览器 1），覆盖六类目标平台；Release 依赖全部五组任务成功，包含每组矩阵的全部实例。独立 CSL 工作流不是 Release 依赖；本轮严格 JSON 解析限额 API 所在源码已由 `26900b0` 的独立 CSL CI 9/9 验证。CSL 源码自该提交未变化；后续若修改其源码、构建或测试配置，须另行验证。
+
+上述 iOS 模拟器失败发生在 iOS 26.2 / iPhone 16 宿主环境：首次运行的设备状态查询超时；第二次运行的 `bootstatus` 180 秒超时，随后关闭超时、擦除因仍处于 Booted 状态失败。两次均未进入应用安装和启动，不能据此判断应用渲染结果。启动准备脚本现已分离有界 `bootstatus` 等待和就绪探测重试；只有明确迁移失败才重置设备，擦除前必须确认关闭成功。应用启动成功标记及完整截图判据保持不变。本机对该脚本及新增 mock 回归仅完成 `bash -n` 和 Python 编译检查；mock 回归在 iOS 工作流的构建前步骤实际执行，结果以及真实模拟器启动结果以对应提交或标签的 CI 记录为准。
 
 发布使用新标签 `v0.4.0`，必须与 CMake 版本一致，不移动旧标签。流程先创建草稿，上传七个平台包与 `SHA256SUMS.txt`，成功后公开为 Pre-release；已有公开同名 Release 会被拒绝覆盖。不要同时手动创建同名 Release，以免与工作流竞争。主分支和标签推送可能产生两轮独立 CI，发布只取标签运行的产物。
 

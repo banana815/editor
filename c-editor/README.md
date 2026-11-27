@@ -138,6 +138,12 @@ Use `--notes /absolute/path/to/a/copied-notes-folder` to test an existing set of
 notes. Use a copy during migration. The old `.md` files often contain HTML,
 despite their extension; they must not be treated as plain Markdown.
 
+For a complete backup of a file-backed workspace, copy the entire notes
+directory, including `.notelab-writing/` with its article properties, history
+and trash. Exporting one article as JSON does not include these workspace
+sidecars. Browser storage uses a virtual filesystem persisted in IndexedDB;
+it is not an operating-system notes directory that can be copied this way.
+
 The sidebar's **导入** button reads a selected old note and creates a new `.json`
 copy. HTML/HTM preserves supported rich formatting and citation blocks; JSON
 preserves unknown attributes; TXT is literal text, and MD uses content detection

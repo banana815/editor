@@ -14,6 +14,10 @@ log="$output/simulator.log"
 rm -f -- "$output/result.json" "$output/smoke.bmp" "$output/selection.json" "$output/app.log" "$output/unified.log" \
   "$output/boot-1.log" "$output/boot-2.log" "$output/boot-3.log" \
   "$output/launch-state.json" "$output/launchctl-after-launch.log" "$output/failure-screen.png"
+for probe in 1 2 3; do
+  rm -f -- "$output/readiness-$probe.log" "$output/readiness-$probe-devices.json" \
+    "$output/readiness-$probe-launchd.log"
+done
 
 # macOS does not ship GNU timeout. Bound each child command and kill only that
 # command's process group on timeout; Simulator itself is cleaned up by UUID.
@@ -156,19 +160,74 @@ PY
 )
 printf 'Created simulator: %s\n' "$device_uuid" | tee -a "$log"
 
-boot_ready() {
-  run_limited 45 xcrun simctl boot "$device_uuid" || return 1
-  run_limited 180 xcrun simctl bootstatus "$device_uuid" -b || return 1
-  # Some CoreSimulator versions return zero even after data migration fails.
-  # A Booted device alone does not establish successful first-boot migration.
-  python3 - "$output/boot-$attempt.log" <<'PY' || return 1
+# Some CoreSimulator versions return zero even after data migration fails.
+# Only this explicit failure permits resetting our disposable simulator.
+# Return 0 for a valid log without failure, 2 for migration failure; unexpected
+# parser/read errors remain failures and must never grant permission to install.
+check_migration() {
+  python3 - "$1" <<'PY'
 import pathlib, re, sys
 log = pathlib.Path(sys.argv[1]).read_text(errors='replace')
-if 'Data Migration Failed' in log or re.search(r'Status=3,\s*isTerminal=YES', log):
-    raise SystemExit('Simulator data migration failed; refusing to install the app')
+failed = 'Data Migration Failed' in log or re.search(r'Status=3,\s*isTerminal=YES', log)
+sys.exit(2 if failed else 0)
 PY
-  run_limited 60 xcrun simctl list devices --json > "$work_dir/device-state.json" || return 1
-  python3 - "$work_dir/device-state.json" "$device_uuid" <<'PY' || return 1
+}
+
+# At most three 180-second waits across all boots, including migration resets.
+# A timed-out observer does not mean migration stopped: keep the same device
+# running and wait again instead of erasing it while it is still Booted.
+attempt=1
+migrated=false
+needs_boot=true
+while [ "$attempt" -le 3 ]; do
+  printf 'Boot completion wait %s of 3\n' "$attempt" | tee -a "$log"
+  : > "$output/boot-$attempt.log"
+  if [ "$needs_boot" = true ]; then
+    if ! run_limited 45 xcrun simctl boot "$device_uuid" >> "$output/boot-$attempt.log" 2>&1; then
+      cat "$output/boot-$attempt.log" >> "$log"
+      echo 'Simulator boot command failed; refusing to install the app' >&2
+      exit 1
+    fi
+  fi
+  boot_status=0
+  run_limited 180 xcrun simctl bootstatus "$device_uuid" -b >> "$output/boot-$attempt.log" 2>&1 || boot_status=$?
+  cat "$output/boot-$attempt.log" >> "$log"
+  migration_status=0
+  check_migration "$output/boot-$attempt.log" || migration_status=$?
+  if [ "$migration_status" -eq 2 ]; then
+    printf 'Simulator data migration failed on wait %s\n' "$attempt" | tee -a "$log"
+    if [ "$attempt" -eq 3 ]; then break; fi
+    # Never erase after a shutdown timeout or other failure. CoreSimulator may
+    # still be running the device, which would make erase fail in state Booted.
+    if ! run_limited 30 xcrun simctl shutdown "$device_uuid" >> "$log" 2>&1; then
+      echo 'Simulator shutdown failed after migration failure; refusing to erase' >&2
+      exit 1
+    fi
+    run_limited 60 xcrun simctl erase "$device_uuid" >> "$log" 2>&1
+    needs_boot=true
+  elif [ "$migration_status" -ne 0 ]; then
+    echo 'Could not validate simulator migration log; refusing to install the app' >&2
+    exit 1
+  elif [ "$boot_status" -eq 0 ]; then
+    migrated=true
+    break
+  elif [ "$boot_status" -eq 124 ]; then
+    printf 'Boot completion timed out; retaining simulator %s for the next wait\n' "$device_uuid" | tee -a "$log"
+    needs_boot=false
+  else
+    echo "Simulator bootstatus failed with status $boot_status; refusing to install the app" >&2
+    exit 1
+  fi
+  attempt=$((attempt + 1))
+done
+if [ "$migrated" != true ]; then
+  echo 'Simulator did not finish migration after three bounded waits' >&2
+  exit 1
+fi
+
+probe_ready() {
+  run_limited 60 xcrun simctl list devices --json > "$output/readiness-$probe-devices.json" || return 1
+  python3 - "$output/readiness-$probe-devices.json" "$device_uuid" <<'PY' || return 1
 import json, pathlib, sys
 devices = json.loads(pathlib.Path(sys.argv[1]).read_text()).get('devices', {})
 matches = [d for group in devices.values() for d in group
@@ -177,28 +236,26 @@ if len(matches) != 1 or matches[0].get('state') != 'Booted':
     raise SystemExit('The newly created simulator is not Booted')
 PY
   # Confirm that this simulator's userspace responds before installing anything.
-  run_limited 60 xcrun simctl spawn "$device_uuid" launchctl list > "$work_dir/launchd-status"
+  run_limited 60 xcrun simctl spawn "$device_uuid" launchctl list > "$output/readiness-$probe-launchd.log"
 }
 
-attempt=1
+# Successful migration is retained while transient inventory/userspace queries
+# recover. Exhausted probes fail without another boot, shutdown or erase cycle.
+probe=1
 ready=false
-while [ "$attempt" -le 3 ]; do
-  if [ "$attempt" -gt 1 ]; then
-    # Only the empty simulator created above is reset, never a pre-existing one.
-    run_limited 30 xcrun simctl shutdown "$device_uuid" >> "$log" 2>&1 || true
-    run_limited 60 xcrun simctl erase "$device_uuid" >> "$log" 2>&1
-  fi
-  printf 'Boot readiness attempt %s of 3\n' "$attempt" | tee -a "$log"
-  if boot_ready > "$output/boot-$attempt.log" 2>&1; then
-    cat "$output/boot-$attempt.log" >> "$log"
+while [ "$probe" -le 3 ]; do
+  printf 'Userspace readiness probe %s of 3\n' "$probe" | tee -a "$log"
+  if probe_ready > "$output/readiness-$probe.log" 2>&1; then
+    cat "$output/readiness-$probe.log" >> "$log"
     ready=true
     break
   fi
-  cat "$output/boot-$attempt.log" >> "$log"
-  attempt=$((attempt + 1))
+  cat "$output/readiness-$probe.log" >> "$log"
+  if [ "$probe" -lt 3 ]; then sleep "$((probe * 5))"; fi
+  probe=$((probe + 1))
 done
 if [ "$ready" != true ]; then
-  echo 'Simulator did not become ready after three bounded boot attempts' >&2
+  echo 'Simulator userspace did not become ready after three bounded probes' >&2
   exit 1
 fi
 run_limited 120 xcrun simctl install "$device_uuid" "$work_dir/notelab.app" >> "$log" 2>&1
