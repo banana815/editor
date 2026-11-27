@@ -1,7 +1,7 @@
 # Note Lab — focused writing in C
 
 This directory is the active implementation of Note Lab for **Windows, macOS,
-Linux, Android, iOS and the browser**. Version 0.3.0 brings a writing-first
+Linux, Android, iOS and the browser**. Version 0.3.1 brings a writing-first
 workspace for notes and articles, alongside the existing rich-text and Zotero
 workflows. The retired Tauri application is available in Git history. Legacy
 note import remains supported; feature parity and final acceptance work are
@@ -177,7 +177,7 @@ isolated directory and starts that copy with temporary notes and bundled fonts.
 It does not install anything or change the user's notes. Dependency versions,
 attribution and license texts are recorded in [THIRD_PARTY.md](THIRD_PARTY.md).
 
-The application workflow also accepts version tags such as `v0.3.0`. A tag must
+The application workflow also accepts version tags such as `v0.3.1`. A tag must
 match the CMake project version exactly. Only after all desktop, sanitizer,
 Android, iOS and browser jobs succeed does it publish a GitHub **Pre-release**.
 Release assets include three desktop archives, an unsigned Android APK,
@@ -209,7 +209,7 @@ tests cover stale selections, IME cancellation/commit and clipboard edge cases.
 ## Current implementation and remaining acceptance work
 
 The platform results below describe the earlier verified checkpoint linked
-after the table. The 0.3.0 changes need their own local and remote checks; their
+after the table. The 0.3.1 changes need their own local and remote checks; their
 current status is tracked in [PROJECT_STATUS.md](PROJECT_STATUS.md).
 
 | Area | Current evidence / remaining work |

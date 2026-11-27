@@ -156,8 +156,7 @@ try {
     const ready = async () => { await until(() => evaluate("typeof FS !== 'undefined' && document.getElementById('status').hidden && !!Module.editorInputUpdate"), 'application initialization');
         // Existing format regressions exercise the expanded toolbar.
         if (await evaluate('Module.editorInputArea && Module.editorInputArea.y * canvas.getBoundingClientRect().height / canvas.height < 160')) {
-            const toolsPoint=await evaluate('(()=>{const r=canvas.getBoundingClientRect();return {x:r.right-140,y:r.top+24};})()');
-            await click(toolsPoint.x,toolsPoint.y);
+            await key('t','KeyT',84,10);
             await until(() => evaluate('Module.editorInputArea.y * canvas.getBoundingClientRect().height / canvas.height >= 160'), 'expanded writing tools');
         }
     };
