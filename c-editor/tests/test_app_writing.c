@@ -113,12 +113,48 @@ static void test_failed_heading_preserves_document(App *a) {
     assert(!ce_document_can_undo(a->doc) && !ce_document_is_modified(a->doc));
     free(before);
 }
+static void test_longform_input(App *a) {
+    const char *markers[]={"-","*","+",">","23.","4)","0."};
+    for(size_t i=0;i<SDL_arraysize(markers);i++) {
+        reset_writing(a,markers[i],CE_FORMAT_TEXT); a->edit->cursor=(int)strlen(markers[i]);
+        char *before=ce_document_export_json(a->doc); assert(before);
+        writing_input(a," "); expect_block(a,0,i<3?CE_BLOCK_BULLET:i==3?CE_BLOCK_QUOTE:CE_BLOCK_ORDERED,0);
+        assert(!*ce_document_text(a->doc)); action(a,ACT_UNDO); expect_snapshot(a,before); free(before);
+    }
+    reset_writing(a,"-",CE_FORMAT_TEXT); a->edit->cursor=1; writing_input(a," "); writing_input(a,"A");
+    writing_key(a,SDLK_RETURN,0); expect_block(a,2,CE_BLOCK_BULLET,0);
+    writing_key(a,SDLK_RETURN,0); expect_block(a,2,CE_BLOCK_PARAGRAPH,0);
+    reset_writing(a,"<p></p><p><a href=\"https://example.com\">Reference link</a></p>",CE_FORMAT_HTML);
+    writing_input(a,"-"); writing_input(a," "); writing_input(a,"First item"); writing_key(a,SDLK_RETURN,0);
+    writing_input(a,"Second item"); writing_key(a,SDLK_RETURN,0); writing_key(a,SDLK_RETURN,0);
+    assert(a->edit->cursor==23); expect_block(a,23,CE_BLOCK_PARAGRAPH,0);
+    writing_input(a,"```js"); writing_key(a,SDLK_RETURN,0); expect_block(a,23,CE_BLOCK_CODE,0);
+    writing_input(a,"code"); assert(!strcmp(ce_document_text(a->doc),"First item\nSecond item\ncode\nReference link"));
+    assert(!(ce_document_style_at(a->doc,23).marks&CE_MARK_LINK));
+    assert(ce_document_style_at(a->doc,28).marks&CE_MARK_LINK);
+    reset_writing(a,">",CE_FORMAT_TEXT); a->edit->cursor=1; writing_input(a," "); writing_input(a,"quote");
+    writing_key(a,SDLK_RETURN,0); expect_block(a,6,CE_BLOCK_QUOTE,0);
+    writing_key(a,SDLK_RETURN,0); expect_block(a,6,CE_BLOCK_PARAGRAPH,0);
+    reset_writing(a,"```c",CE_FORMAT_TEXT); a->edit->cursor=4; writing_key(a,SDLK_RETURN,0);
+    expect_block(a,0,CE_BLOCK_CODE,0); writing_input(a,"x"); writing_key(a,SDLK_RETURN,0); writing_input(a,"y");
+    assert(!strcmp(ce_document_text(a->doc),"x\ny") && ce_document_block_count(a->doc)==1);
+    writing_key(a,SDLK_RETURN,SDL_KMOD_CTRL); expect_block(a,4,CE_BLOCK_PARAGRAPH,0);
+    reset_writing(a,"```",CE_FORMAT_TEXT); a->edit->cursor=3; writing_key(a,SDLK_RETURN,0);
+    writing_input(a,"code"); writing_key(a,SDLK_RETURN,0); writing_input(a,"```");
+    char *fenced=ce_document_export_json(a->doc); assert(fenced);
+    writing_key(a,SDLK_RETURN,0); assert(!strcmp(ce_document_text(a->doc),"code\n"));
+    expect_block(a,5,CE_BLOCK_PARAGRAPH,0); action(a,ACT_UNDO); expect_snapshot(a,fenced); free(fenced);
+    reset_writing(a,"---",CE_FORMAT_TEXT); a->edit->cursor=3; char *before=ce_document_export_json(a->doc);
+    writing_key(a,SDLK_RETURN,0); expect_block(a,0,CE_BLOCK_RULE,0); expect_block(a,4,CE_BLOCK_PARAGRAPH,0);
+    assert(a->edit->cursor==4); action(a,ACT_UNDO); expect_snapshot(a,before); free(before);
+    reset_writing(a,"",CE_FORMAT_TEXT); writing_input(a,"- pasted"); expect_block(a,0,CE_BLOCK_PARAGRAPH,0);
+}
 int main(int argc,char **argv) {
     assert(argc>=3); void *state=NULL;
     char *args[]={"writing-test","--notes",argv[1],"--font",argv[2]};
     assert(SDL_AppInit(&state,5,args)==SDL_APP_CONTINUE); App *a=state;
     free(a->active); a->active=copy_string("writing.json"); assert(a->active);
     test_heading_keys(a); test_markdown_headings(a); test_list_toggle(a);
-    test_failed_heading_preserves_document(a);
+    test_failed_heading_preserves_document(a); test_longform_input(a);
     SDL_AppQuit(a,SDL_APP_SUCCESS); puts("application writing commands passed"); return 0;
 }

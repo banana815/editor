@@ -20,6 +20,9 @@ int main(void) {
         assert([notelab_import_types(PLATFORM_IMPORT_JSON) isEqualToArray:@[UTTypeJSON]]);
         assert([notelab_import_types(PLATFORM_IMPORT_SQLITE) isEqualToArray:@[UTTypeData]]);
         assert([notelab_import_types(PLATFORM_IMPORT_ZOTERO) isEqualToArray:@[UTTypeData]]);
+        assert(PLATFORM_IMPORT_IMAGE == 4 && PLATFORM_IMPORT_BACKUP == 5);
+        assert(([notelab_import_types(PLATFORM_IMPORT_IMAGE) isEqualToArray:@[UTTypePNG, UTTypeJPEG, UTTypeBMP]]));
+        assert([notelab_import_types(PLATFORM_IMPORT_BACKUP) isEqualToArray:@[UTTypeZIP]]);
     }
     puts("iOS import UTType filters passed");
     return 0;

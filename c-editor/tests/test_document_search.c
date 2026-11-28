@@ -19,6 +19,14 @@ static CeDocument *load(const char *text,CeFormat format) {
 static void unchanged(CeDocument *doc,const char *before) {
     char *after=ce_document_export_json(doc); assert(after && !strcmp(before,after)); free(after);
 }
+static void longform_search(void) {
+    const char *fixture="{\"type\":\"doc\",\"content\":[{\"type\":\"codeBlock\",\"attrs\":{\"language\":\"c\",\"legacy\":true},\"content\":[{\"type\":\"text\",\"text\":\"find\\nfind\"}]},{\"type\":\"image\",\"attrs\":{\"alt\":\"find\"},\"content\":[]},{\"type\":\"horizontalRule\",\"content\":[]},{\"type\":\"blockquote\",\"attrs\":{\"source\":\"find\"},\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"find\"}]}]}]}";
+    CeDocument *doc=load(fixture,CE_FORMAT_JSON); char *before=ce_document_export_json(doc); size_t count=0,cursor=0; char error[256];
+    assert(ce_document_search_replace(doc,"find","found",0,true,&count,&cursor,error,sizeof error) && count==3);
+    assert(!strncmp(ce_document_text(doc),"found\nfound\n",12)); char *json=ce_document_export_json(doc);
+    assert(strstr(json,"\"alt\":\"find\"") && strstr(json,"\"source\":\"find\"") && strstr(json,"\"legacy\":true"));
+    assert(ce_document_undo(doc)); unchanged(doc,before); free(json); free(before); ce_document_free(doc);
+}
 int main(void) {
     const char *fixture="{\"type\":\"doc\",\"attrs\":{\"unknown\":4503599627370501},\"content\":["
         "{\"type\":\"heading\",\"attrs\":{\"level\":2,\"custom\":\"keep\"},\"content\":["
@@ -72,5 +80,6 @@ int main(void) {
         ce_document_free(doc); if(reached_success) break;
     }
     assert(reached_success); free(before);
+    longform_search();
     puts("document search and transactional replacement tests passed"); return 0;
 }

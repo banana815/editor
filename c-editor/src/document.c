@@ -216,14 +216,17 @@ static bool inline_cache(CeDocument *d, cJSON *j, cJSON *block, unsigned depth) 
     return true;
 }
 static bool cache_node(CeDocument *d, cJSON *j, unsigned depth, CeBlockKind listkind,
-                       unsigned listdepth) {
+                       unsigned listdepth, bool quoted) {
     if (depth > CE_DEPTH)
         return fail(d, "Document nesting is too deep");
     CeBlockKind k = CE_BLOCK_UNKNOWN;
     if (istype(j, "paragraph"))
-        k = listkind == CE_BLOCK_UNKNOWN ? CE_BLOCK_PARAGRAPH : listkind;
+        k = listkind == CE_BLOCK_UNKNOWN ? (quoted ? CE_BLOCK_QUOTE : CE_BLOCK_PARAGRAPH) : listkind;
     else if (istype(j, "heading"))
         k = CE_BLOCK_HEADING;
+    else if (istype(j, "codeBlock")) k = CE_BLOCK_CODE;
+    else if (istype(j, "horizontalRule")) k = CE_BLOCK_RULE;
+    else if (istype(j, "image")) k = CE_BLOCK_IMAGE;
     else if (istype(j, "zoteroCitationBlock"))
         k = CE_BLOCK_CITATION;
     else if (istype(j, "zoteroEndnoteSection"))
@@ -250,7 +253,7 @@ static bool cache_node(CeDocument *d, cJSON *j, unsigned depth, CeBlockKind list
         cJSON *attrs = field(j, "attrs"), *level = field(attrs, "level");
         b->info.level = cJSON_IsNumber(level) ? (unsigned)level->valuedouble : 0;
         b->info.alignment = str(attrs, "textAlign");
-        if (k == CE_BLOCK_CITATION || k == CE_BLOCK_ENDNOTES || k == CE_BLOCK_UNKNOWN) {
+        if (k == CE_BLOCK_CITATION || k == CE_BLOCK_ENDNOTES || k == CE_BLOCK_UNKNOWN || k == CE_BLOCK_RULE || k == CE_BLOCK_IMAGE) {
             if (!span_add(d, j, j, ATOM))
                 return false;
         } else if (!inline_cache(d, j, j, 0))
@@ -259,7 +262,7 @@ static bool cache_node(CeDocument *d, cJSON *j, unsigned depth, CeBlockKind list
     } else {
         cJSON *child;
         cJSON_ArrayForEach (child, field(j, "content"))
-            if (!cache_node(d, child, depth + 1, listkind, listdepth))
+            if (!cache_node(d, child, depth + 1, listkind, listdepth, quoted || istype(j, "blockquote")))
                 return false;
     }
     return !d->text.failed;
@@ -269,7 +272,7 @@ static bool rebuild(CeDocument *d) {
     d->text.failed = 0;
     d->nblocks = d->nspans = 0;
     adds(&d->text, "");
-    return cache_node(d, d->root, 0, CE_BLOCK_UNKNOWN, 0);
+    return cache_node(d, d->root, 0, CE_BLOCK_UNKNOWN, 0, false);
 }
 static bool validate_json(cJSON *j, unsigned depth) {
     if (depth > CE_DEPTH || !cJSON_IsObject(j) || !*type(j))
@@ -593,7 +596,7 @@ static cJSON *list_item(CeDocument *d, cJSON *n) {
     return istype(p, "listItem") ? p : NULL;
 }
 static bool editable(cJSON *n) {
-    if (!istype(n, "paragraph") && !istype(n, "heading"))
+    if (!istype(n, "paragraph") && !istype(n, "heading") && !istype(n, "codeBlock"))
         return false;
     cJSON *x;
     cJSON_ArrayForEach (x, field(n, "content"))
@@ -820,7 +823,7 @@ static bool replace_inner(CeDocument *d, size_t from, size_t to, const char *s) 
     set(base, "content", head);
     cJSON_InsertItemInArray(parent, idx, base);
     const char *at = s, *nl;
-    while ((nl = strchr(at, '\n'))) {
+    while (!istype(base, "codeBlock") && (nl = strchr(at, '\n'))) {
         if (!append_text(array(base), at, (size_t)(nl - at), marks))
             goto bad;
         cJSON *next = paragraph();
@@ -1349,6 +1352,103 @@ bool ce_document_set_block(CeDocument *d, size_t a, size_t b, CeBlockKind k, uns
     }
     return finish(d, old, true);
 }
+static CeDocument *writing_candidate(CeDocument *d) {
+    CeDocument *c=calloc(1,sizeof *c);
+    if(c) c->root=cJSON_Duplicate(d->root,true);
+    if(!c || !c->root || !rebuild(c)) { ce_document_free(c); fail(d,"Out of memory"); return NULL; }
+    return c;
+}
+static bool writing_commit(CeDocument *d,CeDocument *c,bool ok) {
+    char *json=ok?ce_document_export_json(c):NULL;
+    if(!ok && *c->error) fail(d,c->error);
+    if(ok && !json) fail(d,"Out of memory");
+    if(json) ok=ce_document_apply_json(d,json); else ok=false;
+    free(json); ce_document_free(c); return ok;
+}
+bool ce_document_set_writing_block(CeDocument *d,size_t offset,CeBlockKind kind,
+                                   const char *language,unsigned list_start) {
+    if(!d || !boundary(d,offset) || !d->nblocks) return false;
+    if(kind!=CE_BLOCK_QUOTE && kind!=CE_BLOCK_CODE && kind!=CE_BLOCK_RULE &&
+       kind!=CE_BLOCK_BULLET && kind!=CE_BLOCK_ORDERED) return fail(d,"Unsupported writing block");
+    if(language) for(const unsigned char *p=(const unsigned char *)language;*p;p++)
+        if(!((*p>='a' && *p<='z') || (*p>='A' && *p<='Z') || (*p>='0' && *p<='9') || strchr("_+-",*p)))
+            return fail(d,"Invalid code language");
+    CeDocument *c=writing_candidate(d); if(!c) return false;
+    size_t bi=block_index(c,offset); cJSON *n=c->blocks[bi].node;
+    bool ok=editable(n);
+    if(kind==CE_BLOCK_BULLET || kind==CE_BLOCK_ORDERED) {
+        ok=ok && ce_document_set_block(c,offset,offset,kind,0);
+        if(ok && kind==CE_BLOCK_ORDERED) {
+            cJSON *item=list_item(c,c->blocks[block_index(c,offset)].node),*list=container_of(c->root,item,0);
+            cJSON *attrs=field(list,"attrs");
+            if(!attrs) { attrs=cJSON_CreateObject(); ok=attrs && le_set(list,"attrs",attrs); }
+            if(ok) ok=le_set(attrs,"start",cJSON_CreateNumber(list_start));
+        }
+    } else if(ok && kind==CE_BLOCK_QUOTE) {
+        cJSON *parent=parent_of(c->root,n,0),*quote=node("blockquote"),*content=quote?array(quote):NULL;
+        int index=index_of(parent,n);
+        ok=content && index>=0;
+        if(ok) { cJSON *owned=cJSON_DetachItemFromArray(parent,index);
+            ok=cJSON_AddItemToArray(content,owned);
+            if(!ok) cJSON_Delete(owned);
+            if(ok) ok=cJSON_InsertItemInArray(parent,index,quote);
+        }
+        if(!ok) cJSON_Delete(quote);
+    } else if(ok) {
+        if(kind==CE_BLOCK_RULE && c->blocks[bi].info.start!=c->blocks[bi].info.end) ok=fail(c,"Rule conversion requires empty text");
+        if(ok) ok=le_set(n,"type",cJSON_CreateString(kind==CE_BLOCK_CODE?"codeBlock":"horizontalRule"));
+        if(ok && kind==CE_BLOCK_CODE && language && *language) {
+            cJSON *attrs=field(n,"attrs");
+            if(!attrs) { attrs=cJSON_CreateObject(); ok=attrs && le_set(n,"attrs",attrs); }
+            if(ok) ok=le_set(attrs,"language",cJSON_CreateString(language));
+        }
+        if(ok && kind==CE_BLOCK_RULE) cJSON_DeleteItemFromObjectCaseSensitive(n,"content");
+    }
+    return writing_commit(d,c,ok);
+}
+bool ce_document_exit_writing_block(CeDocument *d,size_t offset,size_t *new_offset) {
+    if(!d || !boundary(d,offset) || !d->nblocks) return false;
+    CeDocument *c=writing_candidate(d); if(!c) return false;
+    size_t bi=block_index(c,offset); cJSON *n=c->blocks[bi].node,*anchor=n,*moving=NULL;
+    bool ok=c->blocks[bi].info.kind==CE_BLOCK_CODE || c->blocks[bi].info.kind==CE_BLOCK_QUOTE;
+    cJSON *container=container_of(c->root,n,0);
+    if(ok && c->blocks[bi].info.kind==CE_BLOCK_QUOTE) {
+        while(container && !istype(container,"blockquote")) container=container_of(c->root,container,0);
+        if(!container) ok=false; else anchor=container;
+        if(ok && c->blocks[bi].info.start==c->blocks[bi].info.end) {
+            cJSON *contents=field(container,"content");
+            if(index_of(contents,n)!=cJSON_GetArraySize(contents)-1) ok=fail(c,"Exit from the last paragraph of a quote");
+            if(cJSON_GetArraySize(contents)==1) {
+                cJSON *f; cJSON_ArrayForEach(f,container) if(strcmp(f->string,"type") && strcmp(f->string,"content")) ok=fail(c,"Quote metadata must be preserved");
+            }
+            if(ok) moving=cJSON_DetachItemFromArray(contents,index_of(contents,n));
+        }
+    }
+    cJSON *parent=ok?parent_of(c->root,anchor,0):NULL;
+    int index=index_of(parent,anchor); cJSON *p=ok?(moving?moving:paragraph()):NULL;
+    if(ok) ok=p && index>=0 && cJSON_InsertItemInArray(parent,index+1,p);
+    if(!ok) cJSON_Delete(p);
+    if(ok && moving && !cJSON_GetArraySize(field(anchor,"content"))) cJSON_DeleteItemFromArray(parent,index);
+    size_t target=0;
+    if(ok) { ok=rebuild(c); for(size_t i=0;ok && i<c->nblocks;i++) if(c->blocks[i].node==p) target=c->blocks[i].info.start; }
+    ok=writing_commit(d,c,ok); if(ok && new_offset) *new_offset=target; return ok;
+}
+bool ce_document_replace_block_json(CeDocument *d,size_t index,const char *json) {
+    if(!d || index>=d->nblocks || !json || strlen(json)>16u*1024u*1024u || d->blocks[index].info.kind!=CE_BLOCK_IMAGE) return false;
+    for(const char *p=json;*p;p++) if(*p=='\\' && p[1]) {
+        if(!strncmp(p+1,"u0000",5)) return fail(d,"Embedded NUL characters are not supported");
+        p++;
+    }
+    cJSON *replacement=cJSON_ParseWithOpts(json,NULL,true);
+    if(!replacement || !istype(replacement,"image") || !validate_json(replacement,0)) {
+        cJSON_Delete(replacement); return fail(d,"Expected an image block");
+    }
+    CeDocument *c=writing_candidate(d); if(!c) { cJSON_Delete(replacement); return false; }
+    cJSON *n=c->blocks[index].node,*parent=parent_of(c->root,n,0);
+    bool ok=cJSON_ReplaceItemViaPointer(parent,n,replacement);
+    if(!ok) cJSON_Delete(replacement);
+    return writing_commit(d,c,ok);
+}
 bool ce_document_insert_node(CeDocument *d, size_t offset, const char *json) {
     if (!d || !json || !boundary(d, offset))
         return false;
@@ -1709,7 +1809,7 @@ static cJSON *html_tree(CeDocument *d, const char *s) {
             cJSON_Delete(n);
             goto memory;
         }
-        if (!strcmp(type(n), "br"))
+        if (!strcmp(type(n), "br") || !strcmp(type(n), "hr"))
             self = true;
         if (!self) {
             if (depth == CE_DEPTH)
@@ -1913,6 +2013,14 @@ static bool optional_html_metadata(CeDocument *d, cJSON *source, cJSON *attrs,
         return fail(d, "Out of memory while importing citation metadata");
     return true;
 }
+static bool html_code_content(CeDocument *d,cJSON *h,cJSON *out,unsigned depth) {
+    if(depth>CE_DEPTH) return false;
+    if(istype(h,"#text")) return append_text(out,str(h,"text"),strlen(str(h,"text")),NULL);
+    if(istype(h,"br")) return append_text(out,"\n",1,NULL);
+    if(!istype(h,"code") || !keys_supported(field(h,"attrs"),"")) return fail(d,"Unsupported code HTML");
+    cJSON *child; cJSON_ArrayForEach(child,field(h,"content")) if(!html_code_content(d,child,out,depth+1)) return false;
+    return true;
+}
 static bool html_blocks(CeDocument *d, cJSON *h, cJSON *out, unsigned depth) {
     if (depth > CE_DEPTH)
         return fail(d, "HTML nesting is too deep");
@@ -1955,8 +2063,23 @@ static bool html_blocks(CeDocument *d, cJSON *h, cJSON *out, unsigned depth) {
                 cJSON_Delete(n);
                 return false;
             }
-    } else if (!strcmp(t, "ul") || !strcmp(t, "ol") || !strcmp(t, "li")) {
-        n = node(!strcmp(t, "ul") ? "bulletList" : !strcmp(t, "ol") ? "orderedList" : "listItem");
+    } else if (!strcmp(t,"pre")) {
+        if(!keys_supported(ha,"data-language")) return fail(d,"Unsupported code block metadata");
+        n=node("codeBlock");
+        if(!n || !array(n)) { cJSON_Delete(n); return false; }
+        if(field(ha,"data-language")) {
+            cJSON *attrs=cJSON_CreateObject();
+            if(!attrs || !cJSON_AddStringToObject(attrs,"language",str(ha,"data-language")) || !cJSON_AddItemToObject(n,"attrs",attrs)) {
+                cJSON_Delete(attrs); cJSON_Delete(n); return false;
+            }
+        }
+        cJSON *child; cJSON_ArrayForEach(child,field(h,"content")) if(!html_code_content(d,child,array(n),0)) { cJSON_Delete(n); return false; }
+    } else if (!strcmp(t,"hr")) {
+        if(!keys_supported(ha,"") || cJSON_GetArraySize(field(h,"content"))) return fail(d,"Unsupported rule metadata");
+        n=node("horizontalRule");
+    } else if (!strcmp(t, "ul") || !strcmp(t, "ol") || !strcmp(t, "li") || !strcmp(t,"blockquote")) {
+        if(!strcmp(t,"blockquote") && !keys_supported(ha,"")) return fail(d,"Unsupported quote metadata");
+        n = node(!strcmp(t,"blockquote") ? "blockquote" : !strcmp(t, "ul") ? "bulletList" : !strcmp(t, "ol") ? "orderedList" : "listItem");
         if (!strcmp(t, "ol") && *str(ha, "start")) {
             cJSON *attrs = cJSON_CreateObject();
             cJSON_AddNumberToObject(attrs, "start", strtol(str(ha, "start"), NULL, 10));
@@ -2284,6 +2407,7 @@ static bool html_export(CeDocument *d, cJSON *n, Buffer *b, unsigned depth) {
                         : !strcmp(t, "paragraph")     ? "textAlign"
                         : !strcmp(t, "heading")     ? "level|textAlign"
                         : !strcmp(t, "orderedList") ? "start"
+                        : !strcmp(t, "codeBlock") ? "language|textAlign|level"
                                                     : "";
     if (atom)
         known = !strcmp(t, "zoteroCitationBlock") ? "citationId|endnoteNumber|itemKey|itemUri|"
@@ -2345,6 +2469,22 @@ static bool html_export(CeDocument *d, cJSON *n, Buffer *b, unsigned depth) {
         adds(b, "<br>");
         return !b->failed;
     }
+    if (!strcmp(t,"horizontalRule")) {
+        if(cJSON_GetArraySize(field(n,"content")) || cJSON_GetArraySize(field(n,"marks")))
+            return fail(d,"Rule metadata requires JSON export");
+        adds(b,"<hr>"); return !b->failed;
+    }
+    if (!strcmp(t,"codeBlock")) {
+        if(field(attrs,"textAlign") || field(attrs,"level")) return fail(d,"Code block attributes require JSON export");
+        if(field(attrs,"language") && !cJSON_IsString(field(attrs,"language"))) return fail(d,"Code language must be a string");
+        adds(b,"<pre"); if(field(attrs,"language")) attribute(b,"data-language",str(attrs,"language")); adds(b,"><code>");
+        cJSON *child; cJSON_ArrayForEach(child,field(n,"content")) {
+            if(!keys_supported(child,"type|text|content") || (!istype(child,"text") && !istype(child,"hardBreak")))
+                return fail(d,"Code marks and metadata require JSON export");
+            if(istype(child,"text")) escaped(b,str(child,"text")); else adds(b,"\n");
+        }
+        adds(b,"</code></pre>"); return !b->failed;
+    }
     char tag[16] = "";
     if (!strcmp(t, "doc")) {
         if (depth)
@@ -2376,6 +2516,8 @@ static bool html_export(CeDocument *d, cJSON *n, Buffer *b, unsigned depth) {
         strcpy(tag, "ol");
     else if (!strcmp(t, "listItem"))
         strcpy(tag, "li");
+    else if (!strcmp(t,"blockquote"))
+        strcpy(tag,"blockquote");
     else if (!strcmp(t, "zoteroCitationBlock") || !strcmp(t, "zoteroEndnoteSection")) {
         adds(b, "<div");
         attribute(b, "data-type", t);

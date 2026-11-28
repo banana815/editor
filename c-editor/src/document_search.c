@@ -57,7 +57,7 @@ static bool collect(const CeDocument *doc,const char *query,bool overlapping,Mat
     for(size_t b=0;b<ce_document_block_count(doc);b++) {
         CeBlockInfo block;
         if(!ce_document_block_info(doc,b,&block) || block.kind==CE_BLOCK_CITATION ||
-           block.kind==CE_BLOCK_ENDNOTES || block.kind==CE_BLOCK_UNKNOWN) continue;
+           block.kind==CE_BLOCK_ENDNOTES || block.kind==CE_BLOCK_UNKNOWN || block.kind==CE_BLOCK_IMAGE || block.kind==CE_BLOCK_RULE) continue;
         for(size_t i=block.start,k=0;i<block.end;i++) {
             while(k && fold((unsigned char)text[i])!=fold((unsigned char)query[k])) k=prefix[k-1];
             if(fold((unsigned char)text[i])==fold((unsigned char)query[k])) ++k;
@@ -138,8 +138,9 @@ static bool transform_inline(Transform *t,cJSON *node,size_t *offset,unsigned de
 static bool transform_blocks(Transform *t,cJSON *node,unsigned depth) {
     if(depth>128) return false;
     const char *type=node_type(node);
-    bool editable=!strcmp(type,"paragraph") || !strcmp(type,"heading");
+    bool editable=!strcmp(type,"paragraph") || !strcmp(type,"heading") || !strcmp(type,"codeBlock");
     bool leaf=editable || !strcmp(type,"zoteroCitationBlock") || !strcmp(type,"zoteroEndnoteSection") ||
+        !strcmp(type,"image") || !strcmp(type,"horizontalRule") ||
         (!cJSON_GetObjectItemCaseSensitive(node,"content") && strcmp(type,"doc"));
     if(leaf) {
         CeBlockInfo block; if(!ce_document_block_info(t->doc,t->block++,&block)) return false;

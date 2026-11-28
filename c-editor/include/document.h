@@ -16,7 +16,8 @@ typedef enum {
     CE_BLOCK_ORDERED,
     CE_BLOCK_CITATION,
     CE_BLOCK_ENDNOTES,
-    CE_BLOCK_UNKNOWN
+    CE_BLOCK_UNKNOWN,
+    CE_BLOCK_QUOTE, CE_BLOCK_CODE, CE_BLOCK_RULE, CE_BLOCK_IMAGE
 } CeBlockKind;
 typedef enum {
     CE_MARK_BOLD = 1,
@@ -92,6 +93,17 @@ bool ce_document_set_alignment(CeDocument *doc, size_t start, size_t end,
  * retaining descendant content in order. Ranges are half-open. */
 bool ce_document_set_block(CeDocument *doc, size_t start, size_t end, CeBlockKind kind,
                            unsigned level);
+/* Convert a single editable block to quote/code/rule, or set a list start.
+ * New writing transformations prepare a private tree and commit atomically.
+ * Rule conversion requires empty text. language is ASCII [A-Za-z0-9_+-]. */
+bool ce_document_set_writing_block(CeDocument *doc, size_t offset, CeBlockKind kind,
+                                    const char *language, unsigned list_start);
+/* Exit code or quote into a following paragraph. Empty quoted paragraphs are
+ * lifted only when their wrapper has no metadata that would be discarded. */
+bool ce_document_exit_writing_block(CeDocument *doc, size_t offset, size_t *new_offset);
+/* Replace an image atom's JSON at its exact container position as one atomic
+ * undoable change. Other block types are rejected. */
+bool ce_document_replace_block_json(CeDocument *doc, size_t index, const char *node_json);
 size_t ce_document_block_count(const CeDocument *doc);
 bool ce_document_block_info(const CeDocument *doc, size_t index, CeBlockInfo *out);
 bool ce_document_block_at(const CeDocument *doc, size_t offset, CeBlockInfo *out);

@@ -27,6 +27,17 @@ typedef struct CeRichCitationSource {
 typedef struct CeRichTheme {
     SDL_Color text, link, highlight, selection, atom_background, atom_border;
 } CeRichTheme;
+typedef struct CeRichImageSource {
+    uint64_t revision;
+    void *context;
+    /* Return an owned surface, or NULL with a diagnostic. No network access.
+     * Decode limits must be enforced before allocating pixels. */
+    SDL_Surface *(*resolve)(void *context, const struct cJSON *image,
+                            char *error, size_t capacity);
+} CeRichImageSource;
+/* Copies the descriptor; context remains borrowed until reset/destruction.
+ * Changing the descriptor/revision invalidates cached layout. */
+void ce_rich_layout_set_images(CeRichLayout *layout, const CeRichImageSource *source);
 typedef void (*CeRichRectCallback)(const SDL_FRect *rect, void *userdata);
 
 /* Renderer and base font must outlive the layout. Derived fonts, text objects

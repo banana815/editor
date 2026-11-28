@@ -24,7 +24,7 @@ typedef struct {
 typedef struct { size_t start, end; SDL_FRect rect; size_t row; } Cluster;
 typedef struct { size_t start, end; SDL_FRect rect; } Row;
 typedef struct { size_t start, end; unsigned font; SDL_Color color, background; bool highlight; float width, shift; } Unit;
-typedef struct { char *marker, *label; const cJSON *citation; } BlockLabel;
+typedef struct { char *marker, *label; const cJSON *citation, *image; } BlockLabel;
 #define FONT_COUNT 128
 #define CITATION_MAX_WORK ((size_t)1048576)
 #define CITATION_MAX_FRAGMENTS ((size_t)131072)
@@ -46,6 +46,7 @@ struct CeRichLayout {
     size_t texture_bytes;
     uint64_t citation_revision;
     bool controlled_citations, citation_source;
+    CeRichImageSource images;
     float width, height, font_size;
     CeRichTheme theme;
     char error[256];
@@ -76,6 +77,14 @@ static bool error(CeRichLayout *l, const char *message) {
     return false;
 }
 static bool color_eq(SDL_Color a, SDL_Color b) { return a.r==b.r && a.g==b.g && a.b==b.b && a.a==b.a; }
+void ce_rich_layout_set_images(CeRichLayout *l,const CeRichImageSource *source) {
+    if(!l) return;
+    CeRichImageSource next={0}; if(source) next=*source;
+    if(l->images.revision!=next.revision || l->images.context!=next.context || l->images.resolve!=next.resolve) {
+        free(l->snapshot); l->snapshot=NULL;
+    }
+    l->images=next;
+}
 static bool theme_eq(const CeRichTheme *a, const CeRichTheme *b) {
     return color_eq(a->text,b->text) && color_eq(a->link,b->link) && color_eq(a->highlight,b->highlight) &&
         color_eq(a->selection,b->selection) && color_eq(a->atom_background,b->atom_background) && color_eq(a->atom_border,b->atom_border);
@@ -450,15 +459,18 @@ static bool collect_labels(const cJSON *n,BlockLabel *labels,size_t cap,size_t *
                             const char *marker,bool *used,unsigned depth,bool controlled) {
     if(depth>128) return false;
     const char *type=jstr(n,"type"); cJSON *content=jfield(n,"content");
-    bool text=!strcmp(type,"paragraph") || !strcmp(type,"heading");
+    bool text=!strcmp(type,"paragraph") || !strcmp(type,"heading") || !strcmp(type,"codeBlock");
     bool atom=!strcmp(type,"zoteroCitationBlock") || !strcmp(type,"zoteroEndnoteSection") ||
+              !strcmp(type,"image") || !strcmp(type,"horizontalRule") ||
               (!content && strcmp(type,"doc"));
     if(text || atom) {
         if(*index>=cap) return false;
         BlockLabel *label=&labels[(*index)++];
         if(marker && used && !*used) { label->marker=dupstr(marker); *used=true; if(!label->marker) return false; }
         if(atom) {
-            if(controlled && (!strcmp(type,"zoteroCitationBlock") || !strcmp(type,"zoteroEndnoteSection"))) label->citation=n;
+            if(!strcmp(type,"image")) label->image=n;
+            else if(!strcmp(type,"horizontalRule")) { /* drawn as a rule */ }
+            else if(controlled && (!strcmp(type,"zoteroCitationBlock") || !strcmp(type,"zoteroEndnoteSection"))) label->citation=n;
             else { label->label=atom_label(n); if(!label->label) return false; }
         }
         return true;
@@ -493,6 +505,39 @@ static bool layout_atom(CeRichLayout *l,const CeBlockInfo *b,const char *label,f
     if(!fragment(l,text,rect,false,l->theme.atom_background,true) ||
        !cluster(l,b->start,b->end,rect,l->row_count) || !row(l,b->start,b->end,rect)) return false;
     *y+=rect.h; return true;
+}
+static bool layout_image(CeRichLayout *l,const CeBlockInfo *b,const cJSON *image,float indent,float *y) {
+    char problem[256]="图片不可用";
+    SDL_Surface *surface=l->images.resolve?l->images.resolve(l->images.context,image,problem,sizeof problem):NULL;
+    if(!surface) return layout_atom(l,b,problem,indent,y);
+    if(surface->w<=0 || surface->h<=0 || (uint64_t)surface->w*(uint64_t)surface->h>16777216u ||
+       (uint64_t)surface->w*(uint64_t)surface->h*4>MAX_TEXTURE_BYTES-l->texture_bytes) {
+        SDL_DestroySurface(surface); return error(l,"Image texture budget exceeded");
+    }
+    float width=fminf((float)surface->w,fmaxf(1,l->width-indent));
+    const cJSON *attrs=jfield(image,"attrs"),*requested=jfield(attrs,"width");
+    if(cJSON_IsNumber(requested) && requested->valuedouble>0 && isfinite(requested->valuedouble))
+        width=fminf(fmaxf(1,l->width-indent),(float)requested->valuedouble);
+    float height=width*(float)surface->h/(float)surface->w;
+    if(!isfinite(height) || height>CITATION_MAX_HEIGHT-*y) {
+        SDL_DestroySurface(surface); return error(l,"Image layout height limit exceeded");
+    }
+    SDL_Texture *texture=SDL_CreateTextureFromSurface(l->renderer,surface);
+    size_t bytes=(size_t)surface->w*(size_t)surface->h*4;
+    SDL_DestroySurface(surface); if(!texture) return error(l,SDL_GetError());
+    if(!reserve((void **)&l->fragments,&l->fragment_cap,l->fragment_count+1,sizeof(Fragment))) { SDL_DestroyTexture(texture); return false; }
+    SDL_FRect rect={indent,*y,width,height};
+    l->fragments[l->fragment_count++]=(Fragment){.texture=texture,.rect=rect}; l->texture_bytes+=bytes;
+    *y+=height;
+    const char *caption=jstr(attrs,"caption");
+    if(*caption) {
+        TTF_Text *text=make_text(l,0,caption,strlen(caption),l->theme.text); int w=0,h=0;
+        if(!text || !TTF_SetTextWrapWidth(text,(int)fmaxf(1,width)) || !TTF_GetTextSize(text,&w,&h)) { TTF_DestroyText(text); return false; }
+        if(!fragment(l,text,(SDL_FRect){indent,*y+4,(float)w,(float)h},false,(SDL_Color){0},false)) return false;
+        *y+=h+4;
+    }
+    rect.h=*y-rect.y;
+    return cluster(l,b->start,b->end,rect,l->row_count) && row(l,b->start,b->end,rect);
 }
 /* Citation cell coordinates are presentation-only. They deliberately do not
  * create document clusters: one citation/reference section remains one atom. */
@@ -893,6 +938,7 @@ static bool update_layout(CeRichLayout *l,const CeDocument *doc,float width,cons
     }
     CeRichLayout next={0};
     next.renderer=l->renderer; next.base=l->base; next.fallback=l->fallback; next.width=width; next.theme=*theme; next.font_size=size;
+    next.images=l->images;
     next.snapshot=snapshot; next.text_length=ce_document_length(doc); next.generation=l->generation+1;
     next.controlled_citations=controlled; next.citation_source=source!=NULL;
     next.citation_revision=source?source->revision:0;
@@ -906,9 +952,16 @@ static bool update_layout(CeRichLayout *l,const CeDocument *doc,float width,cons
         CeBlockInfo b;
         if(!ce_document_block_info(doc,i,&b)) { ok=false; break; }
         float indent=fminf((float)b.depth*size*1.35f,fmaxf(0,width-size*3));
+        if(b.kind==CE_BLOCK_QUOTE || b.kind==CE_BLOCK_CODE) indent+=fminf(14,width*.1f);
         float top=y;
         size_t first_row=next.row_count;
-        if(labels[i].citation) ok=layout_citation(&next,&b,labels[i].citation,source,indent,&y);
+        if(labels[i].image) ok=layout_image(&next,&b,labels[i].image,indent,&y);
+        else if(b.kind==CE_BLOCK_RULE) {
+            SDL_FRect r={indent,y,fmaxf(1,width-indent),size};
+            ok=fragment(&next,NULL,(SDL_FRect){indent,y+size*.5f,r.w,2},true,theme->atom_border,false) &&
+                cluster(&next,b.start,b.end,r,next.row_count) && row(&next,b.start,b.end,r); y+=size;
+        }
+        else if(labels[i].citation) ok=layout_citation(&next,&b,labels[i].citation,source,indent,&y);
         else if(labels[i].label) ok=layout_atom(&next,&b,labels[i].label,indent,&y);
         else {
             size_t start=b.start;
@@ -928,6 +981,10 @@ static bool update_layout(CeRichLayout *l,const CeDocument *doc,float width,cons
             if(!marker || !TTF_GetTextSize(marker,&w,&h)) { TTF_DestroyText(marker); ok=false; }
             else ok=fragment(&next,marker,(SDL_FRect){fmaxf(0,indent-size*.3f-(float)w),top,(float)w,(float)h},false,(SDL_Color){0},false);
         }
+        if(ok && b.kind==CE_BLOCK_QUOTE)
+            ok=fragment(&next,NULL,(SDL_FRect){indent-10,top,3,y-top},true,theme->atom_border,false);
+        if(ok && b.kind==CE_BLOCK_CODE)
+            ok=fragment(&next,NULL,(SDL_FRect){0,top,width,y-top},true,theme->atom_background,false);
         if(ok && i+1<count && next.row_count>first_row) {
             Row *r=&next.rows[next.row_count-1];
             ok=cluster(&next,b.end,b.end+1,(SDL_FRect){r->rect.x+r->rect.w,r->rect.y,2,r->rect.h},next.row_count-1);
@@ -1049,7 +1106,7 @@ bool ce_rich_layout_draw(CeRichLayout *l,float x,float y,const SDL_FRect *viewpo
     ok=ok && selection.ok;
     for(size_t i=0;ok && i<l->fragment_count;i++) {
         Fragment *f=&l->fragments[i];
-        if(!f->text) continue;
+        if(!f->text && !f->texture) continue;
         if(viewport && (y+f->rect.y+f->rect.h<viewport->y || y+f->rect.y>viewport->y+viewport->h)) continue;
         float padding=f->atom?8:0;
         if(f->texture) {

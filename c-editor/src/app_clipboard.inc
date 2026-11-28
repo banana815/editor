@@ -1,3 +1,4 @@
+#include "image_clipboard.h"
 /* Private application controller. Included after the document transaction and
  * view helpers; all format interpretation and deletion decisions stay in C. */
 struct EditorClipboardRequest {
@@ -52,8 +53,15 @@ static EditorClipboardRequest *clipboard_request(App *a,bool cut,bool capture) {
         if(!r->note) goto fail;
         if(capture) {
             if(r->start==r->end || !ce_document_slice_capture(a->doc,r->start,r->end,&r->slice,
-                cut?&r->guard:NULL,a->edit_error,sizeof a->edit_error) ||
-               !ce_document_slice_json(r->slice,&r->typed,a->edit_error,sizeof a->edit_error) ||
+                cut?&r->guard:NULL,a->edit_error,sizeof a->edit_error)) goto fail;
+            bool has_images=false;
+            if(!ce_image_slice_has_images(r->slice,&has_images,a->edit_error,sizeof a->edit_error)) goto fail;
+            if(has_images) {
+                CeDocumentSlice *portable=NULL;
+                if(!images_ready(a) || !ce_image_slice_transfer(&a->images.store,r->slice,true,&portable,a->edit_error,sizeof a->edit_error)) goto fail;
+                ce_document_slice_free(r->slice);r->slice=portable;
+            }
+            if(!ce_document_slice_json(r->slice,&r->typed,a->edit_error,sizeof a->edit_error) ||
                !ce_document_slice_plain(r->slice,clipboard_atom_text,a,&r->plain,a->edit_error,sizeof a->edit_error) ||
                !ce_document_slice_html(r->slice,clipboard_atom_text,a,&r->html,a->edit_error,sizeof a->edit_error)) goto fail;
         }
@@ -110,6 +118,26 @@ static bool clipboard_cut_commit(EditorClipboardRequest *r) {
     if(r->prompt) return EditBox_DeleteHighlight(r->app->prompt);
     return clipboard_apply(r,NULL);
 }
+static bool clipboard_code_plain(EditorClipboardRequest *r,const char *plain) {
+    App *a=r->app;
+    if(!plain || strlen(plain)>CE_DOCUMENT_SLICE_MAX_BYTES) {
+        message(a,"剪贴板内容为空或超过大小限制"); return false;
+    }
+    char *text=copy_string(plain);
+    if(!text) { message(a,"内存不足，原文保持不变"); return false; }
+    /* Match plain-text import's CRLF normalization without turning each line
+     * into a paragraph. Rich clipboard offers retain their structural path. */
+    size_t size=0;
+    for(size_t i=0;plain[i];++i)
+        if(plain[i]!='\r' || (plain[i+1]!='\n' && plain[i+1])) text[size++]=plain[i];
+    text[size]=0;
+    CeDocument *candidate=edit_candidate(a);
+    bool ok=candidate && ce_document_replace(candidate,r->start,r->end,text);
+    free(text);
+    if(!edit_commit(a,candidate,ok,NULL,false)) { message(a,a->edit_error); return false; }
+    sync_view(a); a->edit->cursor=(int)SDL_min(r->start+size,ce_document_length(a->doc));
+    a->typing_mask=0; mark_changed(a); reveal_cursor(a); return true;
+}
 static bool clipboard_paste_data(EditorClipboardRequest *r,const char *plain,const char *html,const char *typed) {
     App *a=r->app;
     if(!clipboard_request_current(r)) { message(a,"选区或笔记已改变，粘贴已取消"); return false; }
@@ -118,6 +146,11 @@ static bool clipboard_paste_data(EditorClipboardRequest *r,const char *plain,con
         SDL_Event event={0}; event.type=SDL_EVENT_TEXT_INPUT; event.text.text=plain;
         EditBox_HandleEvent(a->prompt,&event); return true;
     }
+    CeBlockInfo block;
+    if((!typed || !*typed) && (!html || !*html) &&
+       ce_document_block_at(a->doc,r->start,&block) && block.kind==CE_BLOCK_CODE &&
+       r->start>=block.start && r->end<=block.end)
+        return clipboard_code_plain(r,plain);
     CeDocumentSlice *slice=NULL; bool found=false,ok=false;
     if(typed && *typed) ok=ce_document_slice_parse(typed,strlen(typed),&slice,a->edit_error,sizeof a->edit_error);
     else {
@@ -137,7 +170,16 @@ static bool clipboard_paste_data(EditorClipboardRequest *r,const char *plain,con
             ce_document_free(temporary);
         }
     }
-    if(ok) ok=clipboard_apply(r,slice);
+    if(ok) {
+        bool has_images=false;
+        ok=ce_image_slice_has_images(slice,&has_images,a->edit_error,sizeof a->edit_error);
+        if(ok && has_images) {
+            CeDocumentSlice *local=NULL;
+            ok=images_ready(a) && ce_image_slice_transfer(&a->images.store,slice,false,&local,a->edit_error,sizeof a->edit_error);
+            if(ok) { ce_document_slice_free(slice);slice=local; }
+        }
+        if(ok) ok=clipboard_apply(r,slice);
+    }
 done:
     if(!ok) message(a,*a->edit_error?a->edit_error:"无法粘贴此内容，原文保持不变");
     ce_document_slice_free(slice); return ok;
@@ -219,6 +261,9 @@ static char *native_clipboard_read(const char *mime,bool *ok) {
 static void editor_clipboard_action(App *a,CeEditorClipboardAction action) {
     EditBox *edit=clipboard_edit(a);
     if(!edit) return;
+#ifndef __EMSCRIPTEN__
+    if(action==CE_EDITOR_PASTE && edit==a->edit && images_paste_native(a)) return;
+#endif
     if(action==CE_EDITOR_SELECT_ALL) {
         size_t size=strlen(edit->text->text?edit->text->text:"");
         edit->highlight1=0; edit->highlight2=edit->cursor=(int)size; return;

@@ -295,6 +295,7 @@ EM_JS(void, init_js, (void), {
         e.preventDefault(); e.stopPropagation();
         try {
             if (!e.clipboardData) throw new Error("Clipboard unavailable");
+            if (Module.noteLabImagePaste && Module.noteLabImagePaste(e)) return;
             if (_platform_web_clipboard_rich_paste_available()) {
                 var pointers=[],types=['text/plain','text/html','application/x-notelab-document-slice+json'];
                 try {

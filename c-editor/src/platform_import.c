@@ -154,7 +154,8 @@ EM_JS(void, platform_import_js_begin, (PlatformImport *job, int kind, size_t lim
         input = document.createElement('input');
         input.type = 'file'; input.multiple = false;
         input.setAttribute('data-editor-import', "");
-        input.accept = kind === 0 ? '.json,.csljson,application/json'
+        input.accept = kind === 4 ? '.png,.jpg,.jpeg,.bmp,image/png,image/jpeg,image/bmp'
+            : kind === 5 ? '.zip,application/zip' : kind === 0 ? '.json,.csljson,application/json'
             : kind === 1 ? '.sqlite,.db,application/x-sqlite3'
             : kind === 3 ? '.json,.html,.htm,.md,.txt,application/json,text/html,text/plain'
             : '.json,.csljson,.sqlite,.db,application/json,application/x-sqlite3';
@@ -172,6 +173,8 @@ static const SDL_DialogFileFilter sqlite_filters[] = {{"SQLite database", "sqlit
 static const SDL_DialogFileFilter zotero_filters[] = {
     {"Zotero CSL JSON / SQLite", "json;csljson;sqlite;db"}, {"All files", "*"}
 };
+static const SDL_DialogFileFilter image_filters[] = {{"Images", "png;jpg;jpeg;bmp"}};
+static const SDL_DialogFileFilter backup_filters[] = {{"Workspace backup", "zip"}};
 static const SDL_DialogFileFilter document_filters[] = {
     {"Notes (JSON / HTML / text)", "json;html;htm;md;txt"}, {"All files", "*"}
 };
@@ -374,7 +377,7 @@ static void SDLCALL selected_file(void *userdata, const char *const *paths, int 
 #endif
 
 PlatformImport *platform_import_open(SDL_Window *window, PlatformImportKind kind) {
-    if (kind < PLATFORM_IMPORT_JSON || kind > PLATFORM_IMPORT_DOCUMENT) return NULL;
+    if (kind < PLATFORM_IMPORT_JSON || kind > PLATFORM_IMPORT_BACKUP) return NULL;
     PlatformImport *job = SDL_calloc(1, sizeof(*job));
     if (!job) return NULL;
     job->requested = kind;
@@ -387,6 +390,8 @@ PlatformImport *platform_import_open(SDL_Window *window, PlatformImportKind kind
 #else
     const SDL_DialogFileFilter *filters = kind == PLATFORM_IMPORT_JSON ? json_filters
         : kind == PLATFORM_IMPORT_SQLITE ? sqlite_filters
+        : kind == PLATFORM_IMPORT_IMAGE ? image_filters
+        : kind == PLATFORM_IMPORT_BACKUP ? backup_filters
         : kind == PLATFORM_IMPORT_DOCUMENT ? document_filters : zotero_filters;
     SDL_ShowOpenFileDialog(selected_file, job, window, filters,
         kind == PLATFORM_IMPORT_ZOTERO || kind == PLATFORM_IMPORT_DOCUMENT ? 2 : 1, NULL, false);

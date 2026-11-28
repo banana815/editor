@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+# Preserve the pinned upstream decoder byte-for-byte, including its whitespace.
+c-editor/vendor/stb_image.h text eol=lf -whitespace
+c-editor/licenses/stb-image-LICENSE.txt text eol=lf

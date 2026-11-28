@@ -168,3 +168,18 @@ void platform_import_ios_begin(SDL_Window *window, PlatformImport *job, Platform
         picker.presentationController.delegate = delegate;
     });
 }
+
+/* Called only by an explicit paste command. UIKit handles clipboard permissions. */
+int platform_image_ios_clipboard(void **bytes,size_t *size) {
+    @autoreleasepool {
+        UIPasteboard *pasteboard=UIPasteboard.generalPasteboard;
+        if(!pasteboard.hasImages) return 0;
+        UIImage *image=pasteboard.image;
+        if(!image || image.size.width*image.scale>16384 || image.size.height*image.scale>16384 ||
+           image.size.width*image.size.height*image.scale*image.scale>16777216) return -1;
+        NSData *data=UIImagePNGRepresentation(image);
+        if(!data || data.length>16u*1024u*1024u) return -1;
+        void *copy=SDL_malloc(data.length); if(!copy) return -1;
+        memcpy(copy,data.bytes,data.length); *bytes=copy; *size=data.length; return 1;
+    }
+}

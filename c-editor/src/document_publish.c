@@ -2,12 +2,13 @@
 #include "cJSON.h"
 #include <ctype.h>
 #include <stdio.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define LIMIT ((size_t)16*1024*1024)
 typedef struct { char *data; size_t size, capacity; bool failed; } PublishBuffer;
-typedef struct { CePublishAtomHtml atom; void *context; char *error; size_t capacity; } Publisher;
+typedef struct { CePublishAtomHtml atom; void *context; CePublishImageUrl image; void *image_context; char *error; size_t capacity; } Publisher;
 static bool publish_fail(Publisher *p,const char *message) {
     if(p->error && p->capacity) snprintf(p->error,p->capacity,"%s",message);
     return false;
@@ -131,12 +132,49 @@ static bool atom(Publisher *p,PublishBuffer *b,const cJSON *node) {
     if(!html) return false;
     bool ok=puts_b(b,html); free(html); return ok;
 }
+static bool image_node(Publisher *p,PublishBuffer *b,const cJSON *node) {
+    const cJSON *attrs=item(node,"attrs"),*width=item(attrs,"width");
+    const char *alt=value(attrs,"alt"),*caption=value(attrs,"caption");
+    if(!p->image) return publish_fail(p,"图片需要本地资源解析器，未导出");
+    if((item(attrs,"alt") && !cJSON_IsString(item(attrs,"alt"))) ||
+       (item(attrs,"caption") && !cJSON_IsString(item(attrs,"caption"))) ||
+       (width && (!cJSON_IsNumber(width) || !isfinite(width->valuedouble) || width->valuedouble<0 ||
+       width->valuedouble>2400 || width->valuedouble!=width->valueint))) return publish_fail(p,"图片属性无效");
+    char *url=p->image(p->image_context,node,p->error,p->capacity); if(!url) return false;
+    /* Resolver owns trusted generated data/relative URLs. Arbitrary imported
+       image URLs never reach this point without explicit resolution. */
+    bool safe=!strncmp(url,"data:image/png;base64,",22) || !strncmp(url,"data:image/jpeg;base64,",23) ||
+        !strncmp(url,"data:image/bmp;base64,",22) || (!strncmp(url,"assets/",7) && safe_link(url));
+    if(!safe) { free(url); return publish_fail(p,"图片发布地址无效"); }
+    puts_b(b,"<figure><img src=\""); escape(b,url,false); free(url); puts_b(b,"\" alt=\""); escape(b,alt,false);
+    puts_b(b,"\" style=\"max-width:100%;height:auto\"");
+    if(width && width->valueint) { char n[40]; snprintf(n,sizeof n," width=\"%d\"",width->valueint); puts_b(b,n); }
+    puts_b(b,">");
+    if(*caption) { puts_b(b,"<figcaption>"); escape(b,caption,false); puts_b(b,"</figcaption>"); }
+    return puts_b(b,"</figure>\n");
+}
+static bool code_text(Publisher *p,PublishBuffer *b,const cJSON *node,bool html) {
+    const cJSON *children=item(node,"content"),*child;
+    if(children && !cJSON_IsArray(children)) return publish_fail(p,"代码块内容无效");
+    cJSON_ArrayForEach(child,children) {
+        const char *type=value(child,"type"),*text=value(child,"text");
+        if(!strcmp(type,"hardBreak")) { puts_b(b,"\n"); continue; }
+        if(strcmp(type,"text") || !cJSON_IsString(item(child,"text")) || cJSON_GetArraySize(item(child,"marks"))) return publish_fail(p,"代码块格式无效");
+        if(!html) puts_b(b,text);
+        else for(;*text;text++) { if(*text=='\n') puts_b(b,"\n"); else { char one[]={*text,0}; escape(b,one,false); } }
+    }
+    return !b->failed;
+}
 static bool html_node(Publisher *p,PublishBuffer *b,const cJSON *node,unsigned depth) {
     if(depth>64) return publish_fail(p,"文档层级过深，无法发布");
     const char *type=value(node,"type"),*tag=NULL; char heading[8];
     const cJSON *attrs=item(node,"attrs"),*content=item(node,"content"),*child;
     if(!strcmp(type,"zoteroCitationBlock") || !strcmp(type,"zoteroEndnoteSection")) return atom(p,b,node);
-    if(!strcmp(type,"paragraph")) tag="p";
+    if(!strcmp(type,"image")) return image_node(p,b,node);
+    if(!strcmp(type,"horizontalRule")) return puts_b(b,"<hr>\n");
+    if(!strcmp(type,"codeBlock")) return puts_b(b,"<pre><code>") && code_text(p,b,node,true) && puts_b(b,"</code></pre>\n");
+    if(!strcmp(type,"blockquote")) tag="blockquote";
+    else if(!strcmp(type,"paragraph")) tag="p";
     else if(!strcmp(type,"heading")) {
         const cJSON *level=item(attrs,"level");
         if(!cJSON_IsNumber(level) || level->valuedouble<1 || level->valuedouble>6 || level->valueint!=level->valuedouble)
@@ -177,6 +215,26 @@ static bool html_node(Publisher *p,PublishBuffer *b,const cJSON *node,unsigned d
 static bool markdown_node(Publisher *p,PublishBuffer *b,const cJSON *node,unsigned depth) {
     if(depth>64) return publish_fail(p,"文档层级过深，无法发布");
     const char *type=value(node,"type"); const cJSON *attrs=item(node,"attrs"),*content=item(node,"content"),*child;
+    if(!strcmp(type,"image")) return image_node(p,b,node) && puts_b(b,"\n");
+    if(!strcmp(type,"horizontalRule")) return puts_b(b,"---\n\n");
+    if(!strcmp(type,"codeBlock")) {
+        const char *lang=value(attrs,"language"); size_t language_length=strlen(lang);
+        if(language_length>64) return publish_fail(p,"代码语言标识过长");
+        for(const char *c=lang;*c;c++) if(!isalnum((unsigned char)*c) && !strchr("_+-.",*c)) return publish_fail(p,"代码语言标识无效");
+        PublishBuffer raw={0}; if(!code_text(p,&raw,node,false)) { free(raw.data); return false; }
+        size_t longest=0,run=0; for(size_t i=0;i<raw.size;i++) { run=raw.data[i]=='`'?run+1:0; if(run>longest) longest=run; }
+        size_t fence=longest<3?3:longest+1;
+        for(size_t i=0;i<fence;i++) puts_b(b,"`"); puts_b(b,lang); puts_b(b,"\n");
+        if(raw.size) putn(b,raw.data,raw.size);
+        if(!raw.size || raw.data[raw.size-1]!='\n') puts_b(b,"\n");
+        free(raw.data); for(size_t i=0;i<fence;i++) puts_b(b,"`"); return puts_b(b,"\n\n");
+    }
+    if(!strcmp(type,"blockquote")) {
+        PublishBuffer quote={0}; bool ok=true;
+        cJSON_ArrayForEach(child,content) if(!valid_block_child(p,node,child) || !markdown_node(p,&quote,child,depth+1)) { ok=false; break; }
+        if(ok) { puts_b(b,"> "); for(size_t i=0;i<quote.size;i++) { putn(b,quote.data+i,1); if(quote.data[i]=='\n' && i+1<quote.size) puts_b(b,"> "); } puts_b(b,"\n"); }
+        free(quote.data); return ok && !b->failed;
+    }
     if(!strcmp(type,"zoteroCitationBlock") || !strcmp(type,"zoteroEndnoteSection") || *value(attrs,"textAlign"))
         return html_node(p,b,node,depth) && puts_b(b,"\n");
     if(!strcmp(type,"paragraph") || !strcmp(type,"heading")) {
@@ -225,7 +283,11 @@ static bool markdown_node(Publisher *p,PublishBuffer *b,const cJSON *node,unsign
 }
 char *ce_document_publish(const CeDocument *document,CePublishFormat format,CePublishAtomHtml resolver,
                           void *context,char *error,size_t capacity) {
-    Publisher p={resolver,context,error,capacity}; PublishBuffer out={0};
+    return ce_document_publish_images(document,format,resolver,context,NULL,NULL,error,capacity);
+}
+char *ce_document_publish_images(const CeDocument *document,CePublishFormat format,CePublishAtomHtml resolver,
+                                 void *context,CePublishImageUrl images,void *image_context,char *error,size_t capacity) {
+    Publisher p={resolver,context,images,image_context,error,capacity}; PublishBuffer out={0};
     if(error && capacity) *error=0;
     if(!document) { publish_fail(&p,"没有可发布的文档"); return NULL; }
     char *json=ce_document_export_json(document);
@@ -242,4 +304,20 @@ char *ce_document_publish(const CeDocument *document,CePublishFormat format,CePu
         return NULL;
     }
     return out.data;
+}
+
+char *ce_document_publish_html_page(const char *body) {
+    if(!body) return NULL;
+    PublishBuffer b={0};
+    const char *head="<!doctype html>\n<html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><style>"
+        "*{box-sizing:border-box}html{color:#1e2430;background:#fff}body{max-width:768px;margin:0 auto;padding:24px;font:20px/1.5 system-ui,sans-serif;overflow-wrap:anywhere}"
+        "h1,h2,h3,h4,h5,h6{line-height:1.25;margin:1.2em 0 .55em}p,ul,ol,pre,blockquote,figure{margin:0 0 1em}"
+        "blockquote{border-left:3px solid #9bb4a7;padding:.4em 1em;background:#f3f6f4}blockquote p:last-child{margin-bottom:0}"
+        "pre{background:#f0f3f7;padding:16px;border-radius:6px;white-space:pre-wrap;overflow-wrap:anywhere}code{font-family:ui-monospace,monospace}"
+        "img{max-width:100%;height:auto}figure{margin-left:0;margin-right:0}figcaption{font-size:.8em;color:#59666d;margin-top:.4em}"
+        "a{color:#1f5fc6;text-decoration:underline}hr{border:0;border-top:1px solid #aab7b1;margin:1.5em 0}"
+        "@media(max-width:440px){body{padding:24px;font-size:20px}}"
+        "</style></head><body>\n";
+    if(!puts_b(&b,head) || !puts_b(&b,body) || !puts_b(&b,"</body></html>\n")) { free(b.data);return NULL; }
+    return b.data;
 }

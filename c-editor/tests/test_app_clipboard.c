@@ -22,6 +22,71 @@ static void key(App *a,SDL_Keycode code,SDL_Keymod mod) {
     SDL_Event event={0}; event.type=SDL_EVENT_KEY_DOWN; event.key.key=code; event.key.mod=mod;
     assert(SDL_AppEvent(a,&event)==SDL_APP_CONTINUE);
 }
+static void test_text_clipboard_without_assets(App *a,const char *root) {
+    reset_document(a,"literal image text",CE_FORMAT_TEXT);
+    assert(!a->images.ready);
+    char unavailable[2048]; snprintf(unavailable,sizeof unavailable,"%s/no-clipboard-assets.txt",root);
+    assert(SDL_SaveFile(unavailable,"fixture",7));
+    char *saved_root=a->notes_root; a->notes_root=unavailable;
+    select_range(a,0,ce_document_length(a->doc)); PlatformWebClipboardData data={0};
+    assert(browser_clipboard_prepare(false,&data,a));
+    char *typed=copy_string(data.typed_json); assert(typed);
+    assert(!strcmp(data.plain,"literal image text") && !a->images.ready);
+    browser_clipboard_finish(true,a);
+    select_range(a,ce_document_length(a->doc),ce_document_length(a->doc));
+    data=(PlatformWebClipboardData){"\nplain",NULL,NULL}; assert(browser_clipboard_paste(&data,a));
+    assert(!strcmp(ce_document_text(a->doc),"literal image text\nplain") && !a->images.ready);
+    select_range(a,ce_document_length(a->doc),ce_document_length(a->doc));
+    data=(PlatformWebClipboardData){"fallback",NULL,typed}; assert(browser_clipboard_paste(&data,a));
+    assert(!strcmp(ce_document_text(a->doc),"literal image text\nplainliteral image text") && !a->images.ready);
+    free(typed); a->notes_root=saved_root;
+}
+static void *reject_clipboard_json_allocation(size_t size) { (void)size; return NULL; }
+static void test_code_plain_clipboard(App *a) {
+    const char *source="{\"type\":\"doc\",\"content\":["
+        "{\"type\":\"paragraph\",\"attrs\":{\"legacy\":\"before\"},\"content\":[{\"type\":\"text\",\"text\":\"B\",\"marks\":[{\"type\":\"link\",\"attrs\":{\"href\":\"https://before.example\"}}]}]},"
+        "{\"type\":\"codeBlock\",\"attrs\":{\"language\":\"c\",\"legacy\":{\"precise\":1.0000000000000002}},\"custom\":\"keep\",\"content\":[{\"type\":\"text\",\"text\":\"abcdef\"}]},"
+        "{\"type\":\"paragraph\",\"attrs\":{\"legacy\":\"after\"},\"content\":[{\"type\":\"text\",\"text\":\"A\",\"marks\":[{\"type\":\"link\",\"attrs\":{\"href\":\"https://after.example\"}}]}]}]}";
+    struct { size_t start,end; const char *paste,*expected,*normalized; } cases[]={
+        {3,3,"X","abcXdef","X"},
+        {3,3,"\r\n- literal\r\n```js\r\n中文","abc\n- literal\n```js\n中文def","\n- literal\n```js\n中文"},
+        {1,5,"left\nright","aleft\nrightf","left\nright"},
+        {0,6,"whole\ncode","whole\ncode","whole\ncode"}
+    };
+    for(size_t i=0;i<SDL_arraysize(cases);++i) {
+        reset_document(a,source,CE_FORMAT_JSON);
+        char *before=snapshot(a),*first=ce_document_block_json(a->doc,0),*last=ce_document_block_json(a->doc,2);
+        assert(first && last); select_range(a,2+cases[i].start,2+cases[i].end);
+        PlatformWebClipboardData data={cases[i].paste,NULL,NULL}; assert(browser_clipboard_paste(&data,a));
+        CeBlockInfo block; assert(ce_document_block_count(a->doc)==3 && ce_document_block_info(a->doc,1,&block) && block.kind==CE_BLOCK_CODE);
+        assert(block.start==2 && block.end==2+strlen(cases[i].expected));
+        assert(!strncmp(ce_document_text(a->doc)+2,cases[i].expected,strlen(cases[i].expected)));
+        assert(a->edit->cursor==(int)(2+cases[i].start+strlen(cases[i].normalized)));
+        assert(a->edit->highlight1==-1 && a->edit->highlight2==-1);
+        char *actual=ce_document_block_json(a->doc,0); assert(actual && !strcmp(actual,first)); free(actual);
+        actual=ce_document_block_json(a->doc,2); assert(actual && !strcmp(actual,last)); free(actual);
+        actual=ce_document_block_json(a->doc,1);
+        assert(actual && strstr(actual,"\"language\":\"c\"") && strstr(actual,"1.0000000000000002") && strstr(actual,"\"custom\":\"keep\"")); free(actual);
+        assert(!(ce_document_style_at(a->doc,2).marks&CE_MARK_LINK));
+        char *after=snapshot(a); action(a,ACT_UNDO); unchanged(a,before); assert(!ce_document_can_undo(a->doc));
+        action(a,ACT_REDO); unchanged(a,after); free(before); free(after); free(first); free(last);
+    }
+    reset_document(a,source,CE_FORMAT_JSON); select_range(a,3,7); char *before=snapshot(a);
+    char invalid[]={(char)0xc0,0}; PlatformWebClipboardData data={invalid,NULL,NULL};
+    assert(!browser_clipboard_paste(&data,a)); unchanged(a,before);
+    assert(a->edit->highlight1==3 && a->edit->highlight2==7 && !ce_document_can_undo(a->doc));
+    data=(PlatformWebClipboardData){"replacement\ntext",NULL,NULL};
+    cJSON_Hooks hooks={reject_clipboard_json_allocation,free}; cJSON_InitHooks(&hooks);
+    bool pasted=browser_clipboard_paste(&data,a); cJSON_InitHooks(NULL);
+    assert(!pasted); unchanged(a,before); assert(a->edit->highlight1==3 && a->edit->highlight2==7 && !ce_document_can_undo(a->doc));
+    free(before);
+    /* A rich offer keeps its own block and marks even with a plain fallback. */
+    select_range(a,5,5); data=(PlatformWebClipboardData){"plain fallback","<p><strong>Rich</strong></p>",NULL};
+    assert(browser_clipboard_paste(&data,a));
+    assert(!strcmp(ce_document_text(a->doc),"B\nabc\nRich\ndef\nA"));
+    CeBlockInfo block; assert(ce_document_block_info(a->doc,2,&block) && block.kind==CE_BLOCK_PARAGRAPH);
+    assert(ce_document_style_at(a->doc,block.start).marks&CE_MARK_BOLD);
+}
 static void test_list_and_clear_actions(App *a) {
     reset_document(a,"<ul><li><p>A</p></li><li><p>B</p></li><li><p>C</p></li></ul>",CE_FORMAT_HTML);
     char *before=snapshot(a); CeBlockInfo block;
@@ -177,6 +242,7 @@ int main(int argc,char **argv) {
     char *args[]={"clipboard-test","--notes",argv[1],"--font",argv[2]};
     assert(SDL_AppInit(&state,5,args)==SDL_APP_CONTINUE); App *a=state;
     free(a->active); a->active=copy_string("clipboard.json"); assert(a->active);
+    test_text_clipboard_without_assets(a,argv[1]); test_code_plain_clipboard(a);
     test_typing(a); test_list_and_clear_actions(a); test_clipboard(a); test_citation_clipboard(a);
     SDL_AppQuit(a,SDL_APP_SUCCESS); puts("application typing and clipboard transactions passed"); return 0;
 }

@@ -57,22 +57,47 @@ static char *publish_atom_html(void *context,const cJSON *atom,char *error,size_
     }
     return result;
 }
+static bool publish_has_images(App *a) {
+    CeBlockInfo b; for(size_t i=0;i<ce_document_block_count(a->doc);i++)
+        if(ce_document_block_info(a->doc,i,&b) && b.kind==CE_BLOCK_IMAGE) return true;
+    return false;
+}
 static char *publish_prepare(App *a,CePublishFormat format) {
     a->edit_error[0]=0;
     if(!a->active || a->edit->composition_length || a->edit->composition_snapshot) {
         SDL_strlcpy(a->edit_error,"请先打开文章并完成输入法输入，再复制或导出",sizeof a->edit_error); return NULL;
     }
+    if(publish_has_images(a) && !images_ready(a)) return NULL;
     CeCitationSession *session=NULL; CeCitationPrepared *snapshot=NULL; CeDocument *document=NULL;
     char *result=NULL;
     if(!ce_citation_session_build(a->doc,&a->library.library,NULL,&session,a->edit_error,sizeof a->edit_error) ||
        !ce_citation_session_snapshot(session,a->doc,&a->library.library,&snapshot,a->edit_error,sizeof a->edit_error)) goto done;
     document=ce_document_new();
     if(!document || !ce_document_import(document,ce_citation_prepared_json(snapshot),CE_FORMAT_JSON,a->edit_error,sizeof a->edit_error)) goto done;
-    result=ce_document_publish(document,format,publish_atom_html,snapshot,a->edit_error,sizeof a->edit_error);
+    result=ce_document_publish_images(document,format,publish_atom_html,snapshot,ce_image_publish_url,
+        &a->images.store,a->edit_error,sizeof a->edit_error);
 done:
     ce_document_free(document); ce_citation_prepared_free(snapshot); ce_citation_session_free(session);
     if(!result && !*a->edit_error) SDL_strlcpy(a->edit_error,"内存不足，未复制或导出",sizeof a->edit_error);
     return result;
+}
+static void publish_bundle_action(App *a,CePublishFormat format) {
+    if(!images_ready(a) || !a->active || a->edit->composition_length || a->edit->composition_snapshot) { message(a,"请先完成输入再导出"); return; }
+    CeCitationSession *session=NULL; CeCitationPrepared *snapshot=NULL; CeDocument *document=NULL;
+    unsigned char *bytes=NULL; size_t size=0; char *filename=NULL; a->edit_error[0]=0;
+    if(!ce_citation_session_build(a->doc,&a->library.library,NULL,&session,a->edit_error,sizeof a->edit_error) ||
+       !ce_citation_session_snapshot(session,a->doc,&a->library.library,&snapshot,a->edit_error,sizeof a->edit_error)) goto done;
+    document=ce_document_new();
+    if(!document || !ce_document_import(document,ce_citation_prepared_json(snapshot),CE_FORMAT_JSON,a->edit_error,sizeof a->edit_error) ||
+       !ce_image_publish_bundle(document,format,publish_atom_html,snapshot,&a->images.store,&bytes,&size,a->edit_error,sizeof a->edit_error)) goto done;
+    const char *dot=strrchr(a->active,'.'); size_t stem=dot?(size_t)(dot-a->active):strlen(a->active);
+    filename=malloc(stem+5); if(!filename) goto done;
+    memcpy(filename,a->active,stem); strcpy(filename+stem,".zip");
+    a->export_job=platform_export_bytes(a->window,filename,bytes,size,PLATFORM_EXPORT_ZIP);
+    if(a->export_job) message(a,"请选择导出位置：ZIP 包含文章和全部图片");
+done:
+    if(!a->export_job) message(a,*a->edit_error?a->edit_error:"无法准备文章图片包");
+    free(filename); free(bytes); ce_document_free(document); ce_citation_prepared_free(snapshot); ce_citation_session_free(session);
 }
 #ifdef __EMSCRIPTEN__
 static void publish_copy_complete(bool success,const char *plain,const char *html,const char *typed,
@@ -83,6 +108,7 @@ static void publish_copy_complete(bool success,const char *plain,const char *htm
 #endif
 static void publish_action(App *a,CePublishFormat format,bool copy) {
     if(!copy && a->export_job) { message(a,"正在导出，请先完成文件选择"); return; }
+    if(!copy && publish_has_images(a)) { publish_bundle_action(a,format); return; }
     char *source=publish_prepare(a,format);
     if(!source) { message(a,a->edit_error); return; }
     if(copy) {
@@ -101,9 +127,7 @@ static void publish_action(App *a,CePublishFormat format,bool copy) {
         char *filename=malloc(stem+strlen(extension)+1),*file=source;
         if(filename) { memcpy(filename,a->active,stem); strcpy(filename+stem,extension); }
         if(format==CE_PUBLISH_HTML) {
-            file=NULL; size_t size=0;
-            if(!publish_append(&file,&size,"<!doctype html>\n<html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"></head><body>\n") ||
-               !publish_append(&file,&size,source) || !publish_append(&file,&size,"</body></html>\n")) { free(file); file=NULL; }
+            file=ce_document_publish_html_page(source);
         }
         if(filename && file) a->export_job=platform_export_text(a->window,filename,file,
             format==CE_PUBLISH_MARKDOWN?PLATFORM_EXPORT_MARKDOWN:PLATFORM_EXPORT_HTML);

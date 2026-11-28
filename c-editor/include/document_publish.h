@@ -8,6 +8,10 @@ typedef enum { CE_PUBLISH_MARKDOWN, CE_PUBLISH_HTML } CePublishFormat;
  * The serializer itself never interprets or trusts citation render caches. */
 typedef char *(*CePublishAtomHtml)(void *context, const struct cJSON *atom,
                                  char *error, size_t capacity);
+/* Shared UTF-8 HTML wrapper and offline blog stylesheet; malloc-owned. */
+char *ce_document_publish_html_page(const char *body);
+typedef char *(*CePublishImageUrl)(void *context,const struct cJSON *image,char *error,size_t capacity);
+char *ce_document_publish_images(const CeDocument *,CePublishFormat,CePublishAtomHtml,void *,CePublishImageUrl,void *,char *,size_t);
 /* Read-only publication, not a lossless archive: source metadata is omitted.
  * Unknown nodes/marks, unsafe URLs/CSS and invalid structures fail explicitly.
  * Markdown uses inline HTML for marks without a faithful Markdown equivalent,

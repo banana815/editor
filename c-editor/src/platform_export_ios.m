@@ -51,7 +51,7 @@ static char export_delegate_key;
 @end
 
 void platform_export_ios_begin(SDL_Window *window, PlatformExport *job,
-                               const char *filename, const char *json) {
+                               const char *filename, const void *json,size_t size) {
     UIWindow *native_window = window ? (__bridge UIWindow *)SDL_GetPointerProperty(
         SDL_GetWindowProperties(window), SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER, NULL) : nil;
     NSString *name = filename ? [NSString stringWithUTF8String:filename] : nil;
@@ -61,7 +61,7 @@ void platform_export_ios_begin(SDL_Window *window, PlatformExport *job,
         platform_export_ios_complete(job, PLATFORM_EXPORT_FAILED, "无法创建 iOS 导出文件");
         return;
     }
-    NSData *snapshot = [NSData dataWithBytes:json length:strlen(json)];
+    NSData *snapshot = [NSData dataWithBytes:json length:size];
     if (!snapshot) {
         platform_export_ios_complete(job, PLATFORM_EXPORT_FAILED, "内存不足，未导出");
         return;

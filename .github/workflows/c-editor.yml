@@ -91,13 +91,13 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           cat > release-notes.txt <<'NOTES'
-          Note Lab 0.4.0 expands the writing workspace with six improvements:
-          - Smoother editing: adjacent typing undo groups, existing-link editing, and word/paragraph mouse selection.
-          - Article organization: single-level logical folders, tags, pinning and draft/revision/published status.
-          - Copy Markdown or blog HTML source, and export actual .md or UTF-8 .html files. Citations are regenerated from authoritative sources.
-          - Replace the next match or all matches, and search article bodies with snippets and navigation. ASCII letters ignore case; other UTF-8 text matches exactly.
-          - Paragraph focus, typewriter positioning and per-article non-whitespace character goals.
-          - Automatic pre-save history snapshots, preview/undoable restoration and a recoverable trash area.
+          Note Lab 0.5.0 adds long-form writing and blog publication tools:
+          - Collapse outline branches, jump to headings, and drag complete sections with their body content as one undoable edit.
+          - Type Markdown shortcuts for headings, lists, quotes, horizontal rules and fenced code; continue lists with Return and leave empty items naturally.
+          - Import, drop or paste PNG/JPEG/BMP images, edit alternative text/captions/width, and export articles with their images in a ZIP bundle.
+          - Preview the article beside the editor, switching between 720px desktop and 390px mobile layouts, with image/link/code checks.
+          - Compare historical versions with the current article, including paragraph additions/deletions and formatting or image-attribute changes.
+          - Back up the active workspace, including notes, image assets, article metadata, history, trash and library cache; restore to a validated independent copy that remains selected after restart.
 
           This development preview is published only after the desktop builds/tests/package-startup checks, C core sanitizers, Android and iOS builds/startup checks, and browser integration tests succeed for this tag.
 
@@ -108,7 +108,7 @@ jobs:
           - iOS: device and simulator archives contain unsigned app bundles; device installation requires signing and provisioning. These are not App Store packages.
           - SHA256SUMS.txt records every package's SHA-256 checksum.
 
-          Existing citation and library workflows remain available. Markdown may contain inline HTML for formatting or evaluated citations; unknown structures and unsafe links fail explicitly instead of being silently omitted. Published status is local metadata, not a blog-service upload. Snapshots preserve the previous saved content before the first changed save and then at most once per 60 seconds during saving, with duplicate content omitted; they are not a record of every keystroke. Full accessibility, physical-device behavior and the remaining third-party licensing review are not established by these checks; see the bundled project documentation and notices.
+          Existing citation and library workflows remain available. Citations are regenerated from authoritative sources. The preview uses Note Lab's default layout; a blog's theme may render differently. It does not upload to a blog or fetch remote images. Each imported image is limited to 16 MiB and 16 million pixels; ZIP bundles are limited to 128 MiB and 10,000 entries. Workspace recovery preserves the original directory and switches only after validation and persistent storage complete. A single JSON article export does not include its image assets or workspace history. Markdown may contain inline HTML for formatting, images and citations. Unknown structures and unsafe links fail explicitly. Full accessibility, physical-device behavior and the remaining third-party licensing review are not established by these checks; see the bundled project documentation and notices.
           NOTES
           if gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft' > release-draft.txt; then
             if [ "$(cat release-draft.txt)" != "true" ]; then
@@ -117,7 +117,7 @@ jobs:
             fi
           else
             gh release create "$RELEASE_TAG" --verify-tag --draft --prerelease \
-              --title "Note Lab $RELEASE_TAG — Focused writing preview" --notes-file release-notes.txt
+              --title "Note Lab $RELEASE_TAG — Long-form writing preview" --notes-file release-notes.txt
           fi
           gh release upload "$RELEASE_TAG" release-assets/* --clobber
           gh release edit "$RELEASE_TAG" --draft=false --prerelease --notes-file release-notes.txt
@@ -299,6 +299,7 @@ jobs:
           node c-editor/tests/test_library_source_browser.mjs c-editor/build-web/test_library_source_web.cjs "$(command -v google-chrome)"
           EDITOR_TEST_CPU_THROTTLE=6 node c-editor/tests/test_browser_library.mjs c-editor/build-web "$(command -v google-chrome)"
           node c-editor/tests/test_browser_writing.mjs c-editor/build-web "$(command -v google-chrome)"
+          node c-editor/tests/test_browser_longform.mjs c-editor/build-web "$(command -v google-chrome)"
       - name: Run C core fixtures in WebAssembly
         run: |
           source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
@@ -320,4 +321,6 @@ jobs:
             c-editor/build-web/browser-library-*.json
             c-editor/build-web/browser-writing-*.png
             c-editor/build-web/browser-writing-*.json
+            c-editor/build-web/browser-longform-*.png
+            c-editor/build-web/browser-longform-*.json
           if-no-files-found: error

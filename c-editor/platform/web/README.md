@@ -98,6 +98,28 @@ accessibility, browser quota eviction and device behavior still need platform
 validation. The C rewrite's remaining feature parity work is tracked in the
 main `c-editor/README.md`.
 
+The 0.5.0 long-form suite runs against the actual compiled application:
+
+```sh
+node c-editor/tests/test_browser_longform.mjs c-editor/build-web /path/to/chromium
+```
+
+The application workflow retains the existing editing, touch and 6x-CPU library
+regressions, and adds this suite after the 0.4.0 writing checks. Its screenshots
+and diagnostic records use `browser-longform-*.png` and
+`browser-longform-*.json`, and are uploaded even when a browser check fails.
+See the current project-status evidence for results; wiring a command into CI
+does not establish that it passed.
+
+Image input uses explicitly selected/dropped files or image data in a browser
+paste event; it does not fetch remote image URLs. The C code validates PNG,
+JPEG or BMP data before storing a managed asset. Article packages and whole
+workspace backups download as ZIP files. Restoring a workspace writes a fresh
+copy within the existing persistent mount, validates it, and waits for the
+activation marker's IndexedDB flush before switching the application. A failed
+flush attempts to persist the previous selection and retains the original
+live document. Keep the page open if that rollback itself cannot be saved.
+
 ## Bundled emoji coverage
 
 `cmake/EmojiFont.cmake` pins the official Google Fonts Noto Emoji 3.002 binary

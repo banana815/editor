@@ -2,7 +2,7 @@
  * source bytes; previewing never touches the active model or its savepoint. */
 enum { MAN_FOLDER, MAN_TAGS, MAN_PIN, MAN_STATUS, MAN_GOAL, MAN_PARAGRAPH,
        MAN_HISTORY, MAN_TRASH, MAN_NEW_FOLDER, MAN_FOLDERS, MAN_TAG_FILTER,
-       MAN_STATUS_FILTER, MAN_CLEAR_FILTER, MAN_RESTORE };
+       MAN_STATUS_FILTER, MAN_CLEAR_FILTER, MAN_RESTORE, MAN_DIFF, MAN_BACKUP, MAN_RECOVER };
 static bool manager_ready(App *a) {
     if(a->writing_store.ready) return true;
     if(ce_writing_store_open(&a->writing_store,a->notes_root)) return true;
@@ -67,17 +67,19 @@ static bool manager_save_info(App *a) {
     }
     manager_filter_files(a); platform_persist(structure_persisted,a); message(a,"文章属性已保存"); return true;
 }
-static void manager_select_archive(App *a,size_t index) {
-    if(index>=a->manager_archives.count) return;
+static bool manager_select_archive(App *a,size_t index) {
+    if(index>=a->manager_archives.count) return false;
     char *name=NULL,*data=NULL,*preview=NULL,error[256];
-    if(!ce_writing_archive_read(&a->writing_store,a->manager_mode==2,a->manager_archives.entries[index].id,&name,&data)) { message(a,a->writing_store.error); return; }
+    if(!ce_writing_archive_read(&a->writing_store,a->manager_mode==2,a->manager_archives.entries[index].id,&name,&data)) { message(a,a->writing_store.error); return false; }
     CeDocument *doc=ce_document_new();
     bool ok=doc && ce_document_import(doc,data,CE_FORMAT_AUTO,error,sizeof error);
-    if(ok) preview=copy_string(ce_document_text(doc));
+    if(ok) preview=a->manager_mode==1 && a->manager_diff?
+        ce_document_diff(doc,a->doc,error,sizeof error):copy_string(ce_document_text(doc));
     ce_document_free(doc);
-    if(!ok || !preview) { free(name); free(data); message(a,"这个版本无法预览，原文件和当前文章均保留"); return; }
+    if(!ok || !preview) { free(name); free(data); message(a,"这个版本无法预览，原文件和当前文章均保留"); return false; }
     manager_preview_clear(a); a->manager_selected=(int)index;
     a->manager_archive_name=name; a->manager_archive_data=data; a->manager_preview_text=preview;
+    return true;
 }
 static void manager_restore(App *a,const char *name) {
     if(a->manager_selected<0 || !a->manager_archive_data) { message(a,"请先选择并预览一个版本"); return; }
@@ -132,6 +134,13 @@ static void manager_prompt(App *a,Prompt mode,const char *value) {
     show_prompt(a,mode); EditBox_SetText(a->prompt,value); a->prompt->cursor=(int)strlen(value);
 }
 static void manager_action(App *a,int action) {
+    if(action==MAN_BACKUP) { recovery_backup(a); return; }
+    if(action==MAN_RECOVER) { recovery_import(a); return; }
+    if(action==MAN_DIFF) {
+        a->manager_diff=!a->manager_diff;
+        if(a->manager_selected>=0&&!manager_select_archive(a,(size_t)a->manager_selected))a->manager_diff=!a->manager_diff;
+        return;
+    }
     if(action==MAN_HISTORY) { manager_show(a,1); return; }
     if(action==MAN_TRASH) { manager_show(a,2); return; }
     if(action==MAN_FOLDERS) { manager_show(a,3); return; }
@@ -161,10 +170,14 @@ static void manager_layout(App *a) {
     for(size_t i=0;i<SDL_arraysize(a->manager_buttons);i++) a->manager_buttons[i]=(SDL_FRect){0};
     if(!a->manager_mode) {
         float cell=(width-36)/2;
-        a->manager_scroll=SDL_clamp(a->manager_scroll,0,SDL_max(0,7*60-height+86));
+        a->manager_scroll=SDL_clamp(a->manager_scroll,0,SDL_max(0,8*60-height+86));
         for(size_t i=0;i<13;i++) a->manager_buttons[i]=(SDL_FRect){x+12+(i%2)*(cell+12),84+(i/2)*60-a->manager_scroll,cell,52};
+        a->manager_buttons[MAN_BACKUP]=(SDL_FRect){x+12+cell+12,84+6*60-a->manager_scroll,cell,52};
+        a->manager_buttons[MAN_RECOVER]=(SDL_FRect){x+12,84+7*60-a->manager_scroll,cell,52};
     } else {
-        a->manager_buttons[MAN_RESTORE]=(SDL_FRect){x+12,18,116,36};
+        float restore_width=width<360?100:116;
+        a->manager_buttons[MAN_RESTORE]=(SDL_FRect){x+12,18,restore_width,36};
+        if(a->manager_mode==1) a->manager_buttons[MAN_DIFF]=(SDL_FRect){x+20+restore_width,18,width<360?84:100,36};
         if(a->manager_mode==3) a->manager_buttons[MAN_RESTORE].w=0;
         bool narrow=width<600;
         a->manager_rows=(SDL_FRect){x+12,70,narrow?width-24:270,narrow?160:height-76};
@@ -182,7 +195,8 @@ static void manager_draw(App *a) {
     fill(a,(SDL_FRect){0,0,a->width,a->height},(SDL_Color){0,0,0,100}); SDL_SetRenderDrawBlendMode(a->renderer,SDL_BLENDMODE_NONE);
     fill(a,a->manager_area,paper(a)); fill(a,a->manager_close,surface); label(a,"关闭",a->manager_close.x+16,25,text);
     const char *titles[]={"文章管理","历史版本 · 选择后预览","回收站 · 恢复为新文件","文件夹 · 点击筛选文章"};
-    float title_x=a->manager_area.x+(a->manager_mode==1 || a->manager_mode==2?140:12);
+    float title_x=a->manager_mode==1?a->manager_buttons[MAN_DIFF].x+a->manager_buttons[MAN_DIFF].w+8:
+        a->manager_mode==2?a->manager_buttons[MAN_RESTORE].x+a->manager_buttons[MAN_RESTORE].w+8:a->manager_area.x+12;
     clipped_label(a,titles[a->manager_mode],(SDL_FRect){title_x,25,a->manager_close.x-title_x-8,28},text);
     if(!a->manager_mode) {
         const char *states[]={"草稿","待修改","已发布"};
@@ -200,9 +214,11 @@ static void manager_draw(App *a) {
         SDL_strlcpy(names[12],"清除文章筛选",sizeof names[12]);
         SDL_Rect clip={(int)a->manager_area.x+8,76,(int)a->manager_area.w-16,(int)a->manager_area.h-72}; SDL_SetRenderClipRect(a->renderer,&clip);
         for(size_t i=0;i<13;i++) { SDL_FRect box=a->manager_buttons[i]; fill(a,box,surface); clipped_label(a,names[i],(SDL_FRect){box.x+8,box.y+12,box.w-16,30},text); }
+        for(int i=MAN_BACKUP;i<=MAN_RECOVER;i++) {SDL_FRect box=a->manager_buttons[i];fill(a,box,surface);clipped_label(a,i==MAN_BACKUP?"备份整个资料库":"恢复资料库副本",(SDL_FRect){box.x+8,box.y+12,box.w-16,30},text);}
         SDL_SetRenderClipRect(a->renderer,NULL);
     } else {
         if(a->manager_buttons[MAN_RESTORE].w) { fill(a,a->manager_buttons[MAN_RESTORE],surface); label(a,"恢复此版本",a->manager_buttons[MAN_RESTORE].x+9,25,text); }
+        if(a->manager_buttons[MAN_DIFF].w) {fill(a,a->manager_buttons[MAN_DIFF],surface);label(a,a->manager_diff?"查看原文":"对比当前",a->manager_buttons[MAN_DIFF].x+8,25,text);}
         SDL_Rect clip={(int)a->manager_rows.x,(int)a->manager_rows.y,(int)a->manager_rows.w,(int)a->manager_rows.h}; SDL_SetRenderClipRect(a->renderer,&clip);
         size_t count=a->manager_mode==3?ce_writing_folder_count(&a->writing_store)+1:a->manager_archives.count;
         if(!count) label(a,"暂无历史记录",clip.x+8,clip.y+16,text);
@@ -260,8 +276,9 @@ static bool manager_event(App *a,SDL_Event *event) {
         float x=event->button.x,y=event->button.y;
         if(contains(a->manager_close,x,y)) manager_close(a);
         else if(!a->manager_mode && y>=76 && y<a->manager_area.y+a->manager_area.h) {
-            for(size_t i=0;i<13;i++) if(contains(a->manager_buttons[i],x,y)) { manager_action(a,(int)i); break; }
+            for(size_t i=0;i<SDL_arraysize(a->manager_buttons);i++) if(i!=MAN_RESTORE && i!=MAN_DIFF && contains(a->manager_buttons[i],x,y)) { manager_action(a,(int)i); break; }
         } else if(contains(a->manager_buttons[MAN_RESTORE],x,y)) manager_action(a,MAN_RESTORE);
+        else if(contains(a->manager_buttons[MAN_DIFF],x,y)) manager_action(a,MAN_DIFF);
         else if(a->manager_mode && contains(a->manager_rows,x,y)) {
             size_t index=(size_t)((y-a->manager_rows.y+a->manager_scroll)/64);
             if(a->manager_mode==3 && index<=ce_writing_folder_count(&a->writing_store)) {

@@ -152,6 +152,33 @@ static void test_emoji(CeRichLayout *layout,TTF_Font *emoji,const CeRichTheme *t
         ce_document_free(doc);
     }
 }
+static SDL_Surface *resolve_test_image(void *context,const struct cJSON *image,char *error,size_t capacity) {
+    (void)image; (void)error; (void)capacity; (*(unsigned *)context)++;
+    SDL_Surface *surface=SDL_CreateSurface(100,50,SDL_PIXELFORMAT_RGBA32);
+    assert(surface && SDL_FillSurfaceRect(surface,NULL,SDL_MapSurfaceRGB(surface,230,20,30))); return surface;
+}
+static void test_longform(CeRichLayout *l,SDL_Renderer *renderer,const CeRichTheme *theme) {
+    CeDocument *d=load("{\"type\":\"doc\",\"content\":[{\"type\":\"image\",\"attrs\":{\"src\":\"notelab-asset:test.png\",\"width\":60,\"caption\":\"A caption\"}},{\"type\":\"blockquote\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"quote\"}]}]},{\"type\":\"codeBlock\",\"content\":[{\"type\":\"text\",\"text\":\"a\\nb\"}]},{\"type\":\"horizontalRule\"}]}",CE_FORMAT_JSON);
+    unsigned calls=0; CeRichImageSource images={1,&calls,resolve_test_image}; ce_rich_layout_set_images(l,&images);
+    update(l,d,240,theme); assert(calls==1); update(l,d,240,theme); assert(calls==1);
+    SDL_SetRenderClipRect(renderer,NULL); SDL_SetRenderDrawColor(renderer,255,255,255,255); assert(SDL_RenderClear(renderer));
+    assert(ce_rich_layout_draw(l,0,0,NULL,0,0));
+    SDL_Surface *pixels=SDL_RenderReadPixels(renderer,NULL); assert(pixels); Uint8 r,g,b,a;
+    assert(SDL_ReadSurfacePixel(pixels,30,15,&r,&g,&b,&a) && r>200 && g<50 && b<50);
+    assert(SDL_ReadSurfacePixel(pixels,70,15,&r,&g,&b,&a) && r==255 && g==255 && b==255);
+    SDL_DestroySurface(pixels);
+    size_t selected=0; ce_rich_layout_selection_rects(l,0,3,count_rect,&selected); assert(selected==1);
+    SDL_FRect before,after; assert(ce_rich_layout_caret(l,10,&before)); assert(ce_rich_layout_caret(l,12,&after));
+    assert(after.y>before.y); /* code newline remains editable geometry */
+    images.revision++; ce_rich_layout_set_images(l,&images); update(l,d,240,theme); assert(calls==2);
+    assert(ce_document_replace_block_json(d,0,"{\"type\":\"image\",\"attrs\":{\"src\":\"notelab-asset:test.png\",\"width\":200}}"));
+    update(l,d,240,theme); assert(calls==3);
+    SDL_SetRenderDrawColor(renderer,255,255,255,255); assert(SDL_RenderClear(renderer)); assert(ce_rich_layout_draw(l,0,0,NULL,0,0));
+    pixels=SDL_RenderReadPixels(renderer,NULL); assert(pixels);
+    assert(SDL_ReadSurfacePixel(pixels,160,15,&r,&g,&b,&a) && r>200 && g<50 && b<50); SDL_DestroySurface(pixels);
+    ce_rich_layout_set_images(l,NULL); update(l,d,240,theme); assert(calls==3); /* explicit placeholder */
+    ce_document_free(d);
+}
 int main(int argc,char **argv) {
     assert(argc==2 || argc==3);
     assert(SDL_SetEnvironmentVariable(SDL_GetEnvironment(),"SDL_VIDEODRIVER","dummy",true));
@@ -167,7 +194,7 @@ int main(int argc,char **argv) {
     test_wrap_and_empty(layout,&theme);
     test_lists_atoms_alignment(layout,&theme);
     assert(ce_rich_layout_draw(layout,0,0,NULL,0,0));
-    test_pixels(layout,renderer,&theme);
+    test_pixels(layout,renderer,&theme); test_longform(layout,renderer,&theme);
     assert(TTF_GetFontStyle(font)==TTF_STYLE_NORMAL && TTF_GetFontSize(font)==20);
     ce_rich_layout_destroy(layout); TTF_CloseFont(font); if(emoji) TTF_CloseFont(emoji);
     SDL_DestroyRenderer(renderer); SDL_DestroyWindow(window); TTF_Quit(); SDL_Quit();

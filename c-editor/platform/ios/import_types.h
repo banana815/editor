@@ -5,6 +5,8 @@
 
 /* Kept separate so the actual picker policy can be checked without UIKit. */
 static inline NSArray<UTType *> *notelab_import_types(PlatformImportKind kind) {
+    if (kind == PLATFORM_IMPORT_IMAGE) return @[UTTypePNG, UTTypeJPEG, UTTypeBMP];
+    if (kind == PLATFORM_IMPORT_BACKUP) return @[UTTypeZIP];
     if (kind == PLATFORM_IMPORT_JSON) return @[UTTypeJSON];
     if (kind == PLATFORM_IMPORT_DOCUMENT) {
         NSMutableArray<UTType *> *types = [NSMutableArray arrayWithArray:

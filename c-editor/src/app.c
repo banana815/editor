@@ -8,6 +8,14 @@
 #include "writing_store.h"
 #include "document_search.h"
 #include "document_publish.h"
+#include "document_diff.h"
+#include "workspace_backup.h"
+#include "app_outline_state.h"
+#include "app_images_state.h"
+#include "app_recovery_state.h"
+#include "image_publish.h"
+#include "platform_image_clipboard.h"
+#include "app_preview_state.h"
 #include <time.h>
 #include "rich_layout.h"
 #include "citations.h"
@@ -38,6 +46,7 @@
 typedef enum { PROMPT_NONE, PROMPT_NEW, PROMPT_FIND, PROMPT_LINK, PROMPT_DELETE,
     PROMPT_REPLACE_QUERY, PROMPT_REPLACE_VALUE, PROMPT_SEARCH_ALL,
     PROMPT_FOLDER, PROMPT_TAGS, PROMPT_GOAL, PROMPT_NEW_FOLDER, PROMPT_TAG_FILTER, PROMPT_RESTORE_NAME,
+    PROMPT_IMAGE_ALT, PROMPT_IMAGE_CAPTION, PROMPT_IMAGE_WIDTH,
     PROMPT_LIBRARY_SEARCH, PROMPT_CITATION_PAGE, PROMPT_CITATION_NOTE, PROMPT_LIBRARY_SOURCE } Prompt;
 typedef enum { LIB_CLOSE, LIB_IMPORT, LIB_ITEMS, LIB_CURRENT, LIB_SEARCH,
     LIB_COLLECTIONS, LIB_ALL, LIB_DESCENDANTS, LIB_PAGE, LIB_NOTE, LIB_INSERT,
@@ -49,7 +58,8 @@ typedef enum { ACT_SIDEBAR, ACT_NEW, ACT_SAVE, ACT_UNDO, ACT_REDO, ACT_BOLD,
     ACT_DELETE, ACT_REFRESH, ACT_PARAGRAPH, ACT_CLEAR, ACT_LEFT, ACT_CENTER,
     ACT_RIGHT, ACT_JUSTIFY, ACT_FIND_PREVIOUS, ACT_FIND_NEXT, ACT_MOVE_UP,
     ACT_MOVE_DOWN, ACT_INDENT, ACT_OUTDENT, ACT_MORE, ACT_FOCUS, ACT_OUTLINE, ACT_TOOLS,
-    ACT_MANAGE, ACT_REPLACE, ACT_REPLACE_ALL, ACT_SEARCH_ALL, ACT_COPY_MD, ACT_COPY_HTML, ACT_EXPORT_MD, ACT_EXPORT_HTML } Action;
+    ACT_MANAGE, ACT_REPLACE, ACT_REPLACE_ALL, ACT_SEARCH_ALL, ACT_COPY_MD, ACT_COPY_HTML, ACT_EXPORT_MD, ACT_EXPORT_HTML,
+    ACT_IMAGE, ACT_IMAGE_ALT, ACT_IMAGE_CAPTION, ACT_IMAGE_WIDTH, ACT_PREVIEW } Action;
 typedef struct { const char *label; Action action; SDL_FRect box; } Button;
 typedef struct EditorClipboardRequest EditorClipboardRequest;
 typedef struct {
@@ -83,7 +93,7 @@ typedef struct {
     SDL_FRect library_button, library_area, library_rows, library_buttons[LIB_BUTTON_COUNT];
     NoteStore store;
     NoteStore library_store;
-    char *notes_root;
+    char *notes_root, *base_notes_root;
     bool library_store_ready, library_cache_saving, library_unsaved, library_restore_failed;
     char library_warning[512];
     NoteList files;
@@ -114,6 +124,10 @@ typedef struct {
     bool resizing_sidebar;
     bool dark, sidebar, sidebar_manual, typewriter, smoke;
     bool focus, outline, tools;
+    OutlineView outline_view;
+    CeAppImages images;
+    RecoveryState recovery;
+    BlogPreview preview;
     SDL_FRect focus_button, outline_button, tools_button;
     CeWritingStats writing_stats;
     uint64_t stats_revision;
@@ -121,9 +135,9 @@ typedef struct {
     bool stats_valid;
     CeWritingStore writing_store;
     CeArticleInfo article_info;
-    bool manager_open, paragraph_focus;
+    bool manager_open, paragraph_focus, manager_diff;
     int manager_mode, manager_selected, status_filter;
-    SDL_FRect manager_area, manager_buttons[14], manager_rows, manager_preview, manager_close;
+    SDL_FRect manager_area, manager_buttons[17], manager_rows, manager_preview, manager_close;
     float manager_scroll, manager_preview_scroll, manager_preview_height;
     CeArchiveList manager_archives;
     char *manager_preview_text, *manager_archive_data, *manager_archive_name;
@@ -156,19 +170,25 @@ typedef struct {
     Uint64 edited_at;
     unsigned frames;
     const char *screenshot;
-    Button buttons[41];
+    Button buttons[46];
 } App;
 
 static void reveal_cursor(App *a);
 static void editing_break(App *a);
 static void layout(App *a);
 static size_t outline_count(App *a);
+static void outline_clear(App *a);
+static void preview_toggle(App *a);
+static void preview_reset(App *a);
 static bool manager_ready(App *a);
 static bool manager_filter_files(App *a);
 static void manager_load_article(App *a);
 static bool manager_checkpoint(App *a,bool force);
 static void manager_show(App *a,int mode);
 static bool manager_prompt_accept(App *a,const char *value);
+static void recovery_backup(App *a);
+static void recovery_import(App *a);
+static bool recovery_activate(App *a,const char *relative,const char *root);
 static void clipped_label(App *a,const char *text,SDL_FRect rect,SDL_Color color);
 static void editor_clipboard_action(App *a, CeEditorClipboardAction action);
 static bool typing_set(App *a,size_t offset,CeMark mark,const char *value,bool enabled);
@@ -509,12 +529,13 @@ static void close_prompt(App *a) {
     EditBox_SetFocus(a->edit, a->active != NULL && !a->library_open && !a->manager_open && !a->search_open);
 }
 static void mark_changed(App *a) { a->rich_dirty = true; a->edited_at = SDL_GetTicks(); update_title(a); }
+#include "app_images.inc"
 #include "app_publish.inc"
 #include "app_search.inc"
 static void accept_prompt(App *a) {
     if (a->prompt->composition_length) { message(a, "请先完成输入法选词"); return; }
     const char *value = a->prompt->text->text ? a->prompt->text->text : "";
-    if(search_prompt_accept(a,value) || manager_prompt_accept(a,value)) return;
+    if(images_prompt_accept(a,value) || search_prompt_accept(a,value) || manager_prompt_accept(a,value)) return;
     if (a->prompt_mode >= PROMPT_LIBRARY_SEARCH) {
         if (library_prompt_accept(a, value)) close_prompt(a);
         return;
@@ -563,6 +584,7 @@ static void accept_prompt(App *a) {
 /* Browser clipboard access must use the DOM clipboard event. Return an owned
  * UTF-8 snapshot and delete only if the selection still matches that snapshot. */
 static EditBox *clipboard_edit(App *a) {
+    if(a->recovery.busy) return NULL;
     EditBox *edit = a->prompt_mode != PROMPT_NONE ? a->prompt : a->edit;
     bool touch_selection=edit==a->edit && a->touch_menu_visible && a->active;
     if ((!edit->has_focus && !touch_selection) || edit->composition_length || edit->composition_snapshot) return NULL;
@@ -640,6 +662,7 @@ static void format_selection(App *a, CeMark mark, const char *value) {
 }
 #include "app_writing_commands.inc"
 static void action(App *a, Action which) {
+    if(a->recovery.busy) { message(a,"资料库备份或恢复进行中，请稍候"); return; }
     editing_break(a);
     if (which == ACT_FOCUS) {
         a->focus = !a->focus; a->touch_menu_visible=false;
@@ -661,6 +684,11 @@ static void action(App *a, Action which) {
     if (which == ACT_TYPEWRITER) { a->typewriter = !a->typewriter; return; }
     if (!a->active) { message(a, "请先新建或打开笔记"); return; }
     switch (which) {
+        case ACT_PREVIEW: preview_toggle(a); break;
+        case ACT_IMAGE: images_insert_picker(a); break;
+        case ACT_IMAGE_ALT: images_property_prompt(a,0); break;
+        case ACT_IMAGE_CAPTION: images_property_prompt(a,1); break;
+        case ACT_IMAGE_WIDTH: images_property_prompt(a,2); break;
         case ACT_REPLACE: search_begin_replace(a,false); break;
         case ACT_REPLACE_ALL: search_begin_replace(a,true); break;
         case ACT_COPY_MD: publish_action(a,CE_PUBLISH_MARKDOWN,true); break;
@@ -866,6 +894,7 @@ static bool rich_prepare(void *userdata, EditBox *edit) {
         if (!ok) { ce_document_free(preview); a->rich_valid=false; return false; }
         model = preview;
     }
+    images_attach(a,a->rich);
     CeRichTheme theme = ce_rich_theme_default(a->dark);
     CeRichCitationSource citations={a->citation_revision,a,citation_resolve};
     a->rich_valid = ce_rich_layout_update_citations(a->rich,model,width,&theme,&citations);
@@ -1492,6 +1521,9 @@ static void library_event(App *a,SDL_Event *event) {
 }
 
 #include "app_manager.inc"
+#include "app_preview.inc"
+#include "app_recovery_activate.inc"
+#include "app_recovery.inc"
 
 static void layout(App *a) {
     /* Layout uses window points. The renderer scales these coordinates to the
@@ -1542,7 +1574,7 @@ static void layout(App *a) {
     if(!a->tools || a->focus) {
         /* Keep the everyday writing actions in one row; advanced formatting
          * remains available through the explicit Tools button. */
-        const Action primary[]={ACT_SIDEBAR,ACT_NEW,ACT_SAVE,ACT_UNDO,ACT_REDO,ACT_BOLD,ACT_HEADING,ACT_FIND,ACT_MANAGE,ACT_SEARCH_ALL};
+        const Action primary[]={ACT_SIDEBAR,ACT_NEW,ACT_SAVE,ACT_UNDO,ACT_REDO,ACT_BOLD,ACT_HEADING,ACT_FIND,ACT_MANAGE,ACT_SEARCH_ALL,ACT_IMAGE,ACT_PREVIEW};
         for(size_t i=0;i<SDL_arraysize(a->buttons);i++) a->buttons[i].box=(SDL_FRect){0};
         for(size_t slot=0;!a->focus && slot<SDL_arraysize(primary) && slot<(size_t)columns;slot++)
             for(size_t i=0;i<SDL_arraysize(a->buttons);i++) if(a->buttons[i].action==primary[slot])
@@ -1558,6 +1590,7 @@ static void layout(App *a) {
     a->note_import_button=sidebar_width && !a->outline?(SDL_FRect){sidebar_width-98,top+4,88,36}:(SDL_FRect){0};
     float available=SDL_max(20,a->width-left-48),column=SDL_min(760.0f,available);
     a->editor_area = (SDL_FRect){left+24+(available-column)/2,top+30,column,SDL_max(40,a->height-top-102)};
+    preview_layout(a,left,top);
     float touch_button=SDL_min(90.0f,SDL_max(1.0f,(a->width-32.0f)/4));
     for(size_t i=0;i<SDL_arraysize(a->touch_menu_buttons);i++)
         a->touch_menu_buttons[i]=(SDL_FRect){(a->width-touch_button*4)/2+(float)i*touch_button,
@@ -1677,6 +1710,7 @@ static bool touch_route(App *a,SDL_Event *event) {
     bool down=event->type==SDL_EVENT_FINGER_DOWN,up=event->type==SDL_EVENT_FINGER_UP;
     bool eligible=a->active && !a->library_open && !a->manager_open && !a->search_open && a->prompt_mode==PROMPT_NONE &&
         contains(a->editor_area,finger.x,finger.y) &&
+        !(a->preview.open && contains(a->preview.area,finger.x,finger.y)) &&
         !(a->sidebar && !a->focus && contains(a->sidebar_area,finger.x,finger.y));
     int menu=-1;
     if(a->touch_menu_visible && !a->library_open && a->prompt_mode==PROMPT_NONE)
@@ -1741,25 +1775,7 @@ static void touch_tick(App *a) {
         if(delta) { touch_scroll(a,delta*(float)SDL_min(elapsed,50)*.35f); touch_selection_move(a,a->touch.last_x,y); }
     }
 }
-/* Outline rows are derived from the current model, never stored byte offsets
- * that could become stale after an edit or an undo. */
-static size_t outline_count(App *a) {
-    size_t count=0; CeBlockInfo block;
-    for(size_t i=0;i<ce_document_block_count(a->doc);i++)
-        if(ce_document_block_info(a->doc,i,&block) && block.kind==CE_BLOCK_HEADING) ++count;
-    return count;
-}
-static void outline_jump(App *a,size_t row) {
-    CeBlockInfo block;
-    for(size_t i=0;i<ce_document_block_count(a->doc);i++) {
-        if(!ce_document_block_info(a->doc,i,&block) || block.kind!=CE_BLOCK_HEADING) continue;
-        if(row--) continue;
-        a->edit->cursor=(int)block.start; a->edit->highlight1=a->edit->highlight2=-1;
-        a->typing_mask=0; EditBox_SetFocus(a->edit,true);
-        if(a->width<700) { a->sidebar=false; layout(a); }
-        reveal_cursor(a); return;
-    }
-}
+#include "app_outline.inc"
 static void writing_summary(App *a,char *out,size_t capacity) {
     size_t start=0,end=ce_document_length(a->doc),selected_start,selected_end;
     get_selection(a,&selected_start,&selected_end);
@@ -1811,6 +1827,7 @@ static void draw(App *a) {
         label(a,"点击“侧栏”打开或导入笔记。",a->editor_area.x,a->editor_area.y+68,text);
     }
     SDL_SetRenderClipRect(a->renderer,NULL);
+    preview_draw(a);
     if (a->sidebar && !a->focus) {
         fill(a,a->sidebar_area,surface);
         clipped_label(a,a->outline?"文章大纲":*a->folder_filter?a->folder_filter:
@@ -1823,22 +1840,7 @@ static void draw(App *a) {
         SDL_Rect side={(int)a->sidebar_area.x,(int)a->sidebar_area.y+40,(int)a->sidebar_area.w,(int)a->sidebar_area.h-40};
         SDL_SetRenderClipRect(a->renderer,&side);
         if(a->outline) {
-            size_t row=0; CeBlockInfo block;
-            for(size_t i=0;i<ce_document_block_count(a->doc);i++) {
-                if(!ce_document_block_info(a->doc,i,&block) || block.kind!=CE_BLOCK_HEADING) continue;
-                float y=a->sidebar_area.y+44+(float)row++*40-a->sidebar_scroll;
-                if(y+36<side.y || y>side.y+side.h) continue;
-                char title[256]; size_t n=SDL_min(block.end-block.start,sizeof title-1);
-                const char *source=ce_document_text(a->doc)+block.start;
-                while(n && ((unsigned char)source[n]&0xc0)==0x80) --n;
-                memcpy(title,source,n); title[n]=0;
-                float indent=16+(SDL_clamp(block.level,1,6)-1)*12;
-                clipped_label(a,*title?title:"无标题",(SDL_FRect){indent,y+6,a->sidebar_area.w-indent-12,30},text);
-            }
-            if(!row) {
-                clipped_label(a,"用标题组织文章",(SDL_FRect){16,side.y+12,side.w-24,30},text);
-                clipped_label(a,"输入 # 空格创建标题",(SDL_FRect){16,side.y+48,side.w-24,30},text);
-            }
+            outline_draw(a,side,text);
         } else for(size_t row=0;row<a->visible_count;++row) {
             size_t i=a->visible_files[row];
             float y=a->sidebar_area.y+44+(float)row*40-a->sidebar_scroll;
@@ -1880,6 +1882,9 @@ static void draw(App *a) {
         else if(a->prompt_mode==PROMPT_NEW_FOLDER) title="新建文件夹";
         else if(a->prompt_mode==PROMPT_TAG_FILTER) title="按标签筛选文章（留空清除）";
         else if(a->prompt_mode==PROMPT_RESTORE_NAME) title="恢复文章 · 文件名（不会覆盖同名文件）";
+        else if(a->prompt_mode==PROMPT_IMAGE_ALT) title="图片替代文本（描述画面内容）";
+        else if(a->prompt_mode==PROMPT_IMAGE_CAPTION) title="图片说明";
+        else if(a->prompt_mode==PROMPT_IMAGE_WIDTH) title="图片宽度：0 自适应，最大 2400 像素";
         label(a,title,24,a->prompt_area.y+18,text);
         if(a->prompt_mode!=PROMPT_DELETE) {
             fill(a,a->prompt_input_area,surface);
@@ -1973,8 +1978,14 @@ SDL_AppResult SDL_AppInit(void **state, int argc, char **argv) {
     a->rich_dirty=true;
     EditBox_SetLayout(a->edit,&rich_hooks,a);
     char *default_path=notes?NULL:SDL_GetPrefPath("NoteLab","notes");
-    NoteResult result=note_store_init(&a->store,notes?notes:default_path);
-    if(result==NOTE_OK) a->notes_root=copy_string(notes?notes:default_path);
+    a->base_notes_root=notes||default_path?copy_string(notes?notes:default_path):NULL;
+    char recovery_error[512]={0};
+    NoteResult result=a->base_notes_root?note_store_init(&a->store,a->base_notes_root):NOTE_NO_MEMORY;
+    if(result!=NOTE_OK || !ce_workspace_resolve(a->base_notes_root,&a->notes_root,recovery_error,sizeof recovery_error)) {
+        SDL_free(default_path); SDL_Log("Workspace: %s",recovery_error); return SDL_APP_FAILURE;
+    }
+    note_store_destroy(&a->store);
+    result=note_store_init(&a->store,a->notes_root);
     SDL_free(default_path);
     if(result!=NOTE_OK) { SDL_Log("Notes: %s",a->store.error); return SDL_APP_FAILURE; }
     if(!a->notes_root) return SDL_APP_FAILURE;
@@ -1993,11 +2004,14 @@ SDL_AppResult SDL_AppInit(void **state, int argc, char **argv) {
         {"管理",ACT_MANAGE,{0}}, {"替换",ACT_REPLACE,{0}}, {"全替换",ACT_REPLACE_ALL,{0}},
         {"搜文章",ACT_SEARCH_ALL,{0}}, {"复制MD",ACT_COPY_MD,{0}}, {"复制HTML",ACT_COPY_HTML,{0}},
         {"导出MD",ACT_EXPORT_MD,{0}}, {"导出HTML",ACT_EXPORT_HTML,{0}},
+        {"插入图",ACT_IMAGE,{0}}, {"替代文",ACT_IMAGE_ALT,{0}}, {"图片说明",ACT_IMAGE_CAPTION,{0}},
+        {"图片宽",ACT_IMAGE_WIDTH,{0}}, {"预览",ACT_PREVIEW,{0}},
         {"更多 ›",ACT_MORE,{0}}
     };
     SDL_COMPILE_TIME_ASSERT(button_count, SDL_arraysize(buttons) == SDL_arraysize(a->buttons));
     memcpy(a->buttons,buttons,sizeof(buttons)); a->sidebar=true; a->sidebar_width=240;
     platform_web_input_init();
+    images_web_init(a);
     platform_web_input_clipboard(browser_clipboard_read, browser_clipboard_cut, browser_clipboard_error, SDL_AppEvent, a);
     platform_web_input_clipboard_rich(browser_clipboard_prepare, browser_clipboard_finish, browser_clipboard_paste, a);
     refresh_files(a); layout(a);
@@ -2009,6 +2023,12 @@ SDL_AppResult SDL_AppInit(void **state, int argc, char **argv) {
 SDL_AppResult SDL_AppEvent(void *state, SDL_Event *event) {
     if (platform_web_input_handle_event(event, SDL_AppEvent, state)) return SDL_APP_CONTINUE;
     App *a=state;
+    if(a->recovery.busy) {
+        if(event->type==SDL_EVENT_QUIT || event->type==SDL_EVENT_WINDOW_CLOSE_REQUESTED)
+            message(a,"资料库操作进行中，请完成后再退出");
+        return SDL_APP_CONTINUE;
+    }
+    if(event->type==SDL_EVENT_DROP_FILE) { images_drop(a,event->drop.data); return SDL_APP_CONTINUE; }
     editing_event(a,event);
     if((event->type==SDL_EVENT_MOUSE_BUTTON_DOWN || event->type==SDL_EVENT_MOUSE_BUTTON_UP) && event->button.which==SDL_TOUCH_MOUSEID) return SDL_APP_CONTINUE;
     if(event->type==SDL_EVENT_MOUSE_MOTION && event->motion.which==SDL_TOUCH_MOUSEID) return SDL_APP_CONTINUE;
@@ -2065,6 +2085,8 @@ SDL_AppResult SDL_AppEvent(void *state, SDL_Event *event) {
         }
         if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN) { SDL_ClearComposition(a->window); sync_view(a); }
     }
+    if(outline_event(a,event)) return SDL_APP_CONTINUE;
+    if(preview_event(a,event)) return SDL_APP_CONTINUE;
     if(event->type==SDL_EVENT_MOUSE_BUTTON_DOWN) {
         if(contains(a->focus_button,event->button.x,event->button.y)) { action(a,ACT_FOCUS); return SDL_APP_CONTINUE; }
         if(contains(a->outline_button,event->button.x,event->button.y)) { action(a,ACT_OUTLINE); return SDL_APP_CONTINUE; }
@@ -2100,7 +2122,7 @@ SDL_AppResult SDL_AppEvent(void *state, SDL_Event *event) {
         }
         return SDL_APP_CONTINUE;
     }
-    if(writing_heading_shortcut(a,event)) return SDL_APP_CONTINUE;
+    if(writing_heading_shortcut(a,event) || writing_return_event(a,event)) return SDL_APP_CONTINUE;
     if(event->type==SDL_EVENT_KEY_DOWN && (event->key.mod&(SDL_KMOD_CTRL|SDL_KMOD_GUI)) && !a->edit->composition_length) {
         if(event->key.key==SDLK_A) {
             editor_clipboard_action(a,CE_EDITOR_SELECT_ALL); return SDL_APP_CONTINUE;
@@ -2164,6 +2186,8 @@ SDL_AppResult SDL_AppIterate(void *state) {
     App *a=state;
     editing_tick(a);
     touch_tick(a);
+    images_poll(a);
+    recovery_poll(a);
     library_import_poll(a);
     library_source_poll(a);
     document_import_finish(a);
@@ -2173,7 +2197,7 @@ SDL_AppResult SDL_AppIterate(void *state) {
             message(a, result); platform_export_free(a->export_job); a->export_job = NULL;
         }
     }
-    if(a->active && !a->saving && (ce_document_is_modified(a->doc) || a->citation_normalized_pending) && !a->edit->composition_length && SDL_GetTicks()-a->edited_at>=1000) {
+    if(a->active && !a->recovery.busy && !a->saving && (ce_document_is_modified(a->doc) || a->citation_normalized_pending) && !a->edit->composition_length && SDL_GetTicks()-a->edited_at>=1000) {
         if(!save_document(a)) a->edited_at=SDL_GetTicks();
     }
     draw(a); ++a->frames;
@@ -2183,14 +2207,17 @@ SDL_AppResult SDL_AppIterate(void *state) {
 void SDL_AppQuit(void *state, SDL_AppResult result) {
     (void)result; App *a=state; if(!a) return;
     platform_web_input_destroy();
+    images_destroy(a); recovery_shutdown(a);
     clipboard_request_free(a->clipboard_event); a->clipboard_event=NULL;
     EditBox_Destroy(a->prompt); EditBox_Destroy(a->edit);
     ce_rich_layout_destroy(a->rich); free(a->rich_text);
+    outline_clear(a);
+    preview_reset(a);
     ce_citation_session_free(a->citation_session);
     manager_preview_clear(a); ce_writing_archive_list_free(&a->manager_archives); ce_writing_store_close(&a->writing_store); free(a->visible_files);
     search_results_clear(a); free(a->replace_query); free(a->replace_text); free(a->all_search_query);
     ce_document_free(a->doc); note_store_list_free(&a->files); note_store_destroy(&a->store);
-    note_store_destroy(&a->library_store); free(a->notes_root);
+    note_store_destroy(&a->library_store); free(a->notes_root); free(a->base_notes_root);
     free(a->active); free(a->search_keyword);
     free(a->typing_color); free(a->typing_highlight); free(a->typing_link);
     free(a->saving_name); free(a->saving_snapshot);

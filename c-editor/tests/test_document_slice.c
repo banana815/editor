@@ -425,9 +425,37 @@ static void test_allocator_contract(void) {
     /* All public strings use ordinary free, independently of cJSON. */
     free(json);free(plain);free(html);assert(!prefixed_live);cJSON_InitHooks(NULL);
 }
+static void test_longform_slices(void) {
+    const char *fixture="{\"type\":\"doc\",\"content\":[{\"type\":\"blockquote\",\"attrs\":{\"customQuote\":4503599627370501},\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"abc\"}]}]},{\"type\":\"codeBlock\",\"attrs\":{\"language\":\"c\",\"customCode\":true},\"content\":[{\"type\":\"text\",\"text\":\"x\\ny\"}]},{\"type\":\"image\",\"attrs\":{\"src\":\"notelab-asset:hash.png\",\"alt\":\"alt text\",\"caption\":\"caption\",\"width\":320,\"customImage\":7},\"content\":[]},{\"type\":\"horizontalRule\",\"attrs\":{\"customRule\":1},\"content\":[]}]}";
+    CeDocument *source=load(fixture,CE_FORMAT_JSON),*empty=load("",CE_FORMAT_TEXT);
+    CeDocumentSlice *whole=capture_slice(source,0,ce_document_length(source)),*html_round=NULL;
+    char *json=NULL,*html=NULL,*plain=NULL;
+    assert(ce_document_slice_json(whole,&json,test_error,sizeof test_error));
+    assert(ce_document_slice_plain(whole,NULL,NULL,&plain,test_error,sizeof test_error));
+    assert(strstr(plain,"abc\nx\ny") && strstr(plain,"alt text") && strstr(plain,"caption"));
+    assert(ce_document_slice_html(whole,NULL,NULL,&html,test_error,sizeof test_error));
+    assert(strstr(html,"<blockquote>") && strstr(html,"<pre>") && strstr(html,"<hr>"));
+    bool found=false; assert(ce_document_slice_from_html(html,strlen(html),&html_round,&found,test_error,sizeof test_error) && found);
+    CeDocument *result=paste(empty,0,0,html_round,NULL); char *before=snapshot(source); document_is(result,before);
+    ce_document_free(result); free(before); free(json); free(html); free(plain);
+    CeDocumentSlice *partial=capture_slice(source,1,2); CeDocument *target=load("XY",CE_FORMAT_TEXT);
+    result=paste(target,1,1,partial,NULL); text_is(result,"X\nb\nY");
+    json=snapshot(result); assert(strstr(json,"customQuote") && strstr(json,"4503599627370501")); free(json); ce_document_free(result);
+    CeDocumentSlice *nothing=capture_slice(empty,0,0); result=paste(source,1,2,nothing,NULL);
+    assert(!strncmp(ce_document_text(result),"ac\nx\ny",6)); json=snapshot(result); assert(strstr(json,"customQuote") && strstr(json,"customCode") && strstr(json,"customImage") && strstr(json,"customRule"));
+    free(json); ce_document_free(result);
+    CeDocumentSlice *code=capture_slice(source,4,7); result=paste(empty,0,0,code,NULL);
+    text_is(result,"x\ny"); CeBlockInfo block; assert(ce_document_block_count(result)==1 && ce_document_block_info(result,0,&block) && block.kind==CE_BLOCK_CODE);
+    ce_document_free(result); ce_document_slice_free(code); ce_document_slice_free(nothing); ce_document_slice_free(partial);
+    ce_document_slice_free(html_round); ce_document_slice_free(whole); ce_document_free(source); ce_document_free(empty); ce_document_free(target);
+}
 int main(void) {
+#ifdef _MSC_VER
+    _set_error_mode(_OUT_TO_STDERR);
+#endif
     cJSON_Hooks hooks={slice_malloc,slice_free};cJSON_InitHooks(&hooks);
     test_text();test_lists();test_atoms();test_bibliography();test_guard_and_validation();test_html_and_unknown();test_boundaries();test_oom();test_formal_whole_document();test_selected_bibliography();
+    test_longform_slices();
     assert(!live_allocations && !live_bytes);
     cJSON_InitHooks(NULL);test_allocator_contract();
     assert(!live_allocations && !live_bytes);

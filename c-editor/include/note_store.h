@@ -53,11 +53,16 @@ NoteResult note_store_create(NoteStore *store, const char *name,
 NoteResult note_store_save(NoteStore *store, const char *name,
                            const void *data, size_t size);
 /* Explicitly selected publication output only. Same portable flat-name and
- * regular-file checks, adding .html to the note extensions. Create exclusively
+ * regular-file checks, adding .html/.zip to the note extensions. Create exclusively
  * or atomically replace an existing file; a failed write never truncates an
  * existing destination. This does not add HTML to note listing/read/create/save
  * or normalization contracts. No implicit output location is selected. */
 int note_store_valid_export_name(const char *name);
+/* Private managed assets: SHA-256 lowercase names + .png/.jpg/.bmp only;
+ * no listing as notes, no replacement. 16 MiB bounded reads/creates. */
+int note_store_valid_asset_name(const char *name);
+NoteResult note_store_read_asset(NoteStore *,const char *,char **,size_t *);
+NoteResult note_store_create_asset(NoteStore *,const char *,const void *,size_t);
 NoteResult note_store_export(NoteStore *store, const char *name,
                              const void *data, size_t size);
 NoteResult note_store_delete(NoteStore *store, const char *name);

@@ -23,11 +23,12 @@ static const char *string(const cJSON *n,const char *key) {
     const cJSON *v=get(n,key); return cJSON_IsString(v)?v->valuestring:"";
 }
 static bool type_is(const cJSON *n,const char *type) { return !strcmp(string(n,"type"),type); }
-static bool paragraph(const cJSON *n) { return type_is(n,"paragraph") || type_is(n,"heading"); }
+static bool paragraph(const cJSON *n) { return type_is(n,"paragraph") || type_is(n,"heading") || type_is(n,"codeBlock"); }
 static bool list(const cJSON *n) { return type_is(n,"bulletList") || type_is(n,"orderedList"); }
-static bool container(const cJSON *n) { return type_is(n,"doc") || list(n) || type_is(n,"listItem"); }
+static bool container(const cJSON *n) { return type_is(n,"doc") || list(n) || type_is(n,"listItem") || type_is(n,"blockquote"); }
 static bool leaf(const cJSON *n) {
     return paragraph(n) || type_is(n,"zoteroCitationBlock") || type_is(n,"zoteroEndnoteSection") ||
+        type_is(n,"image") || type_is(n,"horizontalRule") ||
         (!get(n,"content") && !type_is(n,"doc"));
 }
 static bool attach(cJSON *parent,const char *key,cJSON *value,Error *e) {
@@ -240,7 +241,7 @@ static size_t open_depth(const cJSON *root,bool last) {
     while (n) {
         ++depth;
         if (paragraph(n)) return depth;
-        if (!list(n) && !type_is(n,"listItem")) return 0;
+        if (!list(n) && !type_is(n,"listItem") && !type_is(n,"blockquote")) return 0;
         n=edge(n,last);
     }
     return 0;
@@ -249,7 +250,7 @@ static size_t selected_open(const cJSON *n,const Tree *t,size_t *ordinal,size_t 
     size_t from,size_t to,size_t depth) {
     size_t count=leaves_in(n),begin=*ordinal;
     if (!count || wanted<begin || wanted>=begin+count) { *ordinal+=count;return SIZE_MAX; }
-    if ((list(n) || type_is(n,"listItem")) && from<=t->leaves[begin].start && to>=t->leaves[begin+count-1].end)
+    if ((list(n) || type_is(n,"listItem") || type_is(n,"blockquote")) && from<=t->leaves[begin].start && to>=t->leaves[begin+count-1].end)
         return depth?depth-1:0;
     if (leaf(n)) return paragraph(n)?depth:0;
     if (!container(n)) return 0;
@@ -422,7 +423,11 @@ static bool atom_label(const cJSON *node,CeDocumentSliceAtomText provider,void *
             adds(&text,*label?label:"未命名文献",e);
         }
         cJSON_Delete(entries);
-    } else { adds(&text,"[",e);adds(&text,string(node,"type"),e);adds(&text,"]",e); }
+    } else if(type_is(node,"image")) {
+        adds(&text,"[图片] ",e); adds(&text,string(attrs,"alt"),e);
+        if(*string(attrs,"caption")) { adds(&text," · ",e); adds(&text,string(attrs,"caption"),e); }
+    } else if(type_is(node,"horizontalRule")) adds(&text,"---",e);
+    else { adds(&text,"[",e);adds(&text,string(node,"type"),e);adds(&text,"]",e); }
     if (e->failed) { free(text.data);return false; }
     *out=text.data;return true;
 }
@@ -493,7 +498,32 @@ static bool html_inline(const cJSON *node,Buffer *text,Error *e) {
     while (used && !e->failed) adds(text,closing[--used],e);
     free(closing);return !e->failed;
 }
+static bool clipboard_image_uri(const char *s) {
+    const char *prefixes[]={"data:image/png;base64,","data:image/jpeg;base64,","data:image/bmp;base64,"};
+    const char *data=NULL;
+    for(size_t i=0;i<sizeof prefixes/sizeof *prefixes;i++) if(!strncmp(s,prefixes[i],strlen(prefixes[i]))) data=s+strlen(prefixes[i]);
+    if(!data) return false;
+    size_t size=strlen(data); if(!size || size%4) return false;
+    size_t padding=data[size-1]=='='?1:0; if(size>1 && data[size-2]=='=') padding++;
+    for(size_t i=0;i<size-padding;i++) if(!((data[i]>='a' && data[i]<='z') || (data[i]>='A' && data[i]<='Z') ||
+        (data[i]>='0' && data[i]<='9') || data[i]=='+' || data[i]=='/')) return false;
+    return true;
+}
 static bool html_node(const cJSON *node,Buffer *text,CeDocumentSliceAtomText provider,void *context,Error *e) {
+    if(type_is(node,"horizontalRule")) return adds(text,"<hr>",e);
+    if(type_is(node,"image")) {
+        const cJSON *attrs=get(node,"attrs"); const char *data=string(attrs,"notelabClipboardImageData");
+        if(clipboard_image_uri(data)) {
+            adds(text,"<figure><img src=\"",e); escaped(text,data,e); adds(text,"\" alt=\"",e); escaped(text,string(attrs,"alt"),e); adds(text,"\"",e);
+            const cJSON *width=get(attrs,"width");
+            if(cJSON_IsNumber(width) && width->valuedouble>0 && width->valuedouble<=2400 && floor(width->valuedouble)==width->valuedouble) {
+                char css[96]; snprintf(css,sizeof css," style=\"max-width:100%%;height:auto;width:%dpx\"",width->valueint); adds(text,css,e);
+            } else adds(text," style=\"max-width:100%;height:auto\"",e);
+            adds(text,">",e);
+            if(*string(attrs,"caption")) { adds(text,"<figcaption>",e); escaped(text,string(attrs,"caption"),e); adds(text,"</figcaption>",e); }
+            return adds(text,"</figure>",e);
+        }
+    }
     const char *tag="div";char heading[3]="h1";
     if (type_is(node,"paragraph")) tag="p";
     else if (type_is(node,"heading")) {
@@ -501,6 +531,8 @@ static bool html_node(const cJSON *node,Buffer *text,CeDocumentSliceAtomText pro
     } else if (type_is(node,"bulletList")) tag="ul";
     else if (type_is(node,"orderedList")) tag="ol";
     else if (type_is(node,"listItem")) tag="li";
+    else if (type_is(node,"blockquote")) tag="blockquote";
+    else if (type_is(node,"codeBlock")) tag="pre";
     adds(text,"<",e);adds(text,tag,e);
     if (type_is(node,"orderedList")) {
         const cJSON *start=get(get(node,"attrs"),"start");
@@ -704,13 +736,14 @@ static bool compatible(const cJSON *a,const cJSON *b,size_t *work,Error *e) {
         if (strcmp(field->string,"type") && strcmp(field->string,"content") && strcmp(field->string,"attrs") &&
             !equal_json(get(a,field->string),field,work,e)) return false;
     if (paragraph(a) && paragraph(b)) {
+        if((type_is(a,"codeBlock") || type_is(b,"codeBlock")) && strcmp(string(a,"type"),string(b,"type"))) return false;
         const cJSON *attrs=get(b,"attrs");
         for (const cJSON *field=attrs?attrs->child:NULL;field;field=field->next)
             if (strcmp(field->string,"level") && strcmp(field->string,"textAlign") &&
                 !equal_json(get(get(a,"attrs"),field->string),field,work,e)) return false;
         return true;
     }
-    if ((!list(a) && !type_is(a,"listItem")) || strcmp(string(a,"type"),string(b,"type"))) return false;
+    if ((!list(a) && !type_is(a,"listItem") && !type_is(a,"blockquote")) || strcmp(string(a,"type"),string(b,"type"))) return false;
     /* Open container boundaries adopt the destination's numbering, while
      * custom attributes must match rather than being silently discarded. */
     const cJSON *aa=get(a,"attrs"),*bb=get(b,"attrs");
@@ -776,6 +809,9 @@ static bool single_chain(const cJSON *root) {
 }
 static bool unwrap_inline(cJSON *root,size_t *start,size_t *end,Error *e) {
     if (!*start || !*end || *start!=open_depth(root,false) || *end!=open_depth(root,true) || !single_chain(root)) return true;
+    /* A quote is meaningful structure even for a partial text selection.
+     * Retain its wrapper/metadata when fitting into another block context. */
+    for(const cJSON *p=edge(root,false);p && !leaf(p);p=edge(p,false)) if(type_is(p,"blockquote")) return true;
     cJSON *n=edge_leaf(root,false);if (!n) return true;
     cJSON *copy=duplicate(n,e),*content=cJSON_CreateArray();
     if (!content) { cJSON_Delete(copy);return fail(e,"out of memory fitting inline slice"); }
@@ -787,7 +823,7 @@ static bool wrap_context(const cJSON *left,cJSON *insert,size_t *start,size_t *e
     if (!*start || !*end || !paragraph(edge(insert,false)) || !paragraph(edge(insert,true))) return true;
     const cJSON *path[CE_DOCUMENT_SLICE_MAX_DEPTH];size_t count=0;
     const cJSON *n=edge(left,true);
-    while (n && (list(n) || type_is(n,"listItem"))) { path[count++]=n;n=edge(n,true); }
+    while (n && (list(n) || type_is(n,"listItem") || type_is(n,"blockquote"))) { path[count++]=n;n=edge(n,true); }
     if (!n || !paragraph(n) || !count) return true;
     cJSON *content=cJSON_DetachItemFromObjectCaseSensitive(insert,"content");
     for (size_t i=count;i && !e->failed;i--) {
@@ -1069,8 +1105,8 @@ bool ce_document_slice_prepare_replace(const CeDocument *document,size_t from,si
             position.offset=position.node?(paragraph(position.node)?inline_length(position.node):3):0;
             /* Closed blocks at the start/end of a plain paragraph do not add
              * synthetic blank paragraphs. Metadata-bearing empty nodes stay. */
-            if (!start || (trivial_empty(edge(left,true)) && !paragraph(edge(insert,false)))) trim_empty(left,true,&position);
-            if (!end || (trivial_empty(edge(right,false)) && !paragraph(edge(insert,true)))) trim_empty(right,false,&position);
+            if (!start || (trivial_empty(edge(left,true)) && (!paragraph(edge(insert,false)) || type_is(edge(insert,false),"codeBlock")))) trim_empty(left,true,&position);
+            if (!end || (trivial_empty(edge(right,false)) && (!paragraph(edge(insert,true)) || type_is(edge(insert,true),"codeBlock")))) trim_empty(right,false,&position);
             ok=merge_content(cJSON_GetObjectItemCaseSensitive(left,"content"),cJSON_GetObjectItemCaseSensitive(insert,"content"),start,&position,&work,&e);
         } else {
             if (edge(left,false)==edge(left,true)) trim_empty(left,true,&position);

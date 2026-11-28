@@ -48,5 +48,12 @@ int main(int argc,char **argv) {
     NoteList listed={0}; assert(note_store_list(&store,&listed)==NOTE_OK);
     for(size_t i=0;i<listed.count;i++) assert(!strstr(listed.names[i],".html"));
     note_store_list_free(&listed); note_store_destroy(&store);
+    canceled=false; expected_filter="zip"; snprintf(path,sizeof path,"%s/bundle.zip",argv[1]); selected_path=path;
+    const unsigned char binary[]={0x50,0x4b,0,255,128,0,13,10};
+    job=platform_export_bytes(NULL,"bundle.zip",binary,sizeof binary,PLATFORM_EXPORT_ZIP);
+    assert(job && platform_export_status(job,NULL)==PLATFORM_EXPORT_DONE); platform_export_free(job);
+    size_t binary_size=0; void *binary_read=SDL_LoadFile(path,&binary_size);
+    assert(binary_read && binary_size==sizeof binary && !memcmp(binary_read,binary,sizeof binary)); SDL_free(binary_read);
+    assert(!note_store_valid_name("bundle.zip") && note_store_valid_export_name("bundle.zip"));
     return 0;
 }

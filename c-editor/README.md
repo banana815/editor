@@ -1,7 +1,7 @@
 # Note Lab — focused writing in C
 
 This directory is the active implementation of Note Lab for **Windows, macOS,
-Linux, Android, iOS and the browser**. Version 0.4.0 expands the writing-first
+Linux, Android, iOS and the browser**. Version 0.5.0 expands the writing-first
 workspace for notes and articles, alongside the existing rich-text and Zotero
 workflows. The retired Tauri application is available in Git history. Legacy
 note import remains supported; feature parity and final acceptance work are
@@ -28,7 +28,9 @@ library and editor adapt to smaller screens.
 - **专注** hides the sidebar and formatting controls. Use **退出专注** or Escape
   to return to the workspace without changing the document.
 - **大纲** replaces the article list with the current document's H1–H6 headings.
-  Select a heading to jump to it; **文章库** returns to the note list.
+  Select a heading to jump to it; its disclosure arrow folds descendant outline
+  entries. Drag the right-hand handle to move a whole section with its body and
+  subheadings. **文章库** returns to the note list.
 - The footer shows statistics for the document, or just the selected text:
   non-whitespace characters, approximate words, non-empty text paragraphs and
   estimated reading time. Characters are counted as Unicode scalar values,
@@ -59,7 +61,7 @@ to the entire selection removes that list formatting; otherwise it applies the
 chosen type. Metadata that cannot safely survive the change causes an explicit
 failure and preserves the original document.
 
-Version 0.4.0 adds six parts of the writing workflow:
+The six writing workflows introduced in 0.4.0 remain available:
 
 1. **Editing.** Adjacent ordinary typing within 500 ms can share an undo step.
    Navigation, selection, formatting, deletion, IME composition and savepoints
@@ -74,15 +76,16 @@ Version 0.4.0 adds six parts of the writing workflow:
    text. 已发布 is a local workflow label and does not upload anything.
 3. **Publication.** **复制MD** and **复制HTML** copy the whole article as literal
    source for a blog's Markdown/HTML source editor. **导出MD** and **导出HTML**
-   create `.md` and UTF-8 `.html` files through the platform save/download flow.
+   create `.md` and UTF-8 `.html` files through the platform save/download flow
+   for text-only articles; articles containing images export as ZIP bundles.
    The HTML copy is a body fragment; the HTML file includes a document wrapper
    and charset declaration. Headings, nested lists, text marks, links and
    alignment are supported. Markdown uses HTML where needed for styled spans,
    aligned blocks and evaluated citations. Unknown structures, unsafe links or
    unsupported formatting fail explicitly. Citations and bibliographies are
    regenerated from source snapshots; imported render caches are not trusted.
-   Publication omits source metadata and is not a lossless backup: keep JSON for
-   archival interchange. Browser copying needs a permitted user gesture; a
+   Publication omits source metadata and is not a lossless backup: use workspace
+   backup for notes with assets and sidecars. Browser copying needs a permitted user gesture; a
    rejected copy reports failure and file export remains available. No direct
    blog-service publishing is included.
 4. **Search.** **替换** / **全替换** replace literal single-line text in the current
@@ -108,6 +111,74 @@ Version 0.4.0 adds six parts of the writing workflow:
    History/trash are stored under `.notelab-writing/` within the selected notes
    root, are not cloud backups, and are not automatically pruned. Browser changes
    still need the normal persistent-storage flush to survive a reload.
+
+## Long-form writing and publishing in 0.5.0
+
+- **Outline structure.** Folding affects the outline list, without hiding or
+  deleting article content. Moving a heading includes the content up to the next
+  equal-or-higher-level heading, including descendant sections. List-item
+  headings move their complete section items. Cross-container moves and drops
+  into the source section are rejected. Heading levels and unknown metadata are
+  preserved, and a move is one undoable edit.
+- **Markdown input.** At the start of a top-level body paragraph, a space after
+  `-`, `*`, `+`, `1.` / `1)` or `>` starts a list or quote. One to six `#` markers
+  still create headings. Return after `---`, `***` or `___` inserts a rule;
+  Return after a triple-backtick fence, optionally followed by a language name,
+  starts a code block. Return continues list items, and Return on an empty item
+  leaves the list. Code blocks retain literal newlines: Ctrl/Cmd+Enter, or a
+  closing triple-backtick line followed by Return, returns to body text. An
+  empty quote can also be exited with Return. These input rules are undoable;
+  paste and IME composition remain literal input. Language labels are retained,
+  but there is no syntax-highlighting engine.
+- **Images.** **插入图**, desktop/browser file drops and supported image clipboard
+  representations accept PNG, JPEG and BMP. Image actions require an insertion
+  caret; they do not replace a text selection implicitly. Move the caret to the
+  image and use **替代文 / 图片说明 / 图片宽** to edit its properties. Width 0
+  fits the available column; explicit widths are 1–2400 pixels. Each image is
+  limited to 16 MiB of encoded data and 16,777,216 decoded pixels. Images are
+  validated in C and stored as immutable content-addressed files under
+  `.notelab-writing/assets/`. Failed insertion may leave an unused asset, which
+  is kept for recovery rather than silently deleted. Remote image URLs are not
+  automatically downloaded. Platform clipboard/provider support varies; the
+  file picker is also available.
+- **Article packages.** Exporting an article with images creates a ZIP containing
+  `article.md` or `article.html` and an `assets/` directory with relative links.
+  Keep those files together when uploading. Copying article source embeds local
+  images as data URLs; the destination blog editor must allow them. Source
+  output retains its 16 MiB limit, so large embedded images can require a file
+  bundle instead. ZIP output is bounded to 128 MiB and 10,000 entries; oversized
+  output fails instead of omitting content. JSON export retains managed asset
+  references, not the referenced image bytes.
+- **Publishing preview.** **预览** displays a read-only view beside the editor
+  on wide windows, or in a full-width panel on narrow screens. Switch between
+  720px desktop and 390px mobile composition widths; inspect images, code and
+  link addresses, then export HTML. Preview uses the same validated publication
+  snapshot and freshly evaluated citations, rendered in Note Lab's default
+  layout. An external blog theme may differ; this is not an embedded browser or
+  a direct blog-service publishing integration. Unsupported publication content
+  is reported explicitly.
+- **Version comparison.** In **管理 → 历史版本**, select a version and choose
+  **对比当前**. The report shows added, deleted and changed paragraphs from that
+  saved version to the current, potentially unsaved article. Formatting and
+  image-attribute differences are included even when plain text is unchanged.
+  **查看原文** returns to the saved text. Both views leave the current document,
+  selection and undo history untouched; restore is still a separate action.
+- **Workspace backup and recovery.** **管理 → 备份整个资料库** saves current edits
+  and packages the active workspace's notes, image assets, catalog, versions,
+  trash, library cache and other regular files. **恢复资料库副本** accepts Note Lab
+  backups, validates ZIP structure/CRCs, portable paths, documents, referenced
+  images and sidecars, then writes a fresh workspace beneath
+  `.notelab-restored/` in the original base directory. Activation is recorded in
+  `.notelab-recovery/active.txt` and survives restart, including browser IDBFS
+  persistence. The original workspace is retained. Recovery never merges into
+  or overwrites the original articles. A failed staged write can leave an
+  unactivated partial recovery folder, which is not selected on restart.
+  Recovery-control directories and atomic-write temporary files are excluded
+  from backups; symlinks/reparse points, unsafe or colliding names and unreadable
+  files cause explicit failure. Backups preserve regular file bytes, not OS
+  permissions or empty physical directories. Note Lab's backup ZIP uses the
+  STORE method and the 128 MiB / 10,000-entry limits above; arbitrary or
+  recompressed ZIP files are not a supported import format.
 
 ## Build and run on the development machine
 
@@ -138,11 +209,12 @@ Use `--notes /absolute/path/to/a/copied-notes-folder` to test an existing set of
 notes. Use a copy during migration. The old `.md` files often contain HTML,
 despite their extension; they must not be treated as plain Markdown.
 
-For a complete backup of a file-backed workspace, copy the entire notes
-directory, including `.notelab-writing/` with its article properties, history
-and trash. Exporting one article as JSON does not include these workspace
-sidecars. Browser storage uses a virtual filesystem persisted in IndexedDB;
-it is not an operating-system notes directory that can be copied this way.
+Use **管理 → 备份整个资料库** on every platform, including the browser. As an
+additional filesystem backup, copy the entire base notes directory, including
+hidden `.notelab-writing/`, `.notelab-library/`, recovery directories and the
+activation marker. Exporting one article as JSON omits image assets and
+workspace sidecars. Browser storage is persisted in IndexedDB and is not an
+operating-system notes directory; use the downloadable workspace backup there.
 
 The sidebar's **导入** button reads a selected old note and creates a new `.json`
 copy. HTML/HTM preserves supported rich formatting and citation blocks; JSON
@@ -234,7 +306,7 @@ isolated directory and starts that copy with temporary notes and bundled fonts.
 It does not install anything or change the user's notes. Dependency versions,
 attribution and license texts are recorded in [THIRD_PARTY.md](THIRD_PARTY.md).
 
-The application workflow also accepts version tags such as `v0.4.0`. A tag must
+The application workflow also accepts version tags such as `v0.5.0`. A tag must
 match the CMake project version exactly. Only after all desktop, sanitizer,
 Android, iOS and browser jobs succeed does it publish a GitHub **Pre-release**.
 This is eight application checks across the six target platforms: three desktop,

@@ -124,7 +124,18 @@ int note_store_valid_name(const char *name) {
 int note_store_valid_export_name(const char *name) {
     if(!valid_base_name(name)) return 0;
     const char *dot=strrchr(name,'.');
-    return supported_extension(name) || (dot && equal_ci(dot,".html"));
+    return supported_extension(name) || (dot && (equal_ci(dot,".html") || equal_ci(dot,".zip")));
+}
+
+int note_store_valid_asset_name(const char *name) {
+    if(!name || strlen(name)!=68 || name[64]!='.') return 0;
+    for(size_t i=0;i<64;i++) if(!((name[i]>='0' && name[i]<='9') || (name[i]>='a' && name[i]<='f'))) return 0;
+    return !strcmp(name+65,"png") || !strcmp(name+65,"jpg") || !strcmp(name+65,"bmp");
+}
+static NoteResult validate_asset(NoteStore *store,const char *name) {
+    if(!store || !store->internal) return fail(store,NOTE_IO_ERROR,"Asset storage is not open");
+    if(!note_store_valid_asset_name(name)) return fail(store,NOTE_INVALID_NAME,"Invalid asset filename");
+    return NOTE_OK;
 }
 
 NoteResult note_store_normalize_name(const char *input, char **name) {
@@ -353,13 +364,13 @@ NoteResult note_store_list(NoteStore *store, NoteList *list) {
     return success(store);
 }
 
-NoteResult note_store_read(NoteStore *store, const char *name, char **data, size_t *size) {
+static NoteResult read_file(NoteStore *store, const char *name, char **data, size_t *size,int asset) {
     StoreState *state;
     wchar_t *path;
     HANDLE file;
     size_t used = 0, capacity = 4096;
     char *buffer;
-    NoteResult result = validate(store, name);
+    NoteResult result = asset?validate_asset(store,name):validate(store, name);
     if (data) *data = NULL;
     if (size) *size = 0;
     if (result != NOTE_OK) return result;
@@ -378,7 +389,9 @@ NoteResult note_store_read(NoteStore *store, const char *name, char **data, size
         if (used == capacity - 1) {
             char *grown;
             if (capacity > SIZE_MAX / 2) { result = fail(store, NOTE_NO_MEMORY, "Note is too large"); break; }
+            if(asset && capacity>=16u*1024u*1024u+2) { result=fail(store,NOTE_IO_ERROR,"Image asset exceeds 16 MiB"); break; }
             capacity *= 2;
+            if(asset && capacity>16u*1024u*1024u+2) capacity=16u*1024u*1024u+2;
             grown = (char *)realloc(buffer, capacity);
             if (!grown) { result = fail(store, NOTE_NO_MEMORY, "Cannot allocate note contents"); break; }
             buffer = grown;
@@ -390,6 +403,7 @@ NoteResult note_store_read(NoteStore *store, const char *name, char **data, size
     }
     CloseHandle(file);
     if (result != NOTE_OK) { free(buffer); return result; }
+    if(asset && used>16u*1024u*1024u) { free(buffer); return fail(store,NOTE_IO_ERROR,"Image asset exceeds 16 MiB"); }
     buffer[used] = 0; *data = buffer; *size = used;
     return success(store);
 }
@@ -408,7 +422,7 @@ static NoteResult windows_write(NoteStore *store, HANDLE file, const void *data,
 static NoteResult create_file(NoteStore *store, const char *name, const void *data, size_t size,int exporting) {
     wchar_t *path;
     HANDLE file;
-    NoteResult result = exporting?validate_export(store,name):validate(store, name);
+    NoteResult result = exporting==2?validate_asset(store,name):exporting?validate_export(store,name):validate(store, name);
     if (result != NOTE_OK) return result;
     if (size && !data) return fail(store, NOTE_IO_ERROR, "Missing note data");
     path = note_path((StoreState *)store->internal, name);
@@ -433,7 +447,7 @@ static NoteResult save_file(NoteStore *store, const char *name, const void *data
     StoreState *state;
     wchar_t *path, *temporary = NULL;
     HANDLE file = INVALID_HANDLE_VALUE;
-    NoteResult result = exporting?validate_export(store,name):validate(store, name);
+    NoteResult result = exporting==2?validate_asset(store,name):exporting?validate_export(store,name):validate(store, name);
     if (result != NOTE_OK) return result;
     if (size && !data) return fail(store, NOTE_IO_ERROR, "Missing note data");
     state = (StoreState *)store->internal;
@@ -561,12 +575,12 @@ NoteResult note_store_list(NoteStore *store, NoteList *list) {
     return success(store);
 }
 
-NoteResult note_store_read(NoteStore *store, const char *name, char **data, size_t *size) {
+static NoteResult read_file(NoteStore *store, const char *name, char **data, size_t *size,int asset) {
     int fd;
     struct stat info;
     size_t used = 0, capacity = 4096;
     char *buffer;
-    NoteResult result = validate(store, name);
+    NoteResult result = asset?validate_asset(store,name):validate(store, name);
     if (data) *data = NULL;
     if (size) *size = 0;
     if (result != NOTE_OK) return result;
@@ -582,7 +596,9 @@ NoteResult note_store_read(NoteStore *store, const char *name, char **data, size
         if (used == capacity - 1) {
             char *grown;
             if (capacity > SIZE_MAX / 2) { result = fail(store, NOTE_NO_MEMORY, "Note is too large"); break; }
+            if(asset && capacity>=16u*1024u*1024u+2) { result=fail(store,NOTE_IO_ERROR,"Image asset exceeds 16 MiB"); break; }
             capacity *= 2;
+            if(asset && capacity>16u*1024u*1024u+2) capacity=16u*1024u*1024u+2;
             grown = (char *)realloc(buffer, capacity);
             if (!grown) { result = fail(store, NOTE_NO_MEMORY, "Cannot allocate note contents"); break; }
             buffer = grown;
@@ -599,6 +615,7 @@ NoteResult note_store_read(NoteStore *store, const char *name, char **data, size
     }
     if (close(fd) != 0 && result == NOTE_OK) result = posix_error(store, "Cannot close note");
     if (result != NOTE_OK) { free(buffer); return result; }
+    if(asset && used>16u*1024u*1024u) { free(buffer); return fail(store,NOTE_IO_ERROR,"Image asset exceeds 16 MiB"); }
     buffer[used] = 0; *data = buffer; *size = used;
     return success(store);
 }
@@ -622,7 +639,7 @@ static NoteResult posix_write(NoteStore *store, int fd, const void *data, size_t
 static NoteResult create_file(NoteStore *store, const char *name, const void *data, size_t size,int exporting) {
     StoreState *state;
     int fd;
-    NoteResult result = exporting?validate_export(store,name):validate(store, name);
+    NoteResult result = exporting==2?validate_asset(store,name):exporting?validate_export(store,name):validate(store, name);
     if (result != NOTE_OK) return result;
     if (size && !data) return fail(store, NOTE_IO_ERROR, "Missing note data");
     state = (StoreState *)store->internal;
@@ -646,7 +663,7 @@ static NoteResult save_file(NoteStore *store, const char *name, const void *data
     struct stat info;
     char temporary[96];
     int fd = -1;
-    NoteResult result = exporting?validate_export(store,name):validate(store, name);
+    NoteResult result = exporting==2?validate_asset(store,name):exporting?validate_export(store,name):validate(store, name);
     if (result != NOTE_OK) return result;
     if (size && !data) return fail(store, NOTE_IO_ERROR, "Missing note data");
     state = (StoreState *)store->internal;
@@ -691,4 +708,11 @@ NoteResult note_store_save(NoteStore *store,const char *name,const void *data,si
 NoteResult note_store_export(NoteStore *store,const char *name,const void *data,size_t size) {
     NoteResult result=create_file(store,name,data,size,1);
     return result==NOTE_EXISTS?save_file(store,name,data,size,1):result;
+}
+
+NoteResult note_store_read(NoteStore *store,const char *name,char **data,size_t *size) { return read_file(store,name,data,size,0); }
+NoteResult note_store_read_asset(NoteStore *store,const char *name,char **data,size_t *size) { return read_file(store,name,data,size,1); }
+NoteResult note_store_create_asset(NoteStore *store,const char *name,const void *data,size_t size) {
+    if(size>16u*1024u*1024u) return fail(store,NOTE_IO_ERROR,"Image asset exceeds 16 MiB");
+    return create_file(store,name,data,size,2);
 }

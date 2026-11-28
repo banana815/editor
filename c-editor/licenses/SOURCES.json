@@ -719,6 +719,17 @@
           "source_sha256": "6c8726ff768626b917e23a551e0eb794e1280c544d5362b991f50bae37b8c5f6"
         }
       ]
+    },
+    {
+      "file": "stb-image-LICENSE.txt",
+      "sha256": "6e17eab8509b92f80c4c7f20aad041daeb3d535e43d833f5a113a8798338c5c9",
+      "method": "Upstream stb_image license block with version, source revision and header hash; MIT alternative selected",
+      "sources": [
+        {
+          "source": "https://github.com/nothings/stb/blob/6b5799bae8a1fe3792691ef4b72ae26434c3e799/stb_image.h",
+          "source_sha256": "dfc2aadda6295f67f677587773f25e5bf8c8ad427ed0db7c518525c91e72e020"
+        }
+      ]
     }
   ]
 }
