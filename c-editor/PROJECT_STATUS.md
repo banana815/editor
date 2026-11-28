@@ -14,7 +14,9 @@ Emscripten 4.0.14 的实际应用构建通过。功能验收构建（WASM SHA-25
 
 发布准备已核对 0.5.0 / build 7 一致性、发布组包 **4/4**、YAML、Bash 语法、8 项平台门禁及最小权限。固定 stb_image 原始字节及 MIT 许可证记录已加入依赖核验。Android/iOS 的 SDK 构建和实际设备行为不能由 Windows 结果代替；桌面/移动包仍为未签名的开发预览，预览排版也不代表外部博客主题的最终效果。
 
-最终显示修正后，实际 WASM 再次通过长文 **7/7**，并逐张确认大纲“+”和差异“[图片]”显示正常。最终 WASM SHA-256 为 `057714ea6fa8b6d2b52ed0cfa057b0e2185da719a4d21ba5b27275e954d73465`；本机记录在忽略目录 `build-web-local/browser-longform-proof.json`，CI 会保留对应构建的记录和截图。
+显示修正后，实际 WASM 再次通过长文 **7/7**，并逐张确认大纲“+”和差异“[图片]”显示正常。该次本机 WASM SHA-256 为 `057714ea6fa8b6d2b52ed0cfa057b0e2185da719a4d21ba5b27275e954d73465`；本机记录在忽略目录 `build-web-local/browser-longform-proof.json`，CI 会保留对应构建的记录和截图。
+
+首个主分支提交 `b3e3c51` 的 [远端检查](https://github.com/banana815/editor/actions/runs/46109287335) 中，三个桌面任务均通过；Linux sanitizer 发现列表转换在分配失败时遗漏释放临时 JSON 节点，因此该检查点未获准发布。修复先准备目标容器再转移节点，覆盖每次附加失败的释放路径；新增跟踪分配的逐点故障回归直到撤销及销毁完成后断言零残留。修复后的 Windows 全目标构建及文档、列表、片段、大纲、输入、剪贴板相关 **8/8** 通过（9.10 秒）。最终远端验证以 0.5.0 标签对应的检查为准。
 
 恢复先校验 ZIP 及内容，再写到 `.notelab-restored/` 中的新库，完成持久化后才切换；原库保留。当前库选择记录在基础目录的 `.notelab-recovery/active.txt`。不得提前移动旧发布标签或将未验证包发布为已完成版本。
 

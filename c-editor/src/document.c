@@ -1287,7 +1287,11 @@ bool ce_document_set_block(CeDocument *d, size_t a, size_t b, CeBlockKind k, uns
         return false;
     if (!d->nblocks) {
         cJSON *p = paragraph();
-        if (!p || !cJSON_AddItemToArray(array(d->root), p) || !rebuild(d))
+        if (!p || !cJSON_AddItemToArray(array(d->root), p)) {
+            cJSON_Delete(p);
+            return finish(d, old, false);
+        }
+        if (!rebuild(d))
             return finish(d, old, false);
     }
     size_t first = block_index(d, a), last = last_selected_block(d, a, b);
@@ -1301,7 +1305,8 @@ bool ce_document_set_block(CeDocument *d, size_t a, size_t b, CeBlockKind k, uns
                 cJSON *list = container_of(d->root, item, 0);
                 if (!is_list(list))
                     return finish(d, old, fail(d, "List item has no list container"));
-                setstr(list, "type", k == CE_BLOCK_BULLET ? "bulletList" : "orderedList");
+                if (!le_set(list, "type", cJSON_CreateString(k == CE_BLOCK_BULLET ? "bulletList" : "orderedList")))
+                    return finish(d, old, false);
                 if (k == CE_BLOCK_BULLET)
                     cJSON_DeleteItemFromObjectCaseSensitive(field(list, "attrs"), "start");
                 i++;
@@ -1310,24 +1315,38 @@ bool ce_document_set_block(CeDocument *d, size_t a, size_t b, CeBlockKind k, uns
             cJSON *parent = parent_of(d->root, n, 0);
             int insert = index_of(parent, n);
             cJSON *list = node(k == CE_BLOCK_BULLET ? "bulletList" : "orderedList");
-            if (!list || insert < 0) {
+            cJSON *items = list ? array(list) : NULL;
+            if (!items || insert < 0) {
                 cJSON_Delete(list);
                 return finish(d, old, false);
             }
             while (i <= last && parent_of(d->root, d->blocks[i].node, 0) == parent &&
                    index_of(parent, d->blocks[i].node) == insert) {
                 cJSON *li = node("listItem");
+                cJSON *content = li ? array(li) : NULL;
                 n = d->blocks[i++].node;
-                if (!li) {
+                if (!content || !le_set(n, "type", cJSON_CreateString("paragraph"))) {
+                    cJSON_Delete(li);
                     cJSON_Delete(list);
                     return finish(d, old, false);
                 }
-                setstr(n, "type", "paragraph");
                 cJSON_DeleteItemFromObjectCaseSensitive(field(n, "attrs"), "level");
-                cJSON_AddItemToArray(array(li), cJSON_DetachItemFromArray(parent, insert));
-                cJSON_AddItemToArray(array(list), li);
+                /* Both destination arrays must exist before detaching the
+                 * source. A failed lazy array allocation used to orphan it. */
+                n = cJSON_DetachItemFromArray(parent, insert);
+                if (!cJSON_AddItemToArray(content, n)) {
+                    cJSON_Delete(n); cJSON_Delete(li); cJSON_Delete(list);
+                    return finish(d, old, false);
+                }
+                if (!cJSON_AddItemToArray(items, li)) {
+                    cJSON_Delete(li); cJSON_Delete(list);
+                    return finish(d, old, false);
+                }
             }
-            cJSON_InsertItemInArray(parent, insert, list);
+            if (!cJSON_InsertItemInArray(parent, insert, list)) {
+                cJSON_Delete(list);
+                return finish(d, old, false);
+            }
         }
         return finish(d, old, true);
     }

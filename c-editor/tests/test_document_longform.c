@@ -47,20 +47,34 @@ static void rules_lists_atoms(void) {
     kind(d,3,CE_BLOCK_IMAGE); assert(ce_document_undo(d)); same(d,image_before); free(image_before);
     ce_document_free(d);
 }
-static size_t allocations,limit;
-static void *limited(size_t size) { return allocations++>=limit?NULL:malloc(size); }
+static size_t allocations,limit,live;
+static void *tracked[8192];
+static void *limited(size_t size) {
+    if(allocations++>=limit) return NULL;
+    void *p=malloc(size);
+    if(p) { assert(live<sizeof tracked/sizeof *tracked); tracked[live++]=p; }
+    return p;
+}
+static void release_tracked(void *p) {
+    if(!p) return;
+    for(size_t i=0;i<live;i++) if(tracked[i]==p) { tracked[i]=tracked[--live]; break; }
+    free(p);
+}
 static void atomic_failures(void) {
     const char *source="{\"type\":\"doc\",\"legacy\":{\"exact\":9007199254740991},\"content\":[{\"type\":\"paragraph\",\"attrs\":{\"custom\":\"preserve\"},\"content\":[{\"type\":\"text\",\"text\":\"hello\"}]}]}";
     for(int mode=0;mode<3;mode++) {
         bool reached=false;
-        for(limit=0;limit<1500;limit++) {
+        for(size_t fail_at=0;fail_at<1500;fail_at++) {
             CeDocument *d=load(source,CE_FORMAT_JSON); char *before=ce_document_export_json(d); assert(before);
-            allocations=0; cJSON_Hooks hooks={limited,free}; cJSON_InitHooks(&hooks);
+            allocations=0; limit=fail_at; assert(!live);
+            cJSON_Hooks hooks={limited,release_tracked}; cJSON_InitHooks(&hooks);
             bool ok=ce_document_set_writing_block(d,0,mode==0?CE_BLOCK_QUOTE:mode==1?CE_BLOCK_CODE:CE_BLOCK_ORDERED,"c",3);
-            cJSON_InitHooks(NULL);
+            limit=(size_t)-1; /* Keep accounting active through undo and cleanup. */
             if(!ok) { same(d,before); assert(!ce_document_can_undo(d) && !ce_document_is_modified(d)); }
             else { assert(ce_document_undo(d)); same(d,before); reached=true; }
-            free(before); ce_document_free(d); if(reached) break;
+            free(before); ce_document_free(d); cJSON_InitHooks(NULL);
+            if(live) fprintf(stderr,"allocation failure %zu in mode %d leaked %zu JSON allocations\n",fail_at,mode,live);
+            assert(!live); if(reached) break;
         }
         assert(reached);
     }
